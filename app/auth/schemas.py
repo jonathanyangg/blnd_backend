@@ -24,3 +24,11 @@ class UserResponse(BaseModel):
     username: str
     display_name: str | None = None
     avatar_url: str | None = None
+    taste_bio: str | None = None
+    favorite_genres: list[str] = []
+
+
+class UpdateProfileRequest(BaseModel):
+    display_name: str | None = None
+    taste_bio: str | None = None
+    favorite_genres: list[str] | None = None

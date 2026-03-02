@@ -7,7 +7,7 @@ from app.dependencies import supabase
 def signup(
     email: str, password: str, username: str, display_name: str | None, db: Session
 ) -> dict:
-    """Create user via Supabase Auth and insert profile row."""
+    """Create user via Supabase Auth and insert profile via SQLAlchemy."""
     auth_response = supabase.auth.sign_up({"email": email, "password": password})
     if not auth_response.user or not auth_response.session:
         raise ValueError("Signup failed")
