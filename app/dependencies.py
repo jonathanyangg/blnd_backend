@@ -38,12 +38,9 @@ async def get_current_user(
     """Verify JWT via Supabase Auth and return user ID."""
     try:
         user_response = supabase.auth.get_user(credentials.credentials)
-        if user_response is None:
+        if not user_response or not user_response.user:
             raise ValueError("No user found")
-        user = user_response.user
-        if user is None:
-            raise ValueError("No user found")
-        return str(user.id)
+        return str(user_response.user.id)
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
