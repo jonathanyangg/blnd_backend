@@ -32,22 +32,23 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Movie embeddings: OpenAI text-embedding-3-small (1536 dims) stored in pgvector
 - Supabase SDK returns optional types — always null-check `.user` and `.session` before access
 - Use `datetime.now(timezone.utc)` not `datetime.utcnow()` (deprecated)
+- Migrations are raw SQL in `supabase/migrations/` — commit them to git
+- Keep SQLAlchemy models in sync with migrations manually (migrations are source of truth for DB)
 
 ## Current Status
 
 ### Done
 - Project scaffolding: folder structure, config, database, dependencies, main.py
 - Pre-commit hooks: ruff, ruff-format, codespell, pyright
-- Auth domain: models (SQLAlchemy Profile), schemas, services (Supabase Auth + SQLAlchemy), views
+- Supabase project set up, CLI initialized and linked
+- Initial migration pushed: profiles, movies, watched_movies, friendships, groups, group_members, movie_embeddings, pgvector, match_movies RPC
+- Second migration pushed: added taste_bio, favorite_genres, taste_embedding to profiles
+- Auth domain: models (Profile with taste fields), schemas (signup/login/profile + UpdateProfileRequest), services (Supabase Auth + SQLAlchemy), views
 - Movies domain: models, schemas, views (stubbed)
 - All domain routers registered in main.py with stub endpoints
 - FastAPI server runs clean on `uvicorn main:app --reload`
 
 ### Next Steps
-- [ ] Set up Supabase project + fill `.env`
-- [ ] Install Supabase CLI + init project (`supabase init`, `supabase link`)
-- [ ] Create initial migration (profiles, movies, watched_movies, friendships, groups, group_members, movie_embeddings)
-- [ ] Enable pgvector + create match_movies RPC
 - [ ] Build movies domain: TMDB search + caching via SQLAlchemy
 - [ ] Build tracking domain: watch/rate/review CRUD
 - [ ] Build import_data domain: Letterboxd CSV parser + workflow/flow
