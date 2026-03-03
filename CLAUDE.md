@@ -55,10 +55,22 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - All domain routers registered in main.py with stub endpoints
 - FastAPI server runs clean on `uvicorn main:app --reload`
 
+### Recommendation Architecture
+- **Movie seed pipeline** (import_data domain):
+  1. Download TMDB daily export (`https://files.tmdb.org/p/exports/movie_ids_MM_DD_YYYY.json.gz`) — no auth needed
+  2. Filter to `popularity > threshold` and `adult=false` (~10-50K movies)
+  3. Fetch full details per movie via TMDB API (`/movie/{id}?append_to_response=videos`) — rate limit ~40 req/s
+  4. Cache in `movies` table via SQLAlchemy
+  5. Embed overviews with OpenAI `text-embedding-3-small` → store in `movie_embeddings` table
+- **Recommendations** = user taste embedding vs movie embeddings via `match_movies` RPC (pgvector cosine similarity, already built)
+- **Ongoing sync**: TMDB Changes API (`/movie/changes`) for daily updates to cached movies
+- **On-demand caching**: Movies found via search/Letterboxd import also get cached + embedded
+
 ### Next Steps
 - [ ] Build tracking domain: watch/rate/review CRUD
+- [ ] Build movie seed pipeline: TMDB bulk export → fetch details → embed → store
 - [ ] Build import_data domain: Letterboxd CSV parser + workflow/flow
-- [ ] Build recommendations domain: embeddings + taste vectors + similarity search
+- [ ] Build recommendations domain: taste vectors from user ratings + similarity search via match_movies RPC
 - [ ] Build friends domain: request/accept/reject/list
 - [ ] Build groups domain: CRUD + group recommendations
 
