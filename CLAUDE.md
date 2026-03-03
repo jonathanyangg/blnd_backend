@@ -80,7 +80,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 
 ### Next Steps
 - [x] Build tracking domain: watch/rate/review CRUD
-- [ ] Build movie seed pipeline: TMDB bulk export → fetch details → embed → store
+- [ ] Build movie seed pipeline: TMDB bulk export → fetch details → embed → store (plan at `_docs/movie-seed-pipeline-plan.md`)
 - [ ] Build import_data domain: Letterboxd CSV parser + workflow/flow
 - [ ] Build recommendations domain: taste vectors from user ratings + similarity search via match_movies RPC
 - [x] Build friends domain: request/accept/reject/list
