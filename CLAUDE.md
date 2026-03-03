@@ -54,6 +54,12 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - TMDB client lifecycle: async generator dependency in dependencies.py (properly closes httpx client)
 - All domain routers registered in main.py with stub endpoints
 - FastAPI server runs clean on `uvicorn main:app --reload`
+- Tracking domain: fully implemented
+  - Model: WatchedMovie (SQLAlchemy, matches watched_movies table with unique(user_id, tmdb_id))
+  - Schemas: TrackMovieRequest, UpdateTrackingRequest, WatchedMovieResponse, WatchHistoryResponse
+  - Services: track_movie (upsert, auto-caches movie via TMDB), get_watch_history (paginated, joined with movies), get_watched_movie, update_watched_movie, delete_watched_movie
+  - Views: POST /tracking/ (track/upsert), GET /tracking/ (paginated history), GET /tracking/{tmdb_id}, PATCH /tracking/{tmdb_id}, DELETE /tracking/{tmdb_id}
+  - All endpoints require JWT auth; POST auto-caches movie from TMDB if not in DB
 
 ### Recommendation Architecture
 - **Movie seed pipeline** (import_data domain):
@@ -67,7 +73,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - **On-demand caching**: Movies found via search/Letterboxd import also get cached + embedded
 
 ### Next Steps
-- [ ] Build tracking domain: watch/rate/review CRUD
+- [x] Build tracking domain: watch/rate/review CRUD
 - [ ] Build movie seed pipeline: TMDB bulk export → fetch details → embed → store
 - [ ] Build import_data domain: Letterboxd CSV parser + workflow/flow
 - [ ] Build recommendations domain: taste vectors from user ratings + similarity search via match_movies RPC
