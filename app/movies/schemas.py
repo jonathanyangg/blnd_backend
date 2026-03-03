@@ -10,6 +10,7 @@ class MovieResponse(BaseModel):
     genres: list[dict] = []
     runtime: int | None = None
     vote_average: float | None = None
+    trailer_url: str | None = None
 
 
 class MovieSearchResult(BaseModel):

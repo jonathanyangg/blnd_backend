@@ -39,17 +39,23 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 
 ### Done
 - Project scaffolding: folder structure, config, database, dependencies, main.py
-- Pre-commit hooks: ruff, ruff-format, codespell, pyright
+- Pre-commit hooks: ruff, ruff-format, codespell, pyright (pyrightconfig.json points to .venv)
 - Supabase project set up, CLI initialized and linked
 - Initial migration pushed: profiles, movies, watched_movies, friendships, groups, group_members, movie_embeddings, pgvector, match_movies RPC
 - Second migration pushed: added taste_bio, favorite_genres, taste_embedding to profiles
+- Third migration pushed: added trailer_url to movies
 - Auth domain: models (Profile with taste fields), schemas (signup/login/profile + UpdateProfileRequest), services (Supabase Auth + SQLAlchemy), views
-- Movies domain: models, schemas, views (stubbed)
+- Movies domain: fully implemented
+  - Model: Movie (SQLAlchemy, matches movies table)
+  - Schemas: MovieResponse (with trailer_url), MovieSearchResult
+  - Services: TMDB search, movie detail fetch with DB caching, YouTube trailer URL fetch
+  - Views: GET /movies/search (TMDB search), GET /movies/{tmdb_id} (cached detail + trailer)
+  - All endpoints require JWT auth
+- TMDB client lifecycle: async generator dependency in dependencies.py (properly closes httpx client)
 - All domain routers registered in main.py with stub endpoints
 - FastAPI server runs clean on `uvicorn main:app --reload`
 
 ### Next Steps
-- [ ] Build movies domain: TMDB search + caching via SQLAlchemy
 - [ ] Build tracking domain: watch/rate/review CRUD
 - [ ] Build import_data domain: Letterboxd CSV parser + workflow/flow
 - [ ] Build recommendations domain: embeddings + taste vectors + similarity search
@@ -57,4 +63,4 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [ ] Build groups domain: CRUD + group recommendations
 
 ---
-*Last updated: 2026-03-02*
+*Last updated: 2026-03-03*
