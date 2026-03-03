@@ -60,6 +60,12 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Services: track_movie (upsert, auto-caches movie via TMDB), get_watch_history (paginated, joined with movies), get_watched_movie, update_watched_movie, delete_watched_movie
   - Views: POST /tracking/ (track/upsert), GET /tracking/ (paginated history), GET /tracking/{tmdb_id}, PATCH /tracking/{tmdb_id}, DELETE /tracking/{tmdb_id}
   - All endpoints require JWT auth; POST auto-caches movie from TMDB if not in DB
+- Friends domain: fully implemented
+  - Model: Friendship (SQLAlchemy, matches friendships table with unique(requester_id, addressee_id))
+  - Schemas: SendFriendRequestRequest, FriendResponse (includes friendship_id for delete), FriendRequestResponse, FriendListResponse, PendingRequestsResponse
+  - Services: send_friend_request (by username, prevents self-friending, allows re-request after rejection), accept/reject (addressee only), get_friends (accepted, either party), get_pending_requests (split incoming/outgoing), remove_friend (either party)
+  - Views: POST /friends/request, POST /friends/{id}/accept, POST /friends/{id}/reject, GET /friends/, GET /friends/requests, DELETE /friends/{id}
+  - All endpoints require JWT auth; no migrations needed (friendships table already exists)
 
 ### Recommendation Architecture
 - **Movie seed pipeline** (import_data domain):
@@ -77,8 +83,9 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [ ] Build movie seed pipeline: TMDB bulk export → fetch details → embed → store
 - [ ] Build import_data domain: Letterboxd CSV parser + workflow/flow
 - [ ] Build recommendations domain: taste vectors from user ratings + similarity search via match_movies RPC
-- [ ] Build friends domain: request/accept/reject/list
+- [x] Build friends domain: request/accept/reject/list
 - [ ] Build groups domain: CRUD + group recommendations
 
 ---
 *Last updated: 2026-03-03*
+

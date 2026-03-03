@@ -8,6 +8,7 @@ class SendFriendRequestRequest(BaseModel):
 
 
 class FriendResponse(BaseModel):
+    friendship_id: int | None = None
     id: str
     username: str
     display_name: str | None = None

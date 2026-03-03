@@ -134,7 +134,7 @@ def get_friends(user_id: str, db: Session) -> dict:
         friend_id = f.addressee_id if str(f.requester_id) == user_id else f.requester_id
         profile = db.query(Profile).filter(Profile.id == friend_id).first()
         if profile:
-            friends.append(_profile_to_response(profile))
+            friends.append(_profile_to_response(profile, friendship_id=f.id))
 
     return {"friends": friends}
 
@@ -192,13 +192,16 @@ def remove_friend(user_id: str, friendship_id: int, db: Session) -> None:
     db.commit()
 
 
-def _profile_to_response(profile: Profile) -> dict:
-    return {
+def _profile_to_response(profile: Profile, *, friendship_id: int | None = None) -> dict:
+    data: dict = {
         "id": str(profile.id),
         "username": profile.username,
         "display_name": profile.display_name,
         "avatar_url": profile.avatar_url,
     }
+    if friendship_id is not None:
+        data["friendship_id"] = friendship_id
+    return data
 
 
 def _to_request_response(friendship: Friendship, db: Session) -> dict:
