@@ -27,7 +27,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. A Supabase migration file exists that creates `watchlist_movies` with the correct columns and `UNIQUE(user_id, tmdb_id)` constraint
   3. The SQLAlchemy `WatchedMovie` model has a `liked` field that reflects the new column
   4. The SQLAlchemy `WatchlistMovie` model exists and matches the new table schema
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Create Supabase migrations (liked column + watchlist_movies table)
+- [ ] 01-02-PLAN.md — Update SQLAlchemy models (WatchedMovie.liked + WatchlistMovie)
 
 ### Phase 2: Core Import Workflow
 **Goal**: The `POST /import/letterboxd` endpoint accepts a Letterboxd zip and correctly imports watched history, ratings, reviews, watchlist entries, and liked films, returning a structured summary
