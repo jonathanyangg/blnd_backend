@@ -73,6 +73,19 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Services: download_tmdb_export (daily JSONL, all non-adult movies), fetch_and_cache_movies (rate-limited, batch commits, skips existing, includes credits), embed_movies (OpenAI text-embedding-3-small, batch 100), run_seed_pipeline (orchestrator)
   - Views: POST /import/seed-movies (BackgroundTask, returns 202), POST /import/letterboxd (stub)
   - Pipeline is idempotent — safe to re-run, skips already cached/embedded movies
+- Recommendations domain: fully implemented
+  - Schemas: RecommendedMovieResponse (movie fields + similarity score), RecommendationsResponse (results + taste_bio)
+  - Services: dual embedding strategy (switchable via `EMBEDDING_STRATEGY` in services.py):
+    - `"average"` (current default): weighted average of user's top-rated movie embeddings from movie_embeddings table — compares apples to apples
+    - `"llm"`: gpt-4o-mini generates ideal movie synopsis → embedded with text-embedding-3-small
+    - Both strategies still generate taste bio via gpt-4o-mini for display
+  - get_recommendations: pgvector similarity via match_movies RPC (cast to vector(1536)), excludes watched, paginated
+  - Views: GET /recommendations/me (returns recs, builds taste profile on first call if needed), POST /recommendations/me/refresh (force rebuild + fresh recs)
+  - Taste profile auto-rebuilds in background when: user rates/updates/deletes a tracked movie, or updates favorite_genres via PATCH /auth/profile
+- Auth domain updates:
+  - Added update_profile service (updates display_name/favorite_genres, detects genre changes)
+  - Added PATCH /auth/profile endpoint (triggers background taste rebuild on genre change)
+  - Fixed GET /auth/me to include taste_bio and favorite_genres in response
 
 ### Recommendation Architecture
 - **Movie seed pipeline** (import_data domain):
@@ -81,7 +94,12 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   3. Fetch full details per movie via TMDB API (`/movie/{id}?append_to_response=videos`) — rate limit ~40 req/s
   4. Cache in `movies` table via SQLAlchemy
   5. Embed overviews with OpenAI `text-embedding-3-small` → store in `movie_embeddings` table
-- **Recommendations** = user taste embedding vs movie embeddings via `match_movies` RPC (pgvector cosine similarity, already built)
+- **Taste embedding** (switchable `EMBEDDING_STRATEGY` in `app/recommendations/services.py`):
+  - `"average"` (default): weighted average of top 25 rated movie embeddings — same embedding space as movie_embeddings, higher similarity scores
+  - `"llm"`: gpt-4o-mini generates ideal movie synopsis, embedded with text-embedding-3-small
+  - Both still generate taste bio for display via gpt-4o-mini
+- **Recommendations** = user taste embedding vs movie embeddings via `match_movies` RPC (pgvector cosine similarity, `cast(:param AS vector(1536))`)
+- **Auto-refresh triggers**: rating changes (track/update/delete) and genre updates trigger background taste rebuild
 - **Ongoing sync**: TMDB Changes API (`/movie/changes`) for daily updates to cached movies
 - **On-demand caching**: Movies found via search/Letterboxd import also get cached + embedded
 
@@ -89,11 +107,21 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [x] Build tracking domain: watch/rate/review CRUD
 - [x] Build movie seed pipeline: TMDB bulk export → fetch details → embed → store
 - [ ] Build import_data domain: Letterboxd CSV parser + workflow/flow
-- [ ] Build recommendations domain: taste vectors from user ratings + similarity search via match_movies RPC
+- [x] Build recommendations domain: taste vectors from user ratings + similarity search via match_movies RPC
 - [x] Build friends domain: request/accept/reject/list
 - [ ] Build groups domain: CRUD + group recommendations
 
 ---
-*Last updated: 2026-03-03*
+- **Rating scale**: 0.5–5.0 in 0.5 increments (enforced by DB check constraint on watched_movies)
+
+### Future: Hybrid Search for Recommendations
+The `"average"` embedding strategy works well for semantic similarity but misses explicit signals. Layer in hybrid search to boost results that match on structured metadata:
+- **Genre boosting**: boost movies sharing genres with user's favorite_genres or top-rated movies' genres
+- **Director boosting**: boost movies by directors the user has rated highly
+- **Cast boosting**: boost movies starring actors from the user's top-rated films
+- **Recency weighting**: optionally weight more recent ratings higher in the average
+- Implementation approach: score = `alpha * cosine_similarity + beta * genre_overlap + gamma * director_match`. Tune weights empirically. Could be done in SQL (post-filter/re-rank) or in Python after the pgvector query returns candidates.
+
+*Last updated: 2026-03-04*
 
 

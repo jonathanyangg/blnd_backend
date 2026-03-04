@@ -5,6 +5,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
+from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
 from app.tracking.models import WatchedMovie
 
@@ -73,12 +74,13 @@ def generate_taste_bio(prompt: str, openai_client: OpenAI) -> str:
             {
                 "role": "system",
                 "content": (
-                    "You are a film critic assistant. Given a user's movie preferences, "
-                    "write a concise 2-3 paragraph taste profile describing what kinds of "
-                    "movies they enjoy, their preferred themes, genres, directors, and "
-                    "storytelling styles. Write in third person. Focus on patterns and "
-                    "preferences that would help find similar movies they'd enjoy. "
-                    "Do not list individual movies."
+                    "You are a movie description writer. Given a user's movie preferences, "
+                    "write a fictional movie overview/synopsis that perfectly captures "
+                    "the themes, genres, tone, and storytelling style they love. "
+                    "Write it exactly like a movie plot summary — with characters, "
+                    "a setting, and a narrative arc. Do NOT describe the user's taste. "
+                    "Instead, describe the IDEAL movie for this person. "
+                    "Keep it to 2-3 paragraphs, like a movie overview on TMDB."
                 ),
             },
             {"role": "user", "content": prompt},
@@ -98,30 +100,70 @@ def embed_taste_bio(taste_bio: str, openai_client: OpenAI) -> list[float]:
     return response.data[0].embedding
 
 
+# --- Embedding strategy: "average" or "llm" ---
+EMBEDDING_STRATEGY = "average"
+
+
+def compute_average_embedding(user_id: str, db: Session) -> list[float] | None:
+    """Average the embeddings of the user's top-rated movies, weighted by rating."""
+    rows = (
+        db.query(WatchedMovie.rating, MovieEmbedding.embedding)
+        .join(MovieEmbedding, WatchedMovie.tmdb_id == MovieEmbedding.tmdb_id)
+        .filter(WatchedMovie.user_id == user_id, WatchedMovie.rating.isnot(None))
+        .order_by(WatchedMovie.rating.desc())
+        .limit(25)
+        .all()
+    )
+    if not rows:
+        return None
+
+    dim = 1536
+    weighted_sum = [0.0] * dim
+    total_weight = 0.0
+
+    for rating, embedding in rows:
+        weight = float(rating)
+        total_weight += weight
+        for i in range(dim):
+            weighted_sum[i] += embedding[i] * weight
+
+    if total_weight == 0:
+        return None
+
+    return [v / total_weight for v in weighted_sum]
+
+
 def rebuild_taste_profile(
     user_id: str, db: Session, openai_client: OpenAI
 ) -> Profile | None:
-    """Orchestrator: gather data -> LLM -> embed -> save to profile."""
+    """Orchestrator: build taste embedding + generate taste bio for display."""
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile:
         return None
 
     movies = get_top_rated_movies(user_id, db)
-    prompt = build_taste_prompt(profile.favorite_genres, movies)
 
-    if not prompt:
-        logger.info("User %s has no rated movies, skipping taste rebuild", user_id)
-        return profile
+    # Taste embedding: switch between strategies
+    if EMBEDDING_STRATEGY == "average":
+        taste_embedding = compute_average_embedding(user_id, db)
+        if not taste_embedding:
+            raise Exception("User has no movies rated yet")
+    else:
+        # LLM strategy: embed the generated taste bio
+        prompt = build_taste_prompt(profile.favorite_genres, movies)
+        if not prompt:
+            prompt = ""
+        taste_bio = generate_taste_bio(prompt, openai_client)
+        taste_embedding = embed_taste_bio(taste_bio, openai_client)
+        profile.taste_bio = taste_bio
+        profile.taste_embedding = taste_embedding
 
-    taste_bio = generate_taste_bio(prompt, openai_client)
-    taste_embedding = embed_taste_bio(taste_bio, openai_client)
-
-    profile.taste_bio = taste_bio
-    profile.taste_embedding = taste_embedding
     db.commit()
     db.refresh(profile)
 
-    logger.info("Rebuilt taste profile for user %s", user_id)
+    logger.info(
+        "Rebuilt taste profile for user %s (strategy=%s)", user_id, EMBEDDING_STRATEGY
+    )
     return profile
 
 
@@ -157,12 +199,11 @@ def get_recommendations(
     result = db.execute(
         text(
             "SELECT * FROM match_movies("
-            ":query_embedding, :match_threshold, :match_count, :exclude_ids"
+            "cast(:query_embedding AS vector(1536)), :match_count, :exclude_ids"
             ")"
         ),
         {
             "query_embedding": embedding_str,
-            "match_threshold": 0.0,
             "match_count": limit + offset,
             "exclude_ids": watched_ids if watched_ids else [],
         },
