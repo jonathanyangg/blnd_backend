@@ -28,7 +28,7 @@ def get_db() -> Generator[Session, None, None]:
 async def get_tmdb_client() -> AsyncGenerator[httpx.AsyncClient, None]:
     async with httpx.AsyncClient(
         base_url="https://api.themoviedb.org/3",
-        params={"api_key": settings.tmdb_api_key},
+        headers={"Authorization": f"Bearer {settings.tmdb_api_key}"},
     ) as client:
         yield client
 

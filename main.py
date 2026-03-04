@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI
 
 from app.auth.views import router as auth_router
@@ -7,6 +9,8 @@ from app.import_data.views import router as import_router
 from app.recommendations.views import router as recommendations_router
 from app.friends.views import router as friends_router
 from app.groups.views import router as groups_router
+
+logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="BLND", version="0.1.0")
 

@@ -18,8 +18,8 @@ FETCH_BATCH_SIZE = 100
 EMBED_BATCH_SIZE = 100
 
 
-async def download_tmdb_export() -> list[int]:
-    """Download TMDB daily export and return all non-adult movie IDs."""
+async def download_tmdb_export(min_popularity: float = 0.0) -> list[int]:
+    """Download TMDB daily export and return filtered non-adult movie IDs."""
     # Export is from previous day
     yesterday = datetime.now(timezone.utc) - timedelta(days=1)
     date_str = yesterday.strftime("%m_%d_%Y")
@@ -42,9 +42,15 @@ async def download_tmdb_export() -> list[int]:
             continue
         if entry.get("adult", False):
             continue
+        if entry.get("popularity", 0) < min_popularity:
+            continue
         tmdb_ids.append(entry["id"])
 
-    logger.info("Found %d movie IDs from TMDB export", len(tmdb_ids))
+    logger.info(
+        "Found %d movie IDs from TMDB export (min_popularity=%.1f)",
+        len(tmdb_ids),
+        min_popularity,
+    )
     return tmdb_ids
 
 
@@ -64,7 +70,7 @@ async def fetch_and_cache_movies(
 
     async with httpx.AsyncClient(
         base_url="https://api.themoviedb.org/3",
-        params={"api_key": tmdb_api_key},
+        headers={"Authorization": f"Bearer {tmdb_api_key}"},
     ) as client:
         for i, tmdb_id in enumerate(new_ids):
             try:
@@ -148,12 +154,15 @@ def embed_movies(db: Session, openai_client: OpenAI) -> dict:
 
 
 async def run_seed_pipeline(
-    db: Session, tmdb_api_key: str, openai_client: OpenAI
+    db: Session,
+    tmdb_api_key: str,
+    openai_client: OpenAI,
+    min_popularity: float = 0.0,
 ) -> None:
     """Run the full seed pipeline: download → fetch → embed."""
-    logger.info("Starting movie seed pipeline")
+    logger.info("Starting movie seed pipeline (min_popularity=%.1f)", min_popularity)
 
-    tmdb_ids = await download_tmdb_export()
+    tmdb_ids = await download_tmdb_export(min_popularity)
     await fetch_and_cache_movies(tmdb_ids, db, tmdb_api_key)
     embed_movies(db, openai_client)
 

@@ -12,12 +12,14 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def _run_seed_pipeline_sync() -> None:
+def _run_seed_pipeline_sync(min_popularity: float) -> None:
     """Wrapper to run the async pipeline from a sync background task."""
     db = SessionLocal()
     try:
         asyncio.run(
-            services.run_seed_pipeline(db, settings.tmdb_api_key, openai_client)
+            services.run_seed_pipeline(
+                db, settings.tmdb_api_key, openai_client, min_popularity
+            )
         )
     except Exception:
         logger.exception("Seed pipeline failed")
@@ -28,10 +30,11 @@ def _run_seed_pipeline_sync() -> None:
 @router.post("/seed-movies", status_code=status.HTTP_202_ACCEPTED)
 async def seed_movies(
     background_tasks: BackgroundTasks,
+    min_popularity: float = 5.0,
     _user_id: str = Depends(get_current_user),
 ):
-    background_tasks.add_task(_run_seed_pipeline_sync)
-    return {"status": "started"}
+    background_tasks.add_task(_run_seed_pipeline_sync, min_popularity)
+    return {"status": "started", "min_popularity": min_popularity}
 
 
 @router.post("/letterboxd")

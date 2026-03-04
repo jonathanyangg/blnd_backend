@@ -47,3 +47,27 @@ def login(email: str, password: str) -> dict:
 
 def get_profile(user_id: str, db: Session) -> Profile | None:
     return db.query(Profile).filter(Profile.id == user_id).first()
+
+
+def update_profile(
+    user_id: str, updates: dict, db: Session
+) -> tuple[Profile | None, bool]:
+    """Update profile fields. Returns (profile, genres_changed)."""
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if not profile:
+        return None, False
+
+    genres_changed = False
+
+    if "display_name" in updates:
+        profile.display_name = updates["display_name"]
+    if "favorite_genres" in updates:
+        old_genres = profile.favorite_genres or []
+        new_genres = updates["favorite_genres"]
+        if set(old_genres) != set(new_genres):
+            genres_changed = True
+        profile.favorite_genres = new_genres
+
+    db.commit()
+    db.refresh(profile)
+    return profile, genres_changed
