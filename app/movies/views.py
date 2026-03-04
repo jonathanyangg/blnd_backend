@@ -8,6 +8,18 @@ from app.movies import schemas, services
 router = APIRouter()
 
 
+@router.get("/trending", response_model=schemas.MovieSearchResult)
+async def get_trending_movies(
+    page: int = Query(default=1, ge=1),
+    _user_id: str = Depends(get_current_user),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+):
+    try:
+        return await services.get_trending_movies(page, tmdb_client)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
+
+
 @router.get("/search", response_model=schemas.MovieSearchResult)
 async def search_movies(
     query: str = Query(min_length=1),

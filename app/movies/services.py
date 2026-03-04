@@ -4,6 +4,36 @@ from sqlalchemy.orm import Session
 from app.movies.models import Movie
 
 
+async def get_trending_movies(page: int, tmdb_client: httpx.AsyncClient) -> dict:
+    """Get trending movies from TMDB (weekly)."""
+    response = await tmdb_client.get("/trending/movie/week", params={"page": page})
+    response.raise_for_status()
+    data = response.json()
+
+    results = []
+    for item in data.get("results", []):
+        year = None
+        if item.get("release_date"):
+            try:
+                year = int(item["release_date"][:4])
+            except (ValueError, IndexError):
+                pass
+
+        results.append(
+            {
+                "tmdb_id": item["id"],
+                "title": item["title"],
+                "year": year,
+                "overview": item.get("overview"),
+                "poster_path": item.get("poster_path"),
+                "genres": [{"id": gid} for gid in item.get("genre_ids", [])],
+                "vote_average": item.get("vote_average"),
+            }
+        )
+
+    return {"results": results, "total_results": data.get("total_results", 0)}
+
+
 async def search_movies(query: str, page: int, tmdb_client: httpx.AsyncClient) -> dict:
     """Search TMDB for movies. No caching — results change over time."""
     response = await tmdb_client.get(
