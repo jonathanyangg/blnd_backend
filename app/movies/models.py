@@ -19,6 +19,11 @@ class Movie(Base):
     runtime: Mapped[int | None] = mapped_column(Integer, nullable=True)
     vote_average: Mapped[float | None] = mapped_column(Float, nullable=True)
     trailer_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    director: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cast: Mapped[list | None] = mapped_column(JSONB, default=list)
+    tagline: Mapped[str | None] = mapped_column(Text, nullable=True)
+    backdrop_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    imdb_id: Mapped[str | None] = mapped_column(String, nullable=True)
     cached_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

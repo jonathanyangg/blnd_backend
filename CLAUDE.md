@@ -44,12 +44,13 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Initial migration pushed: profiles, movies, watched_movies, friendships, groups, group_members, movie_embeddings, pgvector, match_movies RPC
 - Second migration pushed: added taste_bio, favorite_genres, taste_embedding to profiles
 - Third migration pushed: added trailer_url to movies
+- Fourth migration pushed: added director, cast (JSONB), tagline, backdrop_path, imdb_id to movies
 - Auth domain: models (Profile with taste fields), schemas (signup/login/profile + UpdateProfileRequest), services (Supabase Auth + SQLAlchemy), views
 - Movies domain: fully implemented
-  - Model: Movie (SQLAlchemy, matches movies table)
-  - Schemas: MovieResponse (with trailer_url), MovieSearchResult
-  - Services: TMDB search, movie detail fetch with DB caching, YouTube trailer URL fetch
-  - Views: GET /movies/search (TMDB search), GET /movies/{tmdb_id} (cached detail + trailer)
+  - Model: Movie (SQLAlchemy, includes director, cast, tagline, backdrop_path, imdb_id)
+  - Schemas: MovieResponse (all fields including credits), MovieSearchResult
+  - Services: TMDB search, movie detail fetch with DB caching (uses append_to_response=credits,videos for single API call)
+  - Views: GET /movies/search (TMDB search), GET /movies/{tmdb_id} (cached detail + trailer + credits)
   - All endpoints require JWT auth
 - TMDB client lifecycle: async generator dependency in dependencies.py (properly closes httpx client)
 - All domain routers registered in main.py with stub endpoints
@@ -66,6 +67,12 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Services: send_friend_request (by username, prevents self-friending, allows re-request after rejection), accept/reject (addressee only), get_friends (accepted, either party), get_pending_requests (split incoming/outgoing), remove_friend (either party)
   - Views: POST /friends/request, POST /friends/{id}/accept, POST /friends/{id}/reject, GET /friends/, GET /friends/requests, DELETE /friends/{id}
   - All endpoints require JWT auth; no migrations needed (friendships table already exists)
+- Movie seed pipeline (import_data domain): fully implemented
+  - Model: MovieEmbedding (SQLAlchemy, maps to existing movie_embeddings table)
+  - Schemas: SeedStatusResponse
+  - Services: download_tmdb_export (daily JSONL, all non-adult movies), fetch_and_cache_movies (rate-limited, batch commits, skips existing, includes credits), embed_movies (OpenAI text-embedding-3-small, batch 100), run_seed_pipeline (orchestrator)
+  - Views: POST /import/seed-movies (BackgroundTask, returns 202), POST /import/letterboxd (stub)
+  - Pipeline is idempotent — safe to re-run, skips already cached/embedded movies
 
 ### Recommendation Architecture
 - **Movie seed pipeline** (import_data domain):
@@ -80,7 +87,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 
 ### Next Steps
 - [x] Build tracking domain: watch/rate/review CRUD
-- [ ] Build movie seed pipeline: TMDB bulk export → fetch details → embed → store (plan at `_docs/movie-seed-pipeline-plan.md`)
+- [x] Build movie seed pipeline: TMDB bulk export → fetch details → embed → store
 - [ ] Build import_data domain: Letterboxd CSV parser + workflow/flow
 - [ ] Build recommendations domain: taste vectors from user ratings + similarity search via match_movies RPC
 - [x] Build friends domain: request/accept/reject/list
@@ -88,4 +95,5 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 
 ---
 *Last updated: 2026-03-03*
+
 

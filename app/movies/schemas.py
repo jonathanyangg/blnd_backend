@@ -11,6 +11,11 @@ class MovieResponse(BaseModel):
     runtime: int | None = None
     vote_average: float | None = None
     trailer_url: str | None = None
+    director: str | None = None
+    cast: list[dict] = []
+    tagline: str | None = None
+    backdrop_path: str | None = None
+    imdb_id: str | None = None
 
 
 class MovieSearchResult(BaseModel):

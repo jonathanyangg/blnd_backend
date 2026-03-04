@@ -44,39 +44,19 @@ async def get_movie_details(
     if cached:
         return cached
 
-    # Fetch movie details and videos in parallel-ish (sequential for simplicity)
-    response = await tmdb_client.get(f"/movie/{tmdb_id}")
+    # Fetch movie details + credits + videos in one call
+    response = await tmdb_client.get(
+        f"/movie/{tmdb_id}", params={"append_to_response": "credits,videos"}
+    )
     response.raise_for_status()
     tmdb_data = response.json()
 
-    # Fetch trailer
-    trailer_url = await _fetch_trailer_url(tmdb_id, tmdb_client)
-
-    movie = _cache_movie_from_tmdb(tmdb_data, trailer_url, db)
+    movie = _cache_movie_from_tmdb(tmdb_data, db)
     return movie
 
 
-async def _fetch_trailer_url(
-    tmdb_id: int, tmdb_client: httpx.AsyncClient
-) -> str | None:
-    """Fetch the YouTube trailer URL from TMDB videos endpoint."""
-    try:
-        response = await tmdb_client.get(f"/movie/{tmdb_id}/videos")
-        response.raise_for_status()
-        videos = response.json().get("results", [])
-
-        for video in videos:
-            if video.get("site") == "YouTube" and video.get("type") == "Trailer":
-                return f"https://www.youtube.com/watch?v={video['key']}"
-    except httpx.HTTPError:
-        pass
-    return None
-
-
-def _cache_movie_from_tmdb(
-    tmdb_data: dict, trailer_url: str | None, db: Session
-) -> Movie:
-    """Parse TMDB response into a Movie record and save to DB."""
+def _cache_movie_from_tmdb(tmdb_data: dict, db: Session) -> Movie:
+    """Parse TMDB response (with appended credits/videos) into a Movie record."""
     year = None
     if tmdb_data.get("release_date"):
         try:
@@ -85,6 +65,23 @@ def _cache_movie_from_tmdb(
             pass
 
     genres = [{"id": g["id"], "name": g["name"]} for g in tmdb_data.get("genres", [])]
+
+    # Extract director from credits.crew
+    director = None
+    credits = tmdb_data.get("credits", {})
+    for crew_member in credits.get("crew", []):
+        if crew_member.get("job") == "Director":
+            director = crew_member["name"]
+            break
+
+    # Extract top 5 cast
+    cast_list = [
+        {"name": c["name"], "character": c.get("character", "")}
+        for c in credits.get("cast", [])[:5]
+    ]
+
+    # Extract trailer from videos
+    trailer_url = _extract_trailer_url(tmdb_data.get("videos", {}))
 
     movie = Movie(
         tmdb_id=tmdb_data["id"],
@@ -96,8 +93,21 @@ def _cache_movie_from_tmdb(
         runtime=tmdb_data.get("runtime"),
         vote_average=tmdb_data.get("vote_average"),
         trailer_url=trailer_url,
+        director=director,
+        cast=cast_list,
+        tagline=tmdb_data.get("tagline") or None,
+        backdrop_path=tmdb_data.get("backdrop_path"),
+        imdb_id=tmdb_data.get("imdb_id"),
     )
     db.add(movie)
     db.commit()
     db.refresh(movie)
     return movie
+
+
+def _extract_trailer_url(videos_data: dict) -> str | None:
+    """Extract YouTube trailer URL from TMDB videos response."""
+    for video in videos_data.get("results", []):
+        if video.get("site") == "YouTube" and video.get("type") == "Trailer":
+            return f"https://www.youtube.com/watch?v={video['key']}"
+    return None
