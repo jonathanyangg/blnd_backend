@@ -1,5 +1,6 @@
 import logging
 
+import numpy as np
 from openai import OpenAI
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -117,20 +118,14 @@ def compute_average_embedding(user_id: str, db: Session) -> list[float] | None:
     if not rows:
         return None
 
-    dim = 1536
-    weighted_sum = [0.0] * dim
-    total_weight = 0.0
+    ratings = np.array([float(r) for r, _ in rows])
+    embeddings = np.array([e for _, e in rows])
 
-    for rating, embedding in rows:
-        weight = float(rating)
-        total_weight += weight
-        for i in range(dim):
-            weighted_sum[i] += embedding[i] * weight
-
-    if total_weight == 0:
+    if ratings.sum() == 0:
         return None
 
-    return [v / total_weight for v in weighted_sum]
+    weighted_avg = np.average(embeddings, axis=0, weights=ratings)
+    return weighted_avg.tolist()
 
 
 def rebuild_taste_profile(
@@ -148,6 +143,7 @@ def rebuild_taste_profile(
         taste_embedding = compute_average_embedding(user_id, db)
         if not taste_embedding:
             raise Exception("User has no movies rated yet")
+        profile.taste_embedding = taste_embedding
     else:
         # LLM strategy: embed the generated taste bio
         prompt = build_taste_prompt(profile.favorite_genres, movies)
