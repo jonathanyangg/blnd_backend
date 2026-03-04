@@ -80,34 +80,34 @@ Deferred to future release. Tracked but not in current roadmap.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SCHM-01 | TBD | Pending |
-| SCHM-02 | TBD | Pending |
-| SCHM-03 | TBD | Pending |
-| SCHM-04 | TBD | Pending |
-| CSVP-01 | TBD | Pending |
-| CSVP-02 | TBD | Pending |
-| CSVP-03 | TBD | Pending |
-| CSVP-04 | TBD | Pending |
-| CSVP-05 | TBD | Pending |
-| CSVP-06 | TBD | Pending |
-| CSVP-07 | TBD | Pending |
-| TMDB-01 | TBD | Pending |
-| TMDB-02 | TBD | Pending |
-| TMDB-03 | TBD | Pending |
-| IMPT-01 | TBD | Pending |
-| IMPT-02 | TBD | Pending |
-| IMPT-03 | TBD | Pending |
-| IMPT-04 | TBD | Pending |
-| IMPT-05 | TBD | Pending |
-| IMPT-06 | TBD | Pending |
-| INFR-01 | TBD | Pending |
-| INFR-02 | TBD | Pending |
+| SCHM-01 | Phase 1 | Pending |
+| SCHM-02 | Phase 1 | Pending |
+| SCHM-03 | Phase 1 | Pending |
+| SCHM-04 | Phase 1 | Pending |
+| CSVP-01 | Phase 2 | Pending |
+| CSVP-02 | Phase 2 | Pending |
+| CSVP-03 | Phase 2 | Pending |
+| CSVP-04 | Phase 2 | Pending |
+| CSVP-05 | Phase 2 | Pending |
+| CSVP-06 | Phase 2 | Pending |
+| CSVP-07 | Phase 2 | Pending |
+| TMDB-01 | Phase 2 | Pending |
+| TMDB-02 | Phase 2 | Pending |
+| TMDB-03 | Phase 2 | Pending |
+| IMPT-01 | Phase 2 | Pending |
+| IMPT-02 | Phase 2 | Pending |
+| IMPT-03 | Phase 2 | Pending |
+| IMPT-04 | Phase 2 | Pending |
+| IMPT-05 | Phase 2 | Pending |
+| IMPT-06 | Phase 2 | Pending |
+| INFR-01 | Phase 2 | Pending |
+| INFR-02 | Phase 2 | Pending |
 
 **Coverage:**
 - v1 requirements: 22 total
-- Mapped to phases: 0
-- Unmapped: 22
+- Mapped to phases: 22
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-03*
-*Last updated: 2026-03-03 after initial definition*
+*Last updated: 2026-03-03 after roadmap creation*
