@@ -13,7 +13,7 @@ from app.movies.models import Movie
 
 logger = logging.getLogger(__name__)
 
-TMDB_RATE_LIMIT_DELAY = 0.025  # ~40 req/s
+FETCH_CONCURRENCY = 40  # max concurrent TMDB requests (~50 req/s limit)
 FETCH_BATCH_SIZE = 100
 EMBED_BATCH_SIZE = 100
 
@@ -58,7 +58,6 @@ async def fetch_and_cache_movies(
     tmdb_ids: list[int], db: Session, tmdb_api_key: str
 ) -> dict:
     """Fetch movie details from TMDB and cache in DB. Skips existing."""
-    # Get IDs already in DB
     existing_ids = {row[0] for row in db.query(Movie.tmdb_id).all()}
     new_ids = [tid for tid in tmdb_ids if tid not in existing_ids]
     logger.info(
@@ -67,42 +66,53 @@ async def fetch_and_cache_movies(
 
     fetched = 0
     errors = 0
+    semaphore = asyncio.Semaphore(FETCH_CONCURRENCY)
 
-    async with httpx.AsyncClient(
-        base_url="https://api.themoviedb.org/3",
-        headers={"Authorization": f"Bearer {tmdb_api_key}"},
-    ) as client:
-        for i, tmdb_id in enumerate(new_ids):
+    async def _fetch_one(client: httpx.AsyncClient, tmdb_id: int) -> dict | None:
+        async with semaphore:
             try:
                 response = await client.get(
                     f"/movie/{tmdb_id}",
                     params={"append_to_response": "credits"},
                 )
                 if response.status_code == 404:
-                    continue
+                    return None
                 response.raise_for_status()
-                tmdb_data = response.json()
-
-                _cache_movie(tmdb_data, db, commit=False)
-                fetched += 1
-
-                # Batch commit
-                if fetched % FETCH_BATCH_SIZE == 0:
-                    db.commit()
-
+                return response.json()
             except Exception:
-                errors += 1
                 logger.warning("Failed to fetch tmdb_id=%d", tmdb_id, exc_info=True)
+                return None
 
-            # Rate limit
-            await asyncio.sleep(TMDB_RATE_LIMIT_DELAY)
+    # Process in chunks to batch-commit and log progress
+    chunk_size = 500
+    async with httpx.AsyncClient(
+        base_url="https://api.themoviedb.org/3",
+        headers={"Authorization": f"Bearer {tmdb_api_key}"},
+        timeout=30,
+    ) as client:
+        for chunk_start in range(0, len(new_ids), chunk_size):
+            chunk = new_ids[chunk_start : chunk_start + chunk_size]
+            results = await asyncio.gather(*[_fetch_one(client, tid) for tid in chunk])
 
-            # Progress log
-            if (i + 1) % 500 == 0:
-                logger.info("Fetch progress: %d / %d", i + 1, len(new_ids))
+            for tmdb_data in results:
+                if tmdb_data is not None:
+                    try:
+                        _cache_movie(tmdb_data, db, commit=False)
+                        fetched += 1
+                    except Exception:
+                        errors += 1
+                else:
+                    errors += 1
 
-    # Final commit
-    db.commit()
+            db.commit()
+            logger.info(
+                "Fetch progress: %d / %d (fetched=%d, errors=%d)",
+                min(chunk_start + chunk_size, len(new_ids)),
+                len(new_ids),
+                fetched,
+                errors,
+            )
+
     logger.info("Fetched %d movies (%d errors)", fetched, errors)
     return {"fetched": fetched, "errors": errors, "skipped": len(existing_ids)}
 
