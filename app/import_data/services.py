@@ -134,9 +134,11 @@ async def fetch_and_cache_movies(
     return {"fetched": fetched, "errors": errors, "skipped": len(existing_ids)}
 
 
-def embed_movies(db: Session, openai_client: OpenAI) -> dict:
+EMBED_CONCURRENCY = 5
+
+
+async def embed_movies(db: Session, openai_client: OpenAI) -> dict:
     """Embed movies that have an overview but no embedding yet."""
-    # Find movies missing embeddings
     existing_embedding_ids = {row[0] for row in db.query(MovieEmbedding.tmdb_id).all()}
     movies = (
         db.query(Movie).filter(Movie.overview.isnot(None), Movie.overview != "").all()
@@ -149,7 +151,15 @@ def embed_movies(db: Session, openai_client: OpenAI) -> dict:
         len(existing_embedding_ids),
     )
 
-    embedded = 0
+    def _call_openai(texts: list[str]) -> list[list[float]]:
+        response = openai_client.embeddings.create(
+            model="text-embedding-3-small",
+            input=texts,
+        )
+        return [d.embedding for d in response.data]
+
+    # Build all batches
+    batches: list[tuple[list[Movie], list[str]]] = []
     for i in range(0, len(to_embed), EMBED_BATCH_SIZE):
         batch = to_embed[i : i + EMBED_BATCH_SIZE]
         texts = [
@@ -158,22 +168,27 @@ def embed_movies(db: Session, openai_client: OpenAI) -> dict:
             else f"{m.title}: {m.overview}"
             for m in batch
         ]
+        batches.append((batch, texts))
 
-        response = openai_client.embeddings.create(
-            model="text-embedding-3-small",
-            input=texts,
+    # Process in waves of EMBED_CONCURRENCY
+    embedded = 0
+    for wave_start in range(0, len(batches), EMBED_CONCURRENCY):
+        wave = batches[wave_start : wave_start + EMBED_CONCURRENCY]
+        results = await asyncio.gather(
+            *[asyncio.to_thread(_call_openai, texts) for _, texts in wave]
         )
 
-        for movie, embedding_data in zip(batch, response.data):
-            db.add(
-                MovieEmbedding(
-                    tmdb_id=movie.tmdb_id,
-                    embedding=embedding_data.embedding,
+        for (batch, _), embeddings in zip(wave, results):
+            for movie, emb in zip(batch, embeddings):
+                db.add(
+                    MovieEmbedding(
+                        tmdb_id=movie.tmdb_id,
+                        embedding=emb,
+                    )
                 )
-            )
+            embedded += len(batch)
 
         db.commit()
-        embedded += len(batch)
         logger.info("Embed progress: %d / %d", embedded, len(to_embed))
 
     logger.info("Embedded %d movies", embedded)
@@ -191,7 +206,7 @@ async def run_seed_pipeline(
 
     tmdb_ids = await download_tmdb_export(min_popularity)
     await fetch_and_cache_movies(tmdb_ids, db, tmdb_api_key)
-    embed_movies(db, openai_client)
+    await embed_movies(db, openai_client)
 
     logger.info("Seed pipeline complete")
 
