@@ -1,4 +1,7 @@
+import json
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -13,7 +16,15 @@ from app.watchlist.views import router as watchlist_router
 
 logging.basicConfig(level=logging.INFO)
 
-app = FastAPI(title="BLND", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    with open("openapi.json", "w") as f:
+        json.dump(_app.openapi(), f, indent=2)
+    yield
+
+
+app = FastAPI(title="BLND", version="0.1.0", lifespan=lifespan)
 
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(movies_router, prefix="/movies", tags=["movies"])

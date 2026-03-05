@@ -52,7 +52,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Auth domain: models (Profile with taste fields), schemas (signup/login/profile + UpdateProfileRequest), services (Supabase Auth + SQLAlchemy), views
 - Movies domain: fully implemented
   - Model: Movie (SQLAlchemy, includes director, cast, tagline, backdrop_path, imdb_id)
-  - Schemas: MovieResponse (all fields including credits), MovieSearchResult
+  - Schemas: MovieResponse (all fields including credits, vote_average scaled from TMDB 0-10 to 0-5 via Pydantic validator), MovieSearchResult
   - Services: TMDB search, movie detail fetch with DB caching (uses append_to_response=credits,videos for single API call)
   - Views: GET /movies/trending (TMDB weekly trending), GET /movies/search (TMDB search), GET /movies/{tmdb_id} (cached detail + trailer + credits)
   - All endpoints require JWT auth
@@ -74,7 +74,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Movie seed pipeline (import_data domain): fully implemented
   - Model: MovieEmbedding (SQLAlchemy, maps to existing movie_embeddings table)
   - Schemas: SeedStatusResponse
-  - Services: download_tmdb_export (daily JSONL, all non-adult movies), fetch_and_cache_movies (rate-limited, batch commits, skips existing, includes credits), embed_movies (OpenAI text-embedding-3-small, batch 100), run_seed_pipeline (orchestrator)
+  - Services: download_tmdb_export (daily JSONL, all non-adult movies), fetch_and_cache_movies (concurrent via asyncio.Semaphore(40) + gather, 500-movie chunks, batch commits, skips existing, includes credits), embed_movies (OpenAI text-embedding-3-small, batch 100), run_seed_pipeline (orchestrator)
   - Views: POST /import/seed-movies (BackgroundTask, returns 202)
   - Pipeline is idempotent — safe to re-run, skips already cached/embedded movies
 - Letterboxd import (import_data domain): fully implemented
@@ -87,7 +87,8 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Models: Watchlist, WatchlistMovie (watchlist_id + tmdb_id + added_by)
   - Schemas: AddToWatchlistRequest, WatchlistMovieResponse, WatchlistResponse
   - Services: get_watchlist (paginated), add_to_watchlist (auto-cache from TMDB), remove_from_watchlist
-  - Views: GET/POST/DELETE /tracking/watchlist (personal), GET/POST/DELETE /groups/{id}/watchlist (group)
+  - Views: GET/POST/DELETE /watchlist/ (personal, own router), GET/POST/DELETE /groups/{id}/watchlist (group)
+  - Personal watchlist moved from /tracking/watchlist to /watchlist/ (separate domain + router to avoid FastAPI route conflict with /tracking/{tmdb_id})
   - Signup auto-creates a personal watchlist for each new user
   - Letterboxd import updated to use watchlist_id instead of user_id
 - Groups domain: fully implemented
@@ -114,12 +115,16 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Added update_profile service (updates display_name/favorite_genres, detects genre changes)
   - Added PATCH /auth/profile endpoint (triggers background taste rebuild on genre change)
   - Fixed GET /auth/me to include taste_bio and favorite_genres in response
+- MovieResponse vote_average scaled from TMDB 0–10 to 0–5 via Pydantic field_validator (DB stores raw value)
+- Watchlist endpoints extracted to own domain (`app/watchlist/`) at `/watchlist/` prefix (was `/tracking/watchlist`, conflicted with `/tracking/{tmdb_id}`)
+- Seed pipeline TMDB fetching parallelized: asyncio.Semaphore(40) + gather in 500-movie chunks (was sequential ~40 req/s)
+- OpenAPI spec auto-export: `openapi.json` written to project root on server startup via FastAPI lifespan handler (for frontend context)
 
 ### Recommendation Architecture
 - **Movie seed pipeline** (import_data domain):
   1. Download TMDB daily export (`https://files.tmdb.org/p/exports/movie_ids_MM_DD_YYYY.json.gz`) — no auth needed
   2. Filter to `popularity > threshold` and `adult=false` (~10-50K movies)
-  3. Fetch full details per movie via TMDB API (`/movie/{id}?append_to_response=videos`) — rate limit ~40 req/s
+  3. Fetch full details per movie via TMDB API (`/movie/{id}?append_to_response=credits`) — concurrent (40 in-flight via semaphore, 500-movie chunks)
   4. Cache in `movies` table via SQLAlchemy
   5. Embed overviews with OpenAI `text-embedding-3-small` → store in `movie_embeddings` table
 - **Taste embedding** (switchable `EMBEDDING_STRATEGY` in `app/recommendations/services.py`):
@@ -146,6 +151,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 
 ---
 - **Rating scale**: 0.5–5.0 in 0.5 increments (enforced by DB check constraint on watched_movies)
+- **TMDB vote_average**: stored as raw 0–10 in DB, scaled to 0–5 (÷2, 1 decimal) in MovieResponse via Pydantic field_validator. Ranking code uses raw DB value.
 
 ### Future: Algorithm Feedback Loop
 - **You cannot fine-tune OpenAI embedding models** — their weights are frozen
