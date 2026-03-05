@@ -1,12 +1,15 @@
 import asyncio
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, status
+import httpx
+from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile, status
+from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import SessionLocal
-from app.dependencies import get_current_user, openai_client
-from app.import_data import services
+from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
+from app.import_data import services, workflows
+from app.import_data.schemas import ImportSummaryResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -37,6 +40,13 @@ async def seed_movies(
     return {"status": "started", "min_popularity": min_popularity}
 
 
-@router.post("/letterboxd")
-async def import_letterboxd():
-    return {"imported": 0}
+@router.post("/letterboxd", response_model=ImportSummaryResponse)
+async def import_letterboxd(
+    file: UploadFile = File(...),
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+):
+    file_bytes = await file.read()
+    result = await workflows.run_letterboxd_import(user_id, file_bytes, db, tmdb_client)
+    return result
