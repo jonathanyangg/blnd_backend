@@ -1,7 +1,90 @@
+import numpy as np
 import httpx
 from sqlalchemy.orm import Session
 
+from app.auth.models import Profile
+from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
+from app.recommendations.ranking import (
+    W_CAST,
+    W_CONSENSUS,
+    W_DIRECTOR,
+    W_GENRE,
+    W_SIMILARITY,
+    _cast_boost,
+    _consensus_score,
+    _director_boost,
+    _genre_overlap,
+)
+from app.recommendations.services import get_user_signal_context
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    va, vb = np.array(a), np.array(b)
+    denom = np.linalg.norm(va) * np.linalg.norm(vb)
+    if denom == 0:
+        return 0.0
+    return float(np.dot(va, vb) / denom)
+
+
+def _compute_score(
+    movie: Movie,
+    similarity: float,
+    user_genres: list[str],
+    top_directors: set[str],
+    top_cast: set[str],
+) -> float:
+    genre = _genre_overlap(movie.genres or [], user_genres)
+    consensus = _consensus_score(movie.vote_average)
+    director = _director_boost(movie.director, top_directors)
+    cast = _cast_boost(movie.cast or [], top_cast)
+    return round(
+        W_SIMILARITY * similarity
+        + W_GENRE * genre
+        + W_CONSENSUS * consensus
+        + W_DIRECTOR * director
+        + W_CAST * cast,
+        4,
+    )
+
+
+def compute_match_scores(
+    tmdb_ids: list[int], user_id: str, db: Session
+) -> dict[int, float]:
+    """Compute match scores for a list of movies against a user's taste profile.
+
+    Returns {tmdb_id: score} for movies that have embeddings. Missing ones are omitted.
+    """
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if not profile or profile.taste_embedding is None:
+        return {}
+
+    taste_emb = list(profile.taste_embedding)
+
+    # Batch-fetch embeddings
+    embeddings = (
+        db.query(MovieEmbedding).filter(MovieEmbedding.tmdb_id.in_(tmdb_ids)).all()
+    )
+    emb_map = {e.tmdb_id: list(e.embedding) for e in embeddings}
+
+    # Batch-fetch movie records for ranking signals
+    movies = db.query(Movie).filter(Movie.tmdb_id.in_(tmdb_ids)).all()
+    movie_map = {m.tmdb_id: m for m in movies}
+
+    user_genres, top_directors, top_cast = get_user_signal_context(user_id, db)
+
+    scores: dict[int, float] = {}
+    for tid in tmdb_ids:
+        movie_emb = emb_map.get(tid)
+        movie = movie_map.get(tid)
+        if not movie_emb or not movie:
+            continue
+        similarity = _cosine_similarity(taste_emb, movie_emb)
+        scores[tid] = _compute_score(
+            movie, similarity, user_genres, top_directors, top_cast
+        )
+
+    return scores
 
 
 async def get_trending_movies(page: int, tmdb_client: httpx.AsyncClient) -> dict:

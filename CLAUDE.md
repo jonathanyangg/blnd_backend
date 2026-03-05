@@ -53,8 +53,9 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Movies domain: fully implemented
   - Model: Movie (SQLAlchemy, includes director, cast, tagline, backdrop_path, imdb_id)
   - Schemas: MovieResponse (all fields including credits, vote_average scaled from TMDB 0-10 to 0-5 via Pydantic validator), MovieSearchResult
-  - Services: TMDB search, movie detail fetch with DB caching (uses append_to_response=credits,videos for single API call)
-  - Views: GET /movies/trending (TMDB weekly trending), GET /movies/search (TMDB search), GET /movies/{tmdb_id} (cached detail + trailer + credits)
+  - Services: TMDB search, movie detail fetch with DB caching (uses append_to_response=credits,videos for single API call), `compute_match_scores()` batch-computes personalized scores for any list of tmdb_ids
+  - Views: GET /movies/trending (TMDB weekly trending, includes match_score per movie), GET /movies/search (TMDB search, no score — computed on detail view instead), GET /movies/{tmdb_id} (cached detail + trailer + credits + match_score)
+  - `match_score` = same ranking formula as recommendations (0.50*cosine + 0.20*genre + 0.20*consensus + 0.05*director + 0.05*cast), null if user has no taste profile
   - All endpoints require JWT auth
 - TMDB client lifecycle: async generator dependency in dependencies.py (properly closes httpx client)
 - All domain routers registered in main.py with stub endpoints
@@ -74,7 +75,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Movie seed pipeline (import_data domain): fully implemented
   - Model: MovieEmbedding (SQLAlchemy, maps to existing movie_embeddings table)
   - Schemas: SeedStatusResponse
-  - Services: download_tmdb_export (daily JSONL, all non-adult movies), fetch_and_cache_movies (concurrent via asyncio.Semaphore(40) + gather, 500-movie chunks, batch commits, skips existing, includes credits), embed_movies (OpenAI text-embedding-3-small, batch 100), run_seed_pipeline (orchestrator)
+  - Services: download_tmdb_export (daily JSONL, all non-adult movies), fetch_and_cache_movies (concurrent via asyncio.Semaphore(20) + gather, 500-movie chunks, retry on 429, batch commits, skips existing, includes credits+videos), embed_movies (OpenAI text-embedding-3-small, batch 2000), run_seed_pipeline (orchestrator)
   - Views: POST /import/seed-movies (BackgroundTask, returns 202)
   - Pipeline is idempotent — safe to re-run, skips already cached/embedded movies
 - Letterboxd import (import_data domain): fully implemented
@@ -117,14 +118,16 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Fixed GET /auth/me to include taste_bio and favorite_genres in response
 - MovieResponse vote_average scaled from TMDB 0–10 to 0–5 via Pydantic field_validator (DB stores raw value)
 - Watchlist endpoints extracted to own domain (`app/watchlist/`) at `/watchlist/` prefix (was `/tracking/watchlist`, conflicted with `/tracking/{tmdb_id}`)
-- Seed pipeline TMDB fetching parallelized: asyncio.Semaphore(40) + gather in 500-movie chunks (was sequential ~40 req/s)
-- OpenAPI spec auto-export: `openapi.json` written to project root on server startup via FastAPI lifespan handler (for frontend context)
+- Seed pipeline: TMDB fetching parallelized (Semaphore(20) + gather, 500-movie chunks, retry on 429), now fetches `credits,videos` (trailer extraction), embed batch size 2000
+- Seed pipeline uses `asyncio.ensure_future()` instead of `BackgroundTasks` (avoids `asyncio.run()` inside existing event loop)
+- OpenAPI spec auto-export: `openapi.json` written to project root on first `/health` hit (for frontend context)
+- Match scores on trending + detail: `MovieResponse.match_score` computed via `compute_match_scores()` in `movies/services.py` — reuses ranking weights from `recommendations/ranking.py`
 
 ### Recommendation Architecture
 - **Movie seed pipeline** (import_data domain):
   1. Download TMDB daily export (`https://files.tmdb.org/p/exports/movie_ids_MM_DD_YYYY.json.gz`) — no auth needed
   2. Filter to `popularity > threshold` and `adult=false` (~10-50K movies)
-  3. Fetch full details per movie via TMDB API (`/movie/{id}?append_to_response=credits`) — concurrent (40 in-flight via semaphore, 500-movie chunks)
+  3. Fetch full details per movie via TMDB API (`/movie/{id}?append_to_response=credits,videos`) — concurrent (20 in-flight via semaphore, 500-movie chunks, retry on 429)
   4. Cache in `movies` table via SQLAlchemy
   5. Embed overviews with OpenAI `text-embedding-3-small` → store in `movie_embeddings` table
 - **Taste embedding** (switchable `EMBEDDING_STRATEGY` in `app/recommendations/services.py`):
@@ -137,6 +140,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - **Auto-refresh triggers**: rating changes (track/update/delete) and genre updates trigger background taste rebuild
 - **Ongoing sync**: TMDB Changes API (`/movie/changes`) for daily updates to cached movies
 - **On-demand caching**: Movies found via search/Letterboxd import also get cached + embedded
+- **Match scores**: `compute_match_scores()` in `movies/services.py` — batch cosine similarity (numpy) + full ranking formula. Used by trending (all results) and detail view (single movie). Search skips scoring for latency.
 
 ### Next Steps
 - [x] Build tracking domain: watch/rate/review CRUD
@@ -160,6 +164,8 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - **Learning to Rank** (long-term, 500+ rating triples): XGBoost with `rank:ndcg` objective. Features: cosine similarity, genre overlap, director match, vote_average, user avg rating. Scores 200 candidates in microseconds.
 - **Key metrics to track with `source` column**: positive rate (recs rated >= 4 / total recs tracked), watchlist add rate, intra-list diversity
 - **Recency weighting**: optionally weight more recent ratings higher in the average embedding
+
+- [x] Add match_score to trending + detail endpoints
 
 *Last updated: 2026-03-05*
 

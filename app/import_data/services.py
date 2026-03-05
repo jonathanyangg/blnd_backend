@@ -13,9 +13,10 @@ from app.movies.models import Movie
 
 logger = logging.getLogger(__name__)
 
-FETCH_CONCURRENCY = 40  # max concurrent TMDB requests (~50 req/s limit)
+FETCH_CONCURRENCY = 20  # max concurrent TMDB requests
+MAX_RETRIES = 3
 FETCH_BATCH_SIZE = 100
-EMBED_BATCH_SIZE = 100
+EMBED_BATCH_SIZE = 2000
 
 
 async def download_tmdb_export(min_popularity: float = 0.0) -> list[int]:
@@ -70,18 +71,34 @@ async def fetch_and_cache_movies(
 
     async def _fetch_one(client: httpx.AsyncClient, tmdb_id: int) -> dict | None:
         async with semaphore:
-            try:
-                response = await client.get(
-                    f"/movie/{tmdb_id}",
-                    params={"append_to_response": "credits"},
-                )
-                if response.status_code == 404:
+            for attempt in range(MAX_RETRIES):
+                try:
+                    response = await client.get(
+                        f"/movie/{tmdb_id}",
+                        params={"append_to_response": "credits,videos"},
+                    )
+                    if response.status_code == 404:
+                        return None
+                    if response.status_code == 429:
+                        retry_after = float(response.headers.get("Retry-After", "2"))
+                        await asyncio.sleep(retry_after)
+                        continue
+                    response.raise_for_status()
+                    return response.json()
+                except httpx.HTTPStatusError:
+                    if attempt < MAX_RETRIES - 1:
+                        await asyncio.sleep(2**attempt)
+                        continue
+                    logger.warning(
+                        "Failed to fetch tmdb_id=%d after %d retries",
+                        tmdb_id,
+                        MAX_RETRIES,
+                    )
                     return None
-                response.raise_for_status()
-                return response.json()
-            except Exception:
-                logger.warning("Failed to fetch tmdb_id=%d", tmdb_id, exc_info=True)
-                return None
+                except Exception:
+                    logger.warning("Failed to fetch tmdb_id=%d", tmdb_id, exc_info=True)
+                    return None
+            return None
 
     # Process in chunks to batch-commit and log progress
     chunk_size = 500
@@ -204,6 +221,13 @@ def _cache_movie(tmdb_data: dict, db: Session, *, commit: bool = True) -> Movie:
         for c in credits.get("cast", [])[:5]
     ]
 
+    # Extract trailer from videos
+    trailer_url = None
+    for video in tmdb_data.get("videos", {}).get("results", []):
+        if video.get("site") == "YouTube" and video.get("type") == "Trailer":
+            trailer_url = f"https://www.youtube.com/watch?v={video['key']}"
+            break
+
     movie = Movie(
         tmdb_id=tmdb_data["id"],
         title=tmdb_data["title"],
@@ -213,7 +237,7 @@ def _cache_movie(tmdb_data: dict, db: Session, *, commit: bool = True) -> Movie:
         genres=genres,
         runtime=tmdb_data.get("runtime"),
         vote_average=tmdb_data.get("vote_average"),
-        trailer_url=None,
+        trailer_url=trailer_url,
         director=director,
         cast=cast_list,
         tagline=tmdb_data.get("tagline") or None,

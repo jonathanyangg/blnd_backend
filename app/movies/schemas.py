@@ -24,6 +24,7 @@ class MovieResponse(BaseModel):
     tagline: str | None = None
     backdrop_path: str | None = None
     imdb_id: str | None = None
+    match_score: float | None = None
 
 
 class MovieSearchResult(BaseModel):
