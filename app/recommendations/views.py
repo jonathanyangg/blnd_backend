@@ -26,8 +26,3 @@ def refresh_recommendations(
     # Force rebuild taste profile synchronously, then return fresh recs
     services.rebuild_taste_profile(user_id, db, openai_client)
     return services.get_recommendations(user_id, db, openai_client, limit, 0)
-
-
-@router.get("/group/{group_id}")
-async def get_group_recommendations(group_id: int):
-    return {"recommendations": []}

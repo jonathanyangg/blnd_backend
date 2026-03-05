@@ -8,6 +8,7 @@ from datetime import date
 import httpx
 from sqlalchemy.orm import Session
 
+from app.auth.models import Profile
 from app.import_data.schemas import ImportSummaryResponse, FilmRecord
 from app.movies.services import get_movie_details
 from app.tracking.models import WatchedMovie, WatchlistMovie
@@ -135,6 +136,9 @@ async def run_letterboxd_import(
     tmdb_client: httpx.AsyncClient,
 ) -> ImportSummaryResponse:
     """Parse a Letterboxd export zip, resolve films, and import to DB."""
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    watchlist_id = profile.watchlist_id if profile else None
+
     merged = _parse_csvs(file_bytes)
     logger.info("Parsed %d unique films from Letterboxd export", len(merged))
 
@@ -178,15 +182,16 @@ async def run_letterboxd_import(
                             review=record.review,
                             watched_date=record.watched_date,
                             liked=record.liked,
+                            source="letterboxd_import",
                         )
                     )
                     imported += 1
 
-            if record.in_watchlist:
+            if record.in_watchlist and watchlist_id:
                 existing_wl = (
                     db.query(WatchlistMovie)
                     .filter(
-                        WatchlistMovie.user_id == user_id,
+                        WatchlistMovie.watchlist_id == watchlist_id,
                         WatchlistMovie.tmdb_id == tmdb_id,
                     )
                     .first()
@@ -194,9 +199,11 @@ async def run_letterboxd_import(
                 if not existing_wl:
                     db.add(
                         WatchlistMovie(
-                            user_id=user_id,
+                            watchlist_id=watchlist_id,
                             tmdb_id=tmdb_id,
+                            added_by=user_id,
                             added_date=record.watchlist_date,
+                            source="letterboxd_import",
                         )
                     )
                     imported += 1

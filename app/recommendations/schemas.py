@@ -10,6 +10,7 @@ class RecommendedMovieResponse(BaseModel):
     genres: list[dict] = []
     director: str | None = None
     similarity: float
+    score: float
 
 
 class RecommendationsResponse(BaseModel):

@@ -45,12 +45,16 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Second migration pushed: added taste_bio, favorite_genres, taste_embedding to profiles
 - Third migration pushed: added trailer_url to movies
 - Fourth migration pushed: added director, cast (JSONB), tagline, backdrop_path, imdb_id to movies
+- Fifth migration pushed: remote schema sync
+- Sixth migration pushed: added liked column to watched_movies
+- Seventh migration pushed: created watchlist_movies table
+- Eighth migration pushed: standalone watchlists table, watchlist_id on profiles/groups, recreated watchlist_movies with watchlist_id FK
 - Auth domain: models (Profile with taste fields), schemas (signup/login/profile + UpdateProfileRequest), services (Supabase Auth + SQLAlchemy), views
 - Movies domain: fully implemented
   - Model: Movie (SQLAlchemy, includes director, cast, tagline, backdrop_path, imdb_id)
   - Schemas: MovieResponse (all fields including credits), MovieSearchResult
   - Services: TMDB search, movie detail fetch with DB caching (uses append_to_response=credits,videos for single API call)
-  - Views: GET /movies/search (TMDB search), GET /movies/{tmdb_id} (cached detail + trailer + credits)
+  - Views: GET /movies/trending (TMDB weekly trending), GET /movies/search (TMDB search), GET /movies/{tmdb_id} (cached detail + trailer + credits)
   - All endpoints require JWT auth
 - TMDB client lifecycle: async generator dependency in dependencies.py (properly closes httpx client)
 - All domain routers registered in main.py with stub endpoints
@@ -71,17 +75,41 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Model: MovieEmbedding (SQLAlchemy, maps to existing movie_embeddings table)
   - Schemas: SeedStatusResponse
   - Services: download_tmdb_export (daily JSONL, all non-adult movies), fetch_and_cache_movies (rate-limited, batch commits, skips existing, includes credits), embed_movies (OpenAI text-embedding-3-small, batch 100), run_seed_pipeline (orchestrator)
-  - Views: POST /import/seed-movies (BackgroundTask, returns 202), POST /import/letterboxd (stub)
+  - Views: POST /import/seed-movies (BackgroundTask, returns 202)
   - Pipeline is idempotent — safe to re-run, skips already cached/embedded movies
+- Letterboxd import (import_data domain): fully implemented
+  - Schemas: FilmRecord (parsed film from CSV), ImportSummaryResponse
+  - Workflows: run_letterboxd_import — parses zip of 5 CSVs (watched, ratings, reviews, likes, watchlist), deduplicates by Letterboxd URI, resolves TMDB IDs via fuzzy title match, caches movies, writes WatchedMovie + WatchlistMovie entries, single batch commit
+  - Views: POST /import/letterboxd (file upload, returns import summary)
+  - Per-movie error isolation — one failure doesn't abort the import
+- Watchlist system: fully implemented
+  - Migration: standalone `watchlists` table, `watchlist_id` FK on profiles and groups, `watchlist_movies` with `watchlist_id` FK (replaces old `user_id` FK)
+  - Models: Watchlist, WatchlistMovie (watchlist_id + tmdb_id + added_by)
+  - Schemas: AddToWatchlistRequest, WatchlistMovieResponse, WatchlistResponse
+  - Services: get_watchlist (paginated), add_to_watchlist (auto-cache from TMDB), remove_from_watchlist
+  - Views: GET/POST/DELETE /tracking/watchlist (personal), GET/POST/DELETE /groups/{id}/watchlist (group)
+  - Signup auto-creates a personal watchlist for each new user
+  - Letterboxd import updated to use watchlist_id instead of user_id
+- Groups domain: fully implemented
+  - Models: Group (id, name, created_by, watchlist_id), GroupMember (composite PK: group_id + user_id)
+  - Schemas: CreateGroupRequest, AddMemberRequest, GroupMemberResponse, GroupResponse, GroupDetailResponse, GroupListResponse, GroupRecMovieResponse, GroupRecommendationsResponse
+  - Services: create_group (with linked watchlist), list_groups, get_group, add_member (by username, 10-member cap), kick_member (can't kick owner), leave_group (transfers ownership), delete_group (creator only, cascade)
+  - Views: POST /groups/, GET /groups/, GET /groups/{id}, DELETE /groups/{id}, POST /groups/{id}/members, POST /groups/{id}/members/{uid}/kick, POST /groups/{id}/leave, GET /groups/{id}/recommendations, GET/POST/DELETE /groups/{id}/watchlist
+  - Group recommendations: averages members' top-rated movie embeddings via pgvector match_movies RPC, excludes all members' watched movies
+- Tracking domain: added `liked` field to WatchedMovieResponse schema and _to_response
+- Recommendations: fixed bug where average strategy never persisted taste_embedding to profile, replaced pure Python vector math with numpy
 - Recommendations domain: fully implemented
-  - Schemas: RecommendedMovieResponse (movie fields + similarity score), RecommendationsResponse (results + taste_bio)
+  - Schemas: RecommendedMovieResponse (movie fields + similarity + score), RecommendationsResponse (results + taste_bio)
   - Services: dual embedding strategy (switchable via `EMBEDDING_STRATEGY` in services.py):
     - `"average"` (current default): weighted average of user's top-rated movie embeddings from movie_embeddings table — compares apples to apples
     - `"llm"`: gpt-4o-mini generates ideal movie synopsis → embedded with text-embedding-3-small
     - Both strategies still generate taste bio via gpt-4o-mini for display
-  - get_recommendations: pgvector similarity via match_movies RPC (cast to vector(1536)), excludes watched, paginated
+  - get_recommendations: pgvector candidate generation (200 items) → Python re-ranking with structured signals → paginated results
+  - Re-ranking layer (`app/recommendations/ranking.py`): `rerank_candidates()` scores each candidate as weighted sum of cosine_similarity (0.50), genre_overlap (0.20), consensus/vote_average (0.20), director_boost (0.05), cast_boost (0.05)
   - Views: GET /recommendations/me (returns recs, builds taste profile on first call if needed), POST /recommendations/me/refresh (force rebuild + fresh recs)
   - Taste profile auto-rebuilds in background when: user rates/updates/deletes a tracked movie, or updates favorite_genres via PATCH /auth/profile
+- Ninth migration: added `source` column to watched_movies and watchlist_movies (tracks origin: 'manual', 'recommendation', 'letterboxd_import')
+- Recommendation source tracking: TrackMovieRequest and AddToWatchlistRequest accept `source` field, Letterboxd import sets `source="letterboxd_import"`
 - Auth domain updates:
   - Added update_profile service (updates display_name/favorite_genres, detects genre changes)
   - Added PATCH /auth/profile endpoint (triggers background taste rebuild on genre change)
@@ -98,7 +126,9 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - `"average"` (default): weighted average of top 25 rated movie embeddings — same embedding space as movie_embeddings, higher similarity scores
   - `"llm"`: gpt-4o-mini generates ideal movie synopsis, embedded with text-embedding-3-small
   - Both still generate taste bio for display via gpt-4o-mini
-- **Recommendations** = user taste embedding vs movie embeddings via `match_movies` RPC (pgvector cosine similarity, `cast(:param AS vector(1536))`)
+- **Candidate generation** = user taste embedding vs movie embeddings via `match_movies` RPC (pgvector cosine similarity, `cast(:param AS vector(1536))`) — over-fetches 200 candidates
+- **Re-ranking** (`app/recommendations/ranking.py`): `final_score = 0.50*cosine + 0.20*genre_jaccard + 0.20*consensus + 0.05*director + 0.05*cast`
+- **Source tracking**: `source` column on watched_movies/watchlist_movies tracks where user found the movie ('manual', 'recommendation', 'letterboxd_import')
 - **Auto-refresh triggers**: rating changes (track/update/delete) and genre updates trigger background taste rebuild
 - **Ongoing sync**: TMDB Changes API (`/movie/changes`) for daily updates to cached movies
 - **On-demand caching**: Movies found via search/Letterboxd import also get cached + embedded
@@ -106,22 +136,26 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 ### Next Steps
 - [x] Build tracking domain: watch/rate/review CRUD
 - [x] Build movie seed pipeline: TMDB bulk export → fetch details → embed → store
-- [ ] Build import_data domain: Letterboxd CSV parser + workflow/flow
+- [x] Build import_data domain: Letterboxd CSV parser + workflow
 - [x] Build recommendations domain: taste vectors from user ratings + similarity search via match_movies RPC
 - [x] Build friends domain: request/accept/reject/list
-- [ ] Build groups domain: CRUD + group recommendations
+- [x] Build groups domain: CRUD + group recommendations + group watchlists
+- [x] Build watchlist system: standalone watchlists shared by users and groups
+- [x] Add recommendation re-ranking layer (genre, consensus, director, cast signals)
+- [x] Add recommendation source tracking (`source` column on watched/watchlist movies)
 
 ---
 - **Rating scale**: 0.5–5.0 in 0.5 increments (enforced by DB check constraint on watched_movies)
 
-### Future: Hybrid Search for Recommendations
-The `"average"` embedding strategy works well for semantic similarity but misses explicit signals. Layer in hybrid search to boost results that match on structured metadata:
-- **Genre boosting**: boost movies sharing genres with user's favorite_genres or top-rated movies' genres
-- **Director boosting**: boost movies by directors the user has rated highly
-- **Cast boosting**: boost movies starring actors from the user's top-rated films
-- **Recency weighting**: optionally weight more recent ratings higher in the average
-- Implementation approach: score = `alpha * cosine_similarity + beta * genre_overlap + gamma * director_match`. Tune weights empirically. Could be done in SQL (post-filter/re-rank) or in Python after the pgvector query returns candidates.
+### Future: Algorithm Feedback Loop
+- **You cannot fine-tune OpenAI embedding models** — their weights are frozen
+- **Linear adapter** (near-term, once we have data): train a small 1536x1536 matrix that re-projects embeddings using (positive, negative) pairs from user ratings. LlamaIndex has an open-source implementation. Trains on CPU in minutes with ~500 examples.
+- **Collaborative filtering** (medium-term, 50+ users): `implicit` library alternating least squares matrix factorization on user-item interactions. Train weekly as batch job, blend CF scores with content-based scores.
+- **Learning to Rank** (long-term, 500+ rating triples): XGBoost with `rank:ndcg` objective. Features: cosine similarity, genre overlap, director match, vote_average, user avg rating. Scores 200 candidates in microseconds.
+- **Key metrics to track with `source` column**: positive rate (recs rated >= 4 / total recs tracked), watchlist add rate, intra-list diversity
+- **Recency weighting**: optionally weight more recent ratings higher in the average embedding
 
-*Last updated: 2026-03-04*
+*Last updated: 2026-03-05*
+
 
 

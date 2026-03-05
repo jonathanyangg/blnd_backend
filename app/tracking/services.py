@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.movies.models import Movie
 from app.movies.services import get_movie_details
-from app.tracking.models import WatchedMovie
+from app.tracking.models import WatchedMovie, WatchlistMovie
 from app.tracking.schemas import UpdateTrackingRequest
 
 
@@ -19,6 +19,7 @@ async def track_movie(
     watched_date: date | None,
     db: Session,
     tmdb_client: httpx.AsyncClient,
+    source: str = "manual",
 ) -> dict:
     """Track a movie — upserts if already tracked."""
     # Ensure movie is cached (FK constraint)
@@ -47,6 +48,7 @@ async def track_movie(
             rating=rating,
             review=review,
             watched_date=watched_date,
+            source=source,
         )
         db.add(entry)
         db.commit()
@@ -132,6 +134,101 @@ def delete_watched_movie(user_id: str, tmdb_id: int, db: Session) -> None:
         )
     db.delete(entry)
     db.commit()
+
+
+def get_watchlist(
+    watchlist_id: int, db: Session, limit: int = 20, offset: int = 0
+) -> dict:
+    """Get paginated watchlist movies."""
+    total = (
+        db.query(func.count(WatchlistMovie.id))
+        .filter(WatchlistMovie.watchlist_id == watchlist_id)
+        .scalar()
+    )
+
+    rows = (
+        db.query(WatchlistMovie, Movie)
+        .join(Movie, WatchlistMovie.tmdb_id == Movie.tmdb_id)
+        .filter(WatchlistMovie.watchlist_id == watchlist_id)
+        .order_by(WatchlistMovie.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    results = [_watchlist_to_response(entry, movie) for entry, movie in rows]
+    return {"results": results, "total": total or 0}
+
+
+async def add_to_watchlist(
+    watchlist_id: int,
+    tmdb_id: int,
+    user_id: str,
+    db: Session,
+    tmdb_client: httpx.AsyncClient,
+    source: str = "manual",
+) -> dict:
+    """Add a movie to a watchlist, auto-caching from TMDB."""
+    await get_movie_details(tmdb_id, db, tmdb_client)
+
+    existing = (
+        db.query(WatchlistMovie)
+        .filter(
+            WatchlistMovie.watchlist_id == watchlist_id,
+            WatchlistMovie.tmdb_id == tmdb_id,
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Movie already in watchlist",
+        )
+
+    entry = WatchlistMovie(
+        watchlist_id=watchlist_id,
+        tmdb_id=tmdb_id,
+        added_by=user_id,
+        source=source,
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+
+    movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+    return _watchlist_to_response(entry, movie)
+
+
+def remove_from_watchlist(watchlist_id: int, tmdb_id: int, db: Session) -> None:
+    """Remove a movie from a watchlist."""
+    entry = (
+        db.query(WatchlistMovie)
+        .filter(
+            WatchlistMovie.watchlist_id == watchlist_id,
+            WatchlistMovie.tmdb_id == tmdb_id,
+        )
+        .first()
+    )
+    if not entry:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Movie not in watchlist",
+        )
+    db.delete(entry)
+    db.commit()
+
+
+def _watchlist_to_response(entry: WatchlistMovie, movie: Movie | None) -> dict:
+    """Convert a WatchlistMovie + Movie pair to response dict."""
+    return {
+        "id": entry.id,
+        "tmdb_id": entry.tmdb_id,
+        "title": movie.title if movie else "Unknown",
+        "poster_path": movie.poster_path if movie else None,
+        "added_by": str(entry.added_by) if entry.added_by else None,
+        "added_date": entry.added_date,
+        "created_at": entry.created_at,
+    }
 
 
 def _to_response(entry: WatchedMovie, movie: Movie | None) -> dict:

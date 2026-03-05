@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.auth.models import Profile
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
+from app.recommendations.ranking import rerank_candidates
 from app.tracking.models import WatchedMovie
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,41 @@ def get_top_rated_movies(user_id: str, db: Session, limit: int = 25) -> list[dic
         }
         for watched, movie in rows
     ]
+
+
+def get_user_signal_context(
+    user_id: str, db: Session
+) -> tuple[list[str], set[str], set[str]]:
+    """Extract user's favorite genres, top directors, and top cast from their top-rated movies.
+
+    Returns (favorite_genres, top_directors_lowered, top_cast_lowered).
+    """
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    favorite_genres = (
+        profile.favorite_genres if profile and profile.favorite_genres else []
+    )
+
+    # Get top 10 rated movies for director/cast signals
+    rows = (
+        db.query(Movie)
+        .join(WatchedMovie, WatchedMovie.tmdb_id == Movie.tmdb_id)
+        .filter(WatchedMovie.user_id == user_id, WatchedMovie.rating.isnot(None))
+        .order_by(WatchedMovie.rating.desc())
+        .limit(10)
+        .all()
+    )
+
+    top_directors: set[str] = set()
+    top_cast: set[str] = set()
+    for movie in rows:
+        if movie.director:
+            top_directors.add(movie.director.lower())
+        for c in (movie.cast or [])[:5]:
+            name = c.get("name", "")
+            if name:
+                top_cast.add(name.lower())
+
+    return favorite_genres, top_directors, top_cast
 
 
 def build_taste_prompt(
@@ -163,6 +199,9 @@ def rebuild_taste_profile(
     return profile
 
 
+CANDIDATE_POOL_SIZE = 200
+
+
 def get_recommendations(
     user_id: str,
     db: Session,
@@ -170,7 +209,7 @@ def get_recommendations(
     limit: int = 20,
     offset: int = 0,
 ) -> dict:
-    """Get movie recommendations via pgvector similarity search."""
+    """Get movie recommendations via pgvector similarity + re-ranking."""
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile:
         return {"results": [], "taste_bio": None}
@@ -189,7 +228,7 @@ def get_recommendations(
         .all()
     ]
 
-    # Call match_movies RPC via raw SQL
+    # Over-fetch candidates from pgvector
     embedding_str = "[" + ",".join(str(v) for v in profile.taste_embedding) + "]"
 
     result = db.execute(
@@ -200,30 +239,45 @@ def get_recommendations(
         ),
         {
             "query_embedding": embedding_str,
-            "match_count": limit + offset,
+            "match_count": CANDIDATE_POOL_SIZE,
             "exclude_ids": watched_ids if watched_ids else [],
         },
     )
     rows = result.fetchall()
 
-    # Apply offset
-    rows = rows[offset:]
-
-    # Fetch full movie data for results
     if not rows:
         return {"results": [], "taste_bio": profile.taste_bio}
 
+    # Build candidate list with full movie objects
     tmdb_ids = [row[0] for row in rows]
     similarity_map = {row[0]: row[1] for row in rows}
 
     movies = db.query(Movie).filter(Movie.tmdb_id.in_(tmdb_ids)).all()
     movie_map = {m.tmdb_id: m for m in movies}
 
-    results = []
+    candidates = []
     for tmdb_id in tmdb_ids:
         movie = movie_map.get(tmdb_id)
         if not movie:
             continue
+        candidates.append(
+            {
+                "tmdb_id": tmdb_id,
+                "similarity": similarity_map[tmdb_id],
+                "movie": movie,
+            }
+        )
+
+    # Re-rank with structured signals
+    user_genres, top_directors, top_cast = get_user_signal_context(user_id, db)
+    ranked = rerank_candidates(candidates, user_genres, top_directors, top_cast)
+
+    # Apply pagination
+    page = ranked[offset : offset + limit]
+
+    results = []
+    for c in page:
+        movie = c["movie"]
         results.append(
             {
                 "tmdb_id": movie.tmdb_id,
@@ -233,7 +287,8 @@ def get_recommendations(
                 "poster_path": movie.poster_path,
                 "genres": movie.genres or [],
                 "director": movie.director,
-                "similarity": round(similarity_map[tmdb_id], 4),
+                "similarity": round(c["similarity"], 4),
+                "score": c["score"],
             }
         )
 

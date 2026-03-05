@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
 from app.dependencies import supabase
+from app.tracking.models import Watchlist
 
 
 def signup(
@@ -14,10 +15,15 @@ def signup(
 
     user_id = auth_response.user.id
 
+    watchlist = Watchlist()
+    db.add(watchlist)
+    db.flush()
+
     profile = Profile(
         id=user_id,
         username=username,
         display_name=display_name,
+        watchlist_id=watchlist.id,
     )
     db.add(profile)
     db.commit()
