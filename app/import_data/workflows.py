@@ -6,27 +6,13 @@ import zipfile
 from datetime import date
 
 import httpx
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.import_data.schemas import ImportSummaryResponse
+from app.import_data.schemas import ImportSummaryResponse, FilmRecord
 from app.movies.services import get_movie_details
 from app.tracking.models import WatchedMovie, WatchlistMovie
 
 logger = logging.getLogger(__name__)
-
-
-class FilmRecord(BaseModel):
-    uri: str
-    name: str
-    year: int | None = None
-    rating: float | None = None
-    review: str | None = None
-    watched_date: date | None = None
-    in_watched: bool = False
-    in_watchlist: bool = False
-    watchlist_date: date | None = None
-    liked: bool = False
 
 
 def _make_record(row: dict[str, str]) -> FilmRecord:
