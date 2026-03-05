@@ -133,6 +133,28 @@ def _title_matches(lb_title: str, tmdb_title: str) -> bool:
     return bool(lb_words & words(tmdb_title))
 
 
+async def _resolve_tmdb_id(
+    name: str, year: int | None, tmdb_client: httpx.AsyncClient
+) -> int | None:
+    """Search TMDB for a movie by name + year and return its TMDB ID, or None if unresolvable."""
+    params: dict[str, str] = {"query": name}
+    if year is not None:
+        params["primary_release_year"] = str(year)
+
+    response = await tmdb_client.get("/search/movie", params=params)
+    response.raise_for_status()
+    results = response.json().get("results", [])
+
+    if not results:
+        return None
+
+    top = results[0]
+    if not _title_matches(name, top.get("title", "")):
+        return None
+
+    return top["id"]
+
+
 async def run_letterboxd_import(
     user_id: str,
     file_bytes: bytes,
