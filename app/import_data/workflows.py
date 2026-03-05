@@ -9,6 +9,9 @@ from datetime import date
 import httpx
 from sqlalchemy.orm import Session
 
+from app.movies.services import get_movie_details
+from app.tracking.models import WatchedMovie, WatchlistMovie
+
 logger = logging.getLogger(__name__)
 
 
@@ -164,8 +167,9 @@ async def run_letterboxd_import(
     """
     Parse a Letterboxd export zip and return an import summary.
 
-    Parses all 5 CSVs (watched, ratings, reviews, likes/films, watchlist) into
-    a URI-keyed union merge dict. TMDB resolution and DB writes are added in Plan 02.
+    Resolves each unique film to a TMDB ID, caches movie details, then writes
+    watched entries (with liked flag), watchlist entries, and skips duplicates.
+    Per-movie errors are isolated so one failure does not abort the whole import.
     """
     merged = _parse_csvs(file_bytes)
     logger.info("Parsed %d unique films from Letterboxd export", len(merged))
@@ -175,7 +179,77 @@ async def run_letterboxd_import(
     failed = 0
     failed_titles: list[str] = []
 
-    # TODO: TMDB resolution and DB writes (Plan 02)
+    for _uri, record in merged.items():
+        try:
+            # 1. Resolve TMDB ID via name + primary_release_year search
+            tmdb_id = await _resolve_tmdb_id(record.name, record.year, tmdb_client)
+            if tmdb_id is None:
+                logger.warning(
+                    "Could not resolve TMDB ID for %s (%s)", record.name, record.year
+                )
+                failed_titles.append(record.name)
+                failed += 1
+                continue
+
+            # 2. Cache movie details (FK constraint; no-ops if already cached)
+            await get_movie_details(tmdb_id, db, tmdb_client)
+
+            # 3. Handle watched/liked entry
+            if record.in_watched or record.liked:
+                existing = (
+                    db.query(WatchedMovie)
+                    .filter(
+                        WatchedMovie.user_id == user_id,
+                        WatchedMovie.tmdb_id == tmdb_id,
+                    )
+                    .first()
+                )
+                if existing:
+                    # Update liked flag on pre-existing entry if film is now liked
+                    if record.liked and not existing.liked:
+                        existing.liked = True
+                        db.commit()
+                    skipped += 1
+                else:
+                    entry = WatchedMovie(
+                        user_id=user_id,
+                        tmdb_id=tmdb_id,
+                        rating=record.rating,
+                        review=record.review,
+                        watched_date=record.watched_date,
+                        liked=record.liked,
+                    )
+                    db.add(entry)
+                    db.commit()
+                    imported += 1
+
+            # 4. Handle watchlist entry
+            if record.in_watchlist:
+                existing_wl = (
+                    db.query(WatchlistMovie)
+                    .filter(
+                        WatchlistMovie.user_id == user_id,
+                        WatchlistMovie.tmdb_id == tmdb_id,
+                    )
+                    .first()
+                )
+                if not existing_wl:
+                    wl_entry = WatchlistMovie(
+                        user_id=user_id,
+                        tmdb_id=tmdb_id,
+                        added_date=record.watchlist_date,
+                    )
+                    db.add(wl_entry)
+                    db.commit()
+                    imported += 1
+
+        except Exception:
+            logger.warning(
+                "Failed to import %s (%s)", record.name, record.year, exc_info=True
+            )
+            failed_titles.append(record.name)
+            failed += 1
+            continue
 
     return {
         "imported": imported,
