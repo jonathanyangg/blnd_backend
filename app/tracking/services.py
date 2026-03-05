@@ -144,5 +144,6 @@ def _to_response(entry: WatchedMovie, movie: Movie | None) -> dict:
         "rating": entry.rating,
         "review": entry.review,
         "watched_date": entry.watched_date,
+        "liked": entry.liked,
         "created_at": entry.created_at,
     }

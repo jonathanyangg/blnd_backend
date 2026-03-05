@@ -24,6 +24,7 @@ class WatchedMovieResponse(BaseModel):
     rating: float | None = None
     review: str | None = None
     watched_date: date | None = None
+    liked: bool = False
     created_at: datetime
 
 
