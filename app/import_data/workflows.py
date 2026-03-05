@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import io
 import logging
@@ -13,6 +14,8 @@ from app.movies.services import get_movie_details
 from app.tracking.models import WatchedMovie, WatchlistMovie
 
 logger = logging.getLogger(__name__)
+
+TMDB_RATE_LIMIT_DELAY = 0.025  # ~40 req/s — matches seed pipeline
 
 
 @dataclass
@@ -183,6 +186,7 @@ async def run_letterboxd_import(
         try:
             # 1. Resolve TMDB ID via name + primary_release_year search
             tmdb_id = await _resolve_tmdb_id(record.name, record.year, tmdb_client)
+            await asyncio.sleep(TMDB_RATE_LIMIT_DELAY)
             if tmdb_id is None:
                 logger.warning(
                     "Could not resolve TMDB ID for %s (%s)", record.name, record.year
@@ -193,6 +197,7 @@ async def run_letterboxd_import(
 
             # 2. Cache movie details (FK constraint; no-ops if already cached)
             await get_movie_details(tmdb_id, db, tmdb_client)
+            await asyncio.sleep(TMDB_RATE_LIMIT_DELAY)
 
             # 3. Handle watched/liked entry
             if record.in_watched or record.liked:
@@ -244,6 +249,7 @@ async def run_letterboxd_import(
                     imported += 1
 
         except Exception:
+            db.rollback()
             logger.warning(
                 "Failed to import %s (%s)", record.name, record.year, exc_info=True
             )
