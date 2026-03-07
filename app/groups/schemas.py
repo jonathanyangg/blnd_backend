@@ -7,6 +7,10 @@ class CreateGroupRequest(BaseModel):
     name: str
 
 
+class UpdateGroupRequest(BaseModel):
+    name: str | None = None
+
+
 class AddMemberRequest(BaseModel):
     username: str
 

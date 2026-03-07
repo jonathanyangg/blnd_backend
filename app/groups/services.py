@@ -80,6 +80,28 @@ def get_group(group_id: int, user_id: str, db: Session) -> dict:
     return _group_detail(group, db)
 
 
+def update_group(group_id: int, user_id: str, updates: dict, db: Session) -> dict:
+    """Update group fields. Only the creator can update."""
+    group = db.query(Group).filter(Group.id == group_id).first()
+    if not group:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Group not found"
+        )
+
+    if str(group.created_by) != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the group creator can update the group",
+        )
+
+    if "name" in updates:
+        group.name = updates["name"]
+
+    db.commit()
+    db.refresh(group)
+    return _group_detail(group, db)
+
+
 def add_member(group_id: int, user_id: str, username: str, db: Session) -> dict:
     """Add a member by username. Caller must be a member."""
     group = db.query(Group).filter(Group.id == group_id).first()

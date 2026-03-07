@@ -9,6 +9,10 @@ def signup(
     email: str, password: str, username: str, display_name: str | None, db: Session
 ) -> dict:
     """Create user via Supabase Auth and insert profile via SQLAlchemy."""
+    existing = db.query(Profile).filter(Profile.username == username).first()
+    if existing:
+        raise ValueError("Username is already taken")
+
     auth_response = supabase.auth.sign_up({"email": email, "password": password})
     if not auth_response.user or not auth_response.session:
         raise ValueError("Signup failed")
@@ -65,6 +69,17 @@ def update_profile(
 
     genres_changed = False
 
+    if "username" in updates:
+        new_username = updates["username"]
+        if new_username != profile.username:
+            conflict = (
+                db.query(Profile)
+                .filter(Profile.username == new_username, Profile.id != profile.id)
+                .first()
+            )
+            if conflict:
+                raise ValueError("Username is already taken")
+            profile.username = new_username
     if "display_name" in updates:
         profile.display_name = updates["display_name"]
     if "favorite_genres" in updates:

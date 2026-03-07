@@ -51,7 +51,10 @@ def update_profile(
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    profile, genres_changed = services.update_profile(user_id, updates, db)
+    try:
+        profile, genres_changed = services.update_profile(user_id, updates, db)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
 

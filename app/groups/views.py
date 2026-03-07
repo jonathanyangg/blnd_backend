@@ -1,5 +1,5 @@
 import httpx
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user, get_db, get_tmdb_client
@@ -35,6 +35,19 @@ async def get_group(
     db: Session = Depends(get_db),
 ):
     return services.get_group(group_id, user_id, db)
+
+
+@router.patch("/{group_id}", response_model=schemas.GroupDetailResponse)
+async def update_group(
+    group_id: int,
+    body: schemas.UpdateGroupRequest,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    updates = body.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    return services.update_group(group_id, user_id, updates, db)
 
 
 @router.delete("/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
