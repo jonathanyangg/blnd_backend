@@ -5,7 +5,10 @@ from fastapi import HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from sqlalchemy import or_
+
 from app.auth.models import Profile
+from app.friends.models import Friendship
 from app.movies.models import Movie
 from app.movies.services import get_movie_details
 from app.tracking.models import WatchedMovie, WatchlistMovie
@@ -239,6 +242,65 @@ def _watchlist_to_response(entry: WatchlistMovie, movie: Movie | None) -> dict:
         "added_date": entry.added_date,
         "created_at": entry.created_at,
     }
+
+
+def get_friends_who_watched(
+    user_id: str, tmdb_id: int, db: Session, limit: int = 20, offset: int = 0
+) -> dict:
+    """Get friends who watched a specific movie, with their ratings."""
+    # Get accepted friend IDs (both directions)
+    friendships = (
+        db.query(Friendship)
+        .filter(
+            Friendship.status == "accepted",
+            or_(
+                Friendship.requester_id == user_id,
+                Friendship.addressee_id == user_id,
+            ),
+        )
+        .all()
+    )
+
+    friend_ids = []
+    for f in friendships:
+        fid = f.addressee_id if str(f.requester_id) == user_id else f.requester_id
+        friend_ids.append(str(fid))
+
+    if not friend_ids:
+        return {"results": [], "total": 0}
+
+    # Count total friends who watched
+    total = (
+        db.query(func.count(WatchedMovie.id))
+        .filter(WatchedMovie.user_id.in_(friend_ids), WatchedMovie.tmdb_id == tmdb_id)
+        .scalar()
+    )
+
+    # Query watched entries joined with profile
+    rows = (
+        db.query(WatchedMovie, Profile)
+        .join(Profile, WatchedMovie.user_id == Profile.id)
+        .filter(WatchedMovie.user_id.in_(friend_ids), WatchedMovie.tmdb_id == tmdb_id)
+        .order_by(WatchedMovie.rating.desc().nulls_last())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    results = [
+        {
+            "user_id": str(p.id),
+            "username": p.username,
+            "display_name": p.display_name,
+            "avatar_url": p.avatar_url,
+            "rating": w.rating,
+            "review": w.review,
+            "watched_date": w.watched_date,
+        }
+        for w, p in rows
+    ]
+
+    return {"results": results, "total": total or 0}
 
 
 def _to_response(entry: WatchedMovie, movie: Movie | None) -> dict:

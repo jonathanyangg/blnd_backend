@@ -400,6 +400,74 @@ def get_group_recommendations(
     return {"results": results}
 
 
+def compute_group_match_scores(
+    group_id: int, tmdb_ids: list[int], db: Session
+) -> dict[int, float]:
+    """Compute group match scores for a list of tmdb_ids.
+
+    Averages member taste embeddings and computes cosine similarity per movie.
+    Returns {tmdb_id: score} where score is 0-1.
+    """
+    if not tmdb_ids:
+        return {}
+
+    members = db.query(GroupMember).filter(GroupMember.group_id == group_id).all()
+    member_ids = [str(m.user_id) for m in members]
+
+    if not member_ids:
+        return {}
+
+    # Build group embedding from members' rated movies
+    per_member_limit = max(5, 50 // len(member_ids))
+    member_embeddings = []
+
+    for mid in member_ids:
+        rows = (
+            db.query(WatchedMovie.rating, MovieEmbedding.embedding)
+            .join(MovieEmbedding, WatchedMovie.tmdb_id == MovieEmbedding.tmdb_id)
+            .filter(WatchedMovie.user_id == mid, WatchedMovie.rating.isnot(None))
+            .order_by(WatchedMovie.rating.desc())
+            .limit(per_member_limit)
+            .all()
+        )
+        if not rows:
+            continue
+
+        ratings = np.array([float(r) for r, _ in rows])
+        embeddings = np.array([e for _, e in rows])
+        if ratings.sum() == 0:
+            continue
+
+        weighted_avg = np.average(embeddings, axis=0, weights=ratings)
+        member_embeddings.append(weighted_avg)
+
+    if not member_embeddings:
+        return {}
+
+    group_embedding = np.mean(member_embeddings, axis=0)
+    group_norm = np.linalg.norm(group_embedding)
+    if group_norm == 0:
+        return {}
+    group_embedding = group_embedding / group_norm
+
+    # Get embeddings for requested movies
+    movie_embeds = (
+        db.query(MovieEmbedding).filter(MovieEmbedding.tmdb_id.in_(tmdb_ids)).all()
+    )
+
+    scores = {}
+    for me in movie_embeds:
+        emb = np.array(me.embedding)
+        norm = np.linalg.norm(emb)
+        if norm == 0:
+            continue
+        similarity = float(np.dot(group_embedding, emb / norm))
+        # Clamp to [0, 1] and convert to match percentage
+        scores[me.tmdb_id] = max(0.0, min(1.0, (similarity + 1) / 2))
+
+    return scores
+
+
 # --- Helpers ---
 
 

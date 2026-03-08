@@ -49,6 +49,17 @@ async def get_watch_history(
     return services.get_watch_history(user_id, limit, offset, db)
 
 
+@router.get("/{tmdb_id}/friends", response_model=schemas.FriendsWhoWatchedResponse)
+async def get_friends_who_watched(
+    tmdb_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+):
+    return services.get_friends_who_watched(user_id, tmdb_id, db, limit, offset)
+
+
 @router.get("/{tmdb_id}", response_model=schemas.WatchedMovieResponse)
 async def get_watched_movie(
     tmdb_id: int,

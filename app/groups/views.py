@@ -120,7 +120,14 @@ async def get_group_watchlist(
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group or not group.watchlist_id:
         return {"results": [], "total": 0}
-    return watchlist_services.get_watchlist(group.watchlist_id, db, limit, offset)
+    data = watchlist_services.get_watchlist(group.watchlist_id, db, limit, offset)
+    # Inject group match scores
+    tmdb_ids = [r["tmdb_id"] for r in data["results"]]
+    if tmdb_ids:
+        scores = services.compute_group_match_scores(group_id, tmdb_ids, db)
+        for r in data["results"]:
+            r["match_score"] = scores.get(r["tmdb_id"])
+    return data
 
 
 @router.post(

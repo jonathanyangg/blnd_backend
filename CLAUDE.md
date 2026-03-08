@@ -50,6 +50,9 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Seventh migration pushed: created watchlist_movies table
 - Eighth migration pushed: standalone watchlists table, watchlist_id on profiles/groups, recreated watchlist_movies with watchlist_id FK
 - Auth domain: models (Profile with taste fields), schemas (signup/login/profile + UpdateProfileRequest), services (Supabase Auth + SQLAlchemy), views
+  - Username validation: 3–30 chars, alphanumeric + periods + underscores, no leading/trailing/consecutive special chars, auto-lowercased, uniqueness check
+  - Username updatable via PATCH /auth/profile (same validation + uniqueness)
+  - GET /auth/users/search?q= — prefix search (ILIKE) for friend autocomplete, excludes current user, returns up to 10 results
 - Movies domain: fully implemented
   - Model: Movie (SQLAlchemy, includes director, cast, tagline, backdrop_path, imdb_id)
   - Schemas: MovieResponse (all fields including credits, vote_average scaled from TMDB 0-10 to 0-5 via Pydantic validator), MovieSearchResult
@@ -66,6 +69,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Services: track_movie (upsert, auto-caches movie via TMDB), get_watch_history (paginated, joined with movies), get_watched_movie, update_watched_movie, delete_watched_movie
   - Views: POST /tracking/ (track/upsert), GET /tracking/ (paginated history), GET /tracking/{tmdb_id}, PATCH /tracking/{tmdb_id}, DELETE /tracking/{tmdb_id}
   - All endpoints require JWT auth; POST auto-caches movie from TMDB if not in DB
+  - Tracking a movie auto-removes it from the user's personal watchlist (if present)
 - Friends domain: fully implemented
   - Model: Friendship (SQLAlchemy, matches friendships table with unique(requester_id, addressee_id))
   - Schemas: SendFriendRequestRequest, FriendResponse (includes friendship_id for delete), FriendRequestResponse, FriendListResponse, PendingRequestsResponse
@@ -94,9 +98,9 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Letterboxd import updated to use watchlist_id instead of user_id
 - Groups domain: fully implemented
   - Models: Group (id, name, created_by, watchlist_id), GroupMember (composite PK: group_id + user_id)
-  - Schemas: CreateGroupRequest, AddMemberRequest, GroupMemberResponse, GroupResponse, GroupDetailResponse, GroupListResponse, GroupRecMovieResponse, GroupRecommendationsResponse
-  - Services: create_group (with linked watchlist), list_groups, get_group, add_member (by username, 10-member cap), kick_member (can't kick owner), leave_group (transfers ownership), delete_group (creator only, cascade)
-  - Views: POST /groups/, GET /groups/, GET /groups/{id}, DELETE /groups/{id}, POST /groups/{id}/members, POST /groups/{id}/members/{uid}/kick, POST /groups/{id}/leave, GET /groups/{id}/recommendations, GET/POST/DELETE /groups/{id}/watchlist
+  - Schemas: CreateGroupRequest, UpdateGroupRequest, AddMemberRequest, GroupMemberResponse, GroupResponse, GroupDetailResponse, GroupListResponse, GroupRecMovieResponse, GroupRecommendationsResponse
+  - Services: create_group (with linked watchlist), list_groups, get_group, update_group (creator only), add_member (by username, 10-member cap), kick_member (can't kick owner), leave_group (transfers ownership), delete_group (creator only, cascade)
+  - Views: POST /groups/, GET /groups/, GET /groups/{id}, PATCH /groups/{id} (update name, creator only), DELETE /groups/{id}, POST /groups/{id}/members, POST /groups/{id}/members/{uid}/kick, POST /groups/{id}/leave, GET /groups/{id}/recommendations, GET/POST/DELETE /groups/{id}/watchlist
   - Group recommendations: averages members' top-rated movie embeddings via pgvector match_movies RPC, excludes all members' watched movies
 - Tracking domain: added `liked` field to WatchedMovieResponse schema and _to_response
 - Recommendations: fixed bug where average strategy never persisted taste_embedding to profile, replaced pure Python vector math with numpy
@@ -122,6 +126,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Seed pipeline uses `asyncio.ensure_future()` instead of `BackgroundTasks` (avoids `asyncio.run()` inside existing event loop)
 - OpenAPI spec auto-export: `openapi.json` written to project root on first `/health` hit (for frontend context)
 - Match scores on trending + detail: `MovieResponse.match_score` computed via `compute_match_scores()` in `movies/services.py` — reuses ranking weights from `recommendations/ranking.py`
+- Match score scaling: `to_match_percentage()` in `ranking.py` applies upward compression (`score + (1-score) * MATCH_BOOST`) to map low raw scores to a more natural 0–1 range. Applied to all score outputs (trending, detail, recommendations, group recommendations). Frontend multiplies by 100 for display.
 
 ### Recommendation Architecture
 - **Movie seed pipeline** (import_data domain):
@@ -136,6 +141,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Both still generate taste bio for display via gpt-4o-mini
 - **Candidate generation** = user taste embedding vs movie embeddings via `match_movies` RPC (pgvector cosine similarity, `cast(:param AS vector(1536))`) — over-fetches 200 candidates
 - **Re-ranking** (`app/recommendations/ranking.py`): `final_score = 0.50*cosine + 0.20*genre_jaccard + 0.20*consensus + 0.05*director + 0.05*cast`
+- **Score scaling**: `to_match_percentage(score) = score + (1 - score) * MATCH_BOOST` (MATCH_BOOST=0.4, tunable). Compresses raw scores upward without clipping. All score outputs (match_score, recommendation score, group score) pass through this before returning to frontend as 0–1 decimal.
 - **Source tracking**: `source` column on watched_movies/watchlist_movies tracks where user found the movie ('manual', 'recommendation', 'letterboxd_import')
 - **Auto-refresh triggers**: rating changes (track/update/delete) and genre updates trigger background taste rebuild
 - **Ongoing sync**: TMDB Changes API (`/movie/changes`) for daily updates to cached movies
@@ -166,8 +172,13 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - **Recency weighting**: optionally weight more recent ratings higher in the average embedding
 
 - [x] Add match_score to trending + detail endpoints
+- [x] Username validation + uniqueness checks (signup + profile update)
+- [x] User search endpoint (GET /auth/users/search?q=)
+- [x] PATCH /groups/{group_id} (update group name)
+- [x] Auto-remove from watchlist on track
+- [x] Match score upward compression scaling
 
-*Last updated: 2026-03-05*
+*Last updated: 2026-03-07*
 
 
 
