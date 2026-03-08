@@ -38,7 +38,6 @@ async def discover_movies(
     request: Request,
     genres: str = Query(description="Comma-separated genre names"),
     page: int = Query(default=1, ge=1),
-    _user_id: str = Depends(get_current_user),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
     genre_list = [g.strip() for g in genres.split(",") if g.strip()]
