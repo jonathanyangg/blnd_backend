@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
+from starlette.requests import Request
 
+from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.dependencies import get_current_user, get_db
 from app.friends import schemas, services
 
@@ -8,7 +10,9 @@ router = APIRouter()
 
 
 @router.post("/request", response_model=schemas.FriendRequestResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def send_friend_request(
+    request: Request,
     body: schemas.SendFriendRequestRequest,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -17,7 +21,9 @@ async def send_friend_request(
 
 
 @router.post("/{friendship_id}/accept", response_model=schemas.FriendRequestResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def accept_friend_request(
+    request: Request,
     friendship_id: int,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -26,7 +32,9 @@ async def accept_friend_request(
 
 
 @router.post("/{friendship_id}/reject", response_model=schemas.FriendRequestResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def reject_friend_request(
+    request: Request,
     friendship_id: int,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -35,7 +43,9 @@ async def reject_friend_request(
 
 
 @router.get("/", response_model=schemas.FriendListResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def list_friends(
+    request: Request,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -43,7 +53,9 @@ async def list_friends(
 
 
 @router.get("/requests", response_model=schemas.PendingRequestsResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def get_pending_requests(
+    request: Request,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -51,7 +63,9 @@ async def get_pending_requests(
 
 
 @router.delete("/{friendship_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(LIMIT_DEFAULT)
 async def remove_friend(
+    request: Request,
     friendship_id: int,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),

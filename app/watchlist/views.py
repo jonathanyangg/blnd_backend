@@ -1,8 +1,10 @@
 import httpx
 from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.orm import Session
+from starlette.requests import Request
 
 from app.auth.models import Profile
+from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.dependencies import get_current_user, get_db, get_tmdb_client
 from app.tracking import schemas, services
 
@@ -10,7 +12,9 @@ router = APIRouter()
 
 
 @router.get("/", response_model=schemas.WatchlistResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def get_watchlist(
+    request: Request,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     limit: int = Query(default=20, ge=1, le=100),
@@ -27,7 +31,9 @@ async def get_watchlist(
     response_model=schemas.WatchlistMovieResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@limiter.limit(LIMIT_DEFAULT)
 async def add_to_watchlist(
+    request: Request,
     body: schemas.AddToWatchlistRequest,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -42,7 +48,9 @@ async def add_to_watchlist(
 
 
 @router.delete("/{tmdb_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(LIMIT_DEFAULT)
 async def remove_from_watchlist(
+    request: Request,
     tmdb_id: int,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),

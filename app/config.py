@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     database_url: str = ""
     tmdb_api_key: str = ""
     openai_api_key: str = ""
+    test_database_url: str = ""
 
     model_config = {"env_file": ".env"}
 

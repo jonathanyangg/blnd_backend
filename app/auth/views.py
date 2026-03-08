@@ -1,14 +1,18 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from starlette.requests import Request
 
 from app.auth import schemas, services
+from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.dependencies import get_current_user, get_db, openai_client
 
 router = APIRouter()
 
 
 @router.get("/users/search", response_model=schemas.UserSearchResponse)
+@limiter.limit(LIMIT_DEFAULT)
 def search_users(
+    request: Request,
     q: str = Query(min_length=1, max_length=30),
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -18,25 +22,34 @@ def search_users(
 
 
 @router.post("/signup", response_model=schemas.LoginResponse)
-def signup(request: schemas.SignupRequest, db: Session = Depends(get_db)):
+@limiter.limit(LIMIT_DEFAULT)
+def signup(
+    request: Request, body: schemas.SignupRequest, db: Session = Depends(get_db)
+):
     try:
         return services.signup(
-            request.email, request.password, request.username, request.display_name, db
+            body.email, body.password, body.username, body.display_name, db
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/login", response_model=schemas.LoginResponse)
-def login(request: schemas.LoginRequest):
+@limiter.limit(LIMIT_DEFAULT)
+def login(request: Request, body: schemas.LoginRequest):
     try:
-        return services.login(request.email, request.password)
+        return services.login(body.email, body.password)
     except Exception as e:
         raise HTTPException(status_code=401, detail=str(e))
 
 
 @router.get("/me", response_model=schemas.UserResponse)
-def me(user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
+@limiter.limit(LIMIT_DEFAULT)
+def me(
+    request: Request,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     profile = services.get_profile(user_id, db)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
@@ -51,7 +64,9 @@ def me(user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
 
 
 @router.patch("/profile", response_model=schemas.UserResponse)
+@limiter.limit(LIMIT_DEFAULT)
 def update_profile(
+    request: Request,
     body: schemas.UpdateProfileRequest,
     background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),

@@ -1,7 +1,9 @@
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
 from sqlalchemy.orm import Session
+from starlette.requests import Request
 
+from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
 from app.tracking import schemas, services
 
@@ -17,7 +19,9 @@ def _trigger_taste_rebuild(
 
 
 @router.post("/", response_model=schemas.WatchedMovieResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def track_movie(
+    request: Request,
     body: schemas.TrackMovieRequest,
     background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
@@ -40,7 +44,9 @@ async def track_movie(
 
 
 @router.get("/", response_model=schemas.WatchHistoryResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def get_watch_history(
+    request: Request,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     limit: int = Query(default=20, ge=1, le=100),
@@ -50,7 +56,9 @@ async def get_watch_history(
 
 
 @router.get("/{tmdb_id}/friends", response_model=schemas.FriendsWhoWatchedResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def get_friends_who_watched(
+    request: Request,
     tmdb_id: int,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -61,7 +69,9 @@ async def get_friends_who_watched(
 
 
 @router.get("/{tmdb_id}", response_model=schemas.WatchedMovieResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def get_watched_movie(
+    request: Request,
     tmdb_id: int,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -73,7 +83,9 @@ async def get_watched_movie(
 
 
 @router.patch("/{tmdb_id}", response_model=schemas.WatchedMovieResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def update_watched_movie(
+    request: Request,
     tmdb_id: int,
     body: schemas.UpdateTrackingRequest,
     background_tasks: BackgroundTasks,
@@ -87,7 +99,9 @@ async def update_watched_movie(
 
 
 @router.delete("/{tmdb_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(LIMIT_DEFAULT)
 async def delete_watched_movie(
+    request: Request,
     tmdb_id: int,
     background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
