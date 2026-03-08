@@ -87,6 +87,71 @@ def compute_match_scores(
     return scores
 
 
+TMDB_GENRE_MAP = {
+    "action": 28,
+    "comedy": 35,
+    "horror": 27,
+    "sci-fi": 878,
+    "romance": 10749,
+    "thriller": 53,
+    "drama": 18,
+    "animation": 16,
+    "documentary": 99,
+    "mystery": 9648,
+    "fantasy": 14,
+    "crime": 80,
+}
+
+
+async def discover_movies_by_genres(
+    genre_names: list[str], page: int, tmdb_client: httpx.AsyncClient
+) -> dict:
+    """Discover top-rated movies matching the given genres via TMDB discover API."""
+    genre_ids = []
+    for name in genre_names:
+        gid = TMDB_GENRE_MAP.get(name.lower())
+        if gid:
+            genre_ids.append(str(gid))
+
+    if not genre_ids:
+        return {"results": [], "total_results": 0}
+
+    response = await tmdb_client.get(
+        "/discover/movie",
+        params={
+            "with_genres": "|".join(genre_ids),
+            "sort_by": "vote_count.desc",
+            "vote_average.gte": 6.0,
+            "page": page,
+        },
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    results = []
+    for item in data.get("results", []):
+        year = None
+        if item.get("release_date"):
+            try:
+                year = int(item["release_date"][:4])
+            except (ValueError, IndexError):
+                pass
+
+        results.append(
+            {
+                "tmdb_id": item["id"],
+                "title": item["title"],
+                "year": year,
+                "overview": item.get("overview"),
+                "poster_path": item.get("poster_path"),
+                "genres": [{"id": gid} for gid in item.get("genre_ids", [])],
+                "vote_average": item.get("vote_average"),
+            }
+        )
+
+    return {"results": results, "total_results": data.get("total_results", 0)}
+
+
 async def get_trending_movies(page: int, tmdb_client: httpx.AsyncClient) -> dict:
     """Get trending movies from TMDB (weekly)."""
     response = await tmdb_client.get("/trending/movie/week", params={"page": page})

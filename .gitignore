@@ -1,6 +1,9 @@
 # Claude Code
 .mcp.json
 
+# Test files
+/tests
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

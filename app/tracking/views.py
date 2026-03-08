@@ -1,7 +1,9 @@
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
 from sqlalchemy.orm import Session
+from starlette.requests import Request
 
+from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
 from app.tracking import schemas, services
 
@@ -16,8 +18,19 @@ def _trigger_taste_rebuild(
     background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)
 
 
+def _should_rebuild(user_id: str, rating: float | None, db: Session) -> bool:
+    """Only rebuild if rating would affect the top 25."""
+    if rating is None:
+        return False
+    from app.recommendations.services import would_affect_top_n
+
+    return would_affect_top_n(user_id, rating, db)
+
+
 @router.post("/", response_model=schemas.WatchedMovieResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def track_movie(
+    request: Request,
     body: schemas.TrackMovieRequest,
     background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
@@ -34,13 +47,15 @@ async def track_movie(
         tmdb_client=tmdb_client,
         source=body.source,
     )
-    if body.rating is not None:
+    if _should_rebuild(user_id, body.rating, db):
         _trigger_taste_rebuild(background_tasks, user_id, db)
     return result
 
 
 @router.get("/", response_model=schemas.WatchHistoryResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def get_watch_history(
+    request: Request,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     limit: int = Query(default=20, ge=1, le=100),
@@ -50,7 +65,9 @@ async def get_watch_history(
 
 
 @router.get("/{tmdb_id}/friends", response_model=schemas.FriendsWhoWatchedResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def get_friends_who_watched(
+    request: Request,
     tmdb_id: int,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -61,7 +78,9 @@ async def get_friends_who_watched(
 
 
 @router.get("/{tmdb_id}", response_model=schemas.WatchedMovieResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def get_watched_movie(
+    request: Request,
     tmdb_id: int,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -73,7 +92,9 @@ async def get_watched_movie(
 
 
 @router.patch("/{tmdb_id}", response_model=schemas.WatchedMovieResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def update_watched_movie(
+    request: Request,
     tmdb_id: int,
     body: schemas.UpdateTrackingRequest,
     background_tasks: BackgroundTasks,
@@ -81,17 +102,29 @@ async def update_watched_movie(
     db: Session = Depends(get_db),
 ):
     result = services.update_watched_movie(user_id, tmdb_id, body, db)
-    if body.rating is not None:
+    if _should_rebuild(user_id, body.rating, db):
         _trigger_taste_rebuild(background_tasks, user_id, db)
     return result
 
 
 @router.delete("/{tmdb_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(LIMIT_DEFAULT)
 async def delete_watched_movie(
+    request: Request,
     tmdb_id: int,
     background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # Check rating before delete so we know if rebuild is needed
+    from app.tracking.models import WatchedMovie
+
+    entry = (
+        db.query(WatchedMovie)
+        .filter(WatchedMovie.user_id == user_id, WatchedMovie.tmdb_id == tmdb_id)
+        .first()
+    )
+    deleted_rating = float(entry.rating) if entry and entry.rating is not None else None
     services.delete_watched_movie(user_id, tmdb_id, db)
-    _trigger_taste_rebuild(background_tasks, user_id, db)
+    if _should_rebuild(user_id, deleted_rating, db):
+        _trigger_taste_rebuild(background_tasks, user_id, db)

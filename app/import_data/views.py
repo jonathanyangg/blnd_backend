@@ -4,8 +4,10 @@ import logging
 import httpx
 from fastapi import APIRouter, Depends, File, UploadFile, status
 from sqlalchemy.orm import Session
+from starlette.requests import Request
 
 from app.config import settings
+from app.core.rate_limit import LIMIT_HEAVY, LIMIT_IMPORT, limiter
 from app.database import SessionLocal
 from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
 from app.import_data import services, workflows
@@ -28,7 +30,9 @@ async def _run_seed_pipeline_async(min_popularity: float) -> None:
 
 
 @router.post("/seed-movies", status_code=status.HTTP_202_ACCEPTED)
+@limiter.limit(LIMIT_HEAVY)
 async def seed_movies(
+    request: Request,
     min_popularity: float = 5.0,
     _user_id: str = Depends(get_current_user),
 ):
@@ -37,7 +41,9 @@ async def seed_movies(
 
 
 @router.post("/letterboxd", response_model=ImportSummaryResponse)
+@limiter.limit(LIMIT_IMPORT)
 async def import_letterboxd(
+    request: Request,
     file: UploadFile = File(...),
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),

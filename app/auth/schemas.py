@@ -33,6 +33,15 @@ class SignupRequest(BaseModel):
     def check_username(cls, v: str) -> str:
         return validate_username(v)
 
+    @field_validator("password")
+    @classmethod
+    def check_password(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        if not any(c.isupper() for c in v):
+            raise ValueError("Password must contain at least one uppercase letter")
+        return v
+
 
 class LoginRequest(BaseModel):
     email: str

@@ -234,11 +234,16 @@ def delete_group(group_id: int, user_id: str, db: Session) -> None:
     # Delete members
     db.query(GroupMember).filter(GroupMember.group_id == group_id).delete()
 
-    # Delete watchlist (cascade deletes watchlist_movies)
-    if group.watchlist_id:
-        db.query(Watchlist).filter(Watchlist.id == group.watchlist_id).delete()
+    # Save watchlist_id before deleting the group
+    watchlist_id = group.watchlist_id
 
     db.delete(group)
+    db.flush()
+
+    # Delete watchlist after group is gone (group had FK to watchlist)
+    if watchlist_id:
+        db.query(Watchlist).filter(Watchlist.id == watchlist_id).delete()
+
     db.commit()
 
 

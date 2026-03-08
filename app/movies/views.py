@@ -1,7 +1,9 @@
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from starlette.requests import Request
 
+from app.core.rate_limit import LIMIT_DEFAULT, LIMIT_SEARCH, limiter
 from app.dependencies import get_current_user, get_db, get_tmdb_client
 from app.movies import schemas, services
 
@@ -9,7 +11,9 @@ router = APIRouter()
 
 
 @router.get("/trending", response_model=schemas.MovieSearchResult)
+@limiter.limit(LIMIT_DEFAULT)
 async def get_trending_movies(
+    request: Request,
     page: int = Query(default=1, ge=1),
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -28,8 +32,25 @@ async def get_trending_movies(
     return data
 
 
+@router.get("/discover", response_model=schemas.MovieSearchResult)
+@limiter.limit(LIMIT_SEARCH)
+async def discover_movies(
+    request: Request,
+    genres: str = Query(description="Comma-separated genre names"),
+    page: int = Query(default=1, ge=1),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+):
+    genre_list = [g.strip() for g in genres.split(",") if g.strip()]
+    try:
+        return await services.discover_movies_by_genres(genre_list, page, tmdb_client)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
+
+
 @router.get("/search", response_model=schemas.MovieSearchResult)
+@limiter.limit(LIMIT_SEARCH)
 async def search_movies(
+    request: Request,
     query: str = Query(min_length=1),
     page: int = Query(default=1, ge=1),
     _user_id: str = Depends(get_current_user),
@@ -42,7 +63,9 @@ async def search_movies(
 
 
 @router.get("/{tmdb_id}", response_model=schemas.MovieResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def get_movie(
+    request: Request,
     tmdb_id: int,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),

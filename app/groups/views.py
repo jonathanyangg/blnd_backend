@@ -1,7 +1,9 @@
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
+from starlette.requests import Request
 
+from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.dependencies import get_current_user, get_db, get_tmdb_client
 from app.groups import schemas, services
 from app.groups.models import Group
@@ -12,7 +14,9 @@ router = APIRouter()
 
 
 @router.post("/", response_model=schemas.GroupDetailResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def create_group(
+    request: Request,
     body: schemas.CreateGroupRequest,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -21,7 +25,9 @@ async def create_group(
 
 
 @router.get("/", response_model=schemas.GroupListResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def list_groups(
+    request: Request,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -29,7 +35,9 @@ async def list_groups(
 
 
 @router.get("/{group_id}", response_model=schemas.GroupDetailResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def get_group(
+    request: Request,
     group_id: int,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -38,7 +46,9 @@ async def get_group(
 
 
 @router.patch("/{group_id}", response_model=schemas.GroupDetailResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def update_group(
+    request: Request,
     group_id: int,
     body: schemas.UpdateGroupRequest,
     user_id: str = Depends(get_current_user),
@@ -51,7 +61,9 @@ async def update_group(
 
 
 @router.delete("/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(LIMIT_DEFAULT)
 async def delete_group(
+    request: Request,
     group_id: int,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -60,7 +72,9 @@ async def delete_group(
 
 
 @router.post("/{group_id}/members", response_model=schemas.GroupDetailResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def add_member(
+    request: Request,
     group_id: int,
     body: schemas.AddMemberRequest,
     user_id: str = Depends(get_current_user),
@@ -73,7 +87,9 @@ async def add_member(
     "/{group_id}/members/{target_user_id}/kick",
     status_code=status.HTTP_204_NO_CONTENT,
 )
+@limiter.limit(LIMIT_DEFAULT)
 async def kick_member(
+    request: Request,
     group_id: int,
     target_user_id: str,
     user_id: str = Depends(get_current_user),
@@ -83,7 +99,9 @@ async def kick_member(
 
 
 @router.post("/{group_id}/leave", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(LIMIT_DEFAULT)
 async def leave_group(
+    request: Request,
     group_id: int,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -95,7 +113,9 @@ async def leave_group(
     "/{group_id}/recommendations",
     response_model=schemas.GroupRecommendationsResponse,
 )
+@limiter.limit(LIMIT_DEFAULT)
 async def get_group_recommendations(
+    request: Request,
     group_id: int,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -109,7 +129,9 @@ async def get_group_recommendations(
 
 
 @router.get("/{group_id}/watchlist", response_model=tracking_schemas.WatchlistResponse)
+@limiter.limit(LIMIT_DEFAULT)
 async def get_group_watchlist(
+    request: Request,
     group_id: int,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -135,7 +157,9 @@ async def get_group_watchlist(
     response_model=tracking_schemas.WatchlistMovieResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@limiter.limit(LIMIT_DEFAULT)
 async def add_to_group_watchlist(
+    request: Request,
     group_id: int,
     body: tracking_schemas.AddToWatchlistRequest,
     user_id: str = Depends(get_current_user),
@@ -154,7 +178,9 @@ async def add_to_group_watchlist(
 @router.delete(
     "/{group_id}/watchlist/{tmdb_id}", status_code=status.HTTP_204_NO_CONTENT
 )
+@limiter.limit(LIMIT_DEFAULT)
 async def remove_from_group_watchlist(
+    request: Request,
     group_id: int,
     tmdb_id: int,
     user_id: str = Depends(get_current_user),

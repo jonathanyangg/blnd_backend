@@ -2,7 +2,10 @@
 
 Architecture: pgvector returns ~200 candidates by cosine similarity,
 then this module re-ranks using structured signals (genre, consensus, director, cast).
+Candidates within the same score tier are shuffled for variety.
 """
+
+import random
 
 from app.movies.models import Movie
 
@@ -81,7 +84,36 @@ def rerank_candidates(
         )
 
     candidates.sort(key=lambda c: c["score"], reverse=True)
-    return candidates
+    return _shuffle_within_tiers(candidates)
+
+
+# Candidates with scores within this threshold are considered the same tier
+TIER_THRESHOLD = 0.02
+
+
+def _shuffle_within_tiers(candidates: list[dict]) -> list[dict]:
+    """Shuffle candidates within score tiers for variety.
+
+    Groups candidates whose scores are within TIER_THRESHOLD of each other,
+    then shuffles within each group. Preserves inter-tier ordering.
+    """
+    if not candidates:
+        return candidates
+
+    result: list[dict] = []
+    tier: list[dict] = [candidates[0]]
+
+    for c in candidates[1:]:
+        if tier[0]["score"] - c["score"] <= TIER_THRESHOLD:
+            tier.append(c)
+        else:
+            random.shuffle(tier)
+            result.extend(tier)
+            tier = [c]
+
+    random.shuffle(tier)
+    result.extend(tier)
+    return result
 
 
 MATCH_BOOST = 0.4

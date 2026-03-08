@@ -1,14 +1,14 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CreateGroupRequest(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=250)
 
 
 class UpdateGroupRequest(BaseModel):
-    name: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=250)
 
 
 class AddMemberRequest(BaseModel):
