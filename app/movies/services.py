@@ -15,6 +15,7 @@ from app.recommendations.ranking import (
     _consensus_score,
     _director_boost,
     _genre_overlap,
+    to_match_percentage,
 )
 from app.recommendations.services import get_user_signal_context
 
@@ -80,9 +81,8 @@ def compute_match_scores(
         if not movie_emb or not movie:
             continue
         similarity = _cosine_similarity(taste_emb, movie_emb)
-        scores[tid] = _compute_score(
-            movie, similarity, user_genres, top_directors, top_cast
-        )
+        raw = _compute_score(movie, similarity, user_genres, top_directors, top_cast)
+        scores[tid] = to_match_percentage(raw)
 
     return scores
 

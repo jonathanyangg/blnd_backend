@@ -5,6 +5,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.auth.models import Profile
 from app.movies.models import Movie
 from app.movies.services import get_movie_details
 from app.tracking.models import WatchedMovie, WatchlistMovie
@@ -53,6 +54,15 @@ async def track_movie(
         db.add(entry)
         db.commit()
         db.refresh(entry)
+
+    # Remove from user's personal watchlist if present
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if profile and profile.watchlist_id:
+        db.query(WatchlistMovie).filter(
+            WatchlistMovie.watchlist_id == profile.watchlist_id,
+            WatchlistMovie.tmdb_id == tmdb_id,
+        ).delete()
+        db.commit()
 
     movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
     return _to_response(entry, movie)

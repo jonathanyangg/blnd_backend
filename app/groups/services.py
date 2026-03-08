@@ -9,7 +9,7 @@ from app.auth.models import Profile
 from app.groups.models import Group, GroupMember
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
-from app.recommendations.ranking import rerank_candidates
+from app.recommendations.ranking import rerank_candidates, to_match_percentage
 from app.tracking.models import Watchlist, WatchedMovie
 
 logger = logging.getLogger(__name__)
@@ -393,7 +393,7 @@ def get_group_recommendations(
                 "genres": movie.genres or [],
                 "director": movie.director,
                 "similarity": round(c["similarity"], 4),
-                "score": c["score"],
+                "score": to_match_percentage(c["score"]),
             }
         )
 

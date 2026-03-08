@@ -82,3 +82,11 @@ def rerank_candidates(
 
     candidates.sort(key=lambda c: c["score"], reverse=True)
     return candidates
+
+
+MATCH_BOOST = 0.4
+
+
+def to_match_percentage(score: float) -> float:
+    """Scale raw score to 0–1 with upward compression."""
+    return round(score + (1 - score) * MATCH_BOOST, 4)

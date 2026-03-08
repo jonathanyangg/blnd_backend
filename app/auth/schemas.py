@@ -54,6 +54,10 @@ class UserResponse(BaseModel):
     favorite_genres: list[str] = []
 
 
+class UserSearchResponse(BaseModel):
+    results: list[UserResponse]
+
+
 class UpdateProfileRequest(BaseModel):
     username: str | None = None
     display_name: str | None = None

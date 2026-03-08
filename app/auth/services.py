@@ -59,6 +59,25 @@ def get_profile(user_id: str, db: Session) -> Profile | None:
     return db.query(Profile).filter(Profile.id == user_id).first()
 
 
+def search_users(query: str, user_id: str, db: Session, limit: int = 10) -> list[dict]:
+    """Search users by username prefix (ILIKE), excluding the current user."""
+    profiles = (
+        db.query(Profile)
+        .filter(Profile.username.ilike(f"{query}%"), Profile.id != user_id)
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": str(p.id),
+            "username": p.username,
+            "display_name": p.display_name,
+            "avatar_url": p.avatar_url,
+        }
+        for p in profiles
+    ]
+
+
 def update_profile(
     user_id: str, updates: dict, db: Session
 ) -> tuple[Profile | None, bool]:

@@ -1,10 +1,20 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.auth import schemas, services
 from app.dependencies import get_current_user, get_db, openai_client
 
 router = APIRouter()
+
+
+@router.get("/users/search", response_model=schemas.UserSearchResponse)
+def search_users(
+    q: str = Query(min_length=1, max_length=30),
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    results = services.search_users(q, user_id, db)
+    return {"results": results}
 
 
 @router.post("/signup", response_model=schemas.LoginResponse)
