@@ -14,6 +14,21 @@ from app.tracking.models import WatchedMovie
 logger = logging.getLogger(__name__)
 
 
+def would_affect_top_n(user_id: str, rating: float, db: Session, n: int = 25) -> bool:
+    """Check if a new rating would crack the user's top N rated movies."""
+    rows = (
+        db.query(WatchedMovie.rating)
+        .filter(WatchedMovie.user_id == user_id, WatchedMovie.rating.isnot(None))
+        .order_by(WatchedMovie.rating.desc())
+        .limit(n)
+        .all()
+    )
+    if len(rows) < n:
+        return True
+    lowest_top_rating = float(rows[-1][0])
+    return rating >= lowest_top_rating
+
+
 def get_top_rated_movies(user_id: str, db: Session, limit: int = 25) -> list[dict]:
     """Get user's top-rated watched movies joined with movie details."""
     rows = (

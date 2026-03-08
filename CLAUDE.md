@@ -113,7 +113,8 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - get_recommendations: pgvector candidate generation (200 items) → Python re-ranking with structured signals → paginated results
   - Re-ranking layer (`app/recommendations/ranking.py`): `rerank_candidates()` scores each candidate as weighted sum of cosine_similarity (0.50), genre_overlap (0.20), consensus/vote_average (0.20), director_boost (0.05), cast_boost (0.05)
   - Views: GET /recommendations/me (returns recs, builds taste profile on first call if needed), POST /recommendations/me/refresh (force rebuild + fresh recs)
-  - Taste profile auto-rebuilds in background when: user rates/updates/deletes a tracked movie, or updates favorite_genres via PATCH /auth/profile
+  - Taste profile auto-rebuilds in background when: user rates/updates/deletes a tracked movie (only if rating would affect top 25), or updates favorite_genres via PATCH /auth/profile
+  - Recommendation variety: `_shuffle_within_tiers()` in ranking.py shuffles candidates with scores within TIER_THRESHOLD (0.02) of each other, so same-quality recs appear in different order each request
 - Ninth migration: added `source` column to watched_movies and watchlist_movies (tracks origin: 'manual', 'recommendation', 'letterboxd_import')
 - Recommendation source tracking: TrackMovieRequest and AddToWatchlistRequest accept `source` field, Letterboxd import sets `source="letterboxd_import"`
 - Auth domain updates:
@@ -127,6 +128,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - OpenAPI spec auto-export: `openapi.json` written to project root on first `/health` hit (for frontend context)
 - Match scores on trending + detail: `MovieResponse.match_score` computed via `compute_match_scores()` in `movies/services.py` — reuses ranking weights from `recommendations/ranking.py`
 - Match score scaling: `to_match_percentage()` in `ranking.py` applies upward compression (`score + (1-score) * MATCH_BOOST`) to map low raw scores to a more natural 0–1 range. Applied to all score outputs (trending, detail, recommendations, group recommendations). Frontend multiplies by 100 for display.
+- Rate limiting: slowapi with per-user keying (JWT sub claim, fallback to IP). Tiered limits: LIMIT_HEAVY (1/day) for seed/sync, LIMIT_IMPORT (3/hour) for letterboxd, LIMIT_REFRESH (5/hour) for rec refresh, LIMIT_SEARCH (30/min) for search/discover, LIMIT_DEFAULT (60/min) for everything else. Disabled in tests via TESTING=true. Config in `app/core/rate_limit.py`.
 
 ### Recommendation Architecture
 - **Movie seed pipeline** (import_data domain):
@@ -170,6 +172,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - **Learning to Rank** (long-term, 500+ rating triples): XGBoost with `rank:ndcg` objective. Features: cosine similarity, genre overlap, director match, vote_average, user avg rating. Scores 200 candidates in microseconds.
 - **Key metrics to track with `source` column**: positive rate (recs rated >= 4 / total recs tracked), watchlist add rate, intra-list diversity
 - **Recency weighting**: optionally weight more recent ratings higher in the average embedding
+- **Random offset into candidate pool**: over-fetch more candidates (e.g., 400 instead of 200) and sample with quality-weighted probability. Higher-scored movies more likely but not guaranteed — gives bigger variety than tier shuffling alone.
 
 - [x] Add match_score to trending + detail endpoints
 - [x] Username validation + uniqueness checks (signup + profile update)
@@ -177,8 +180,11 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [x] PATCH /groups/{group_id} (update group name)
 - [x] Auto-remove from watchlist on track
 - [x] Match score upward compression scaling
+- [x] Rate limiting via slowapi (per-user keying from JWT, tiered limits: heavy/import/refresh/search/default)
+- [x] Smart taste rebuild: skip rebuild if new rating wouldn't affect top 25 movies
+- [x] Recommendation variety: shuffle within score tiers (TIER_THRESHOLD=0.02) so same-quality recs appear in different order each request
 
-*Last updated: 2026-03-07*
+*Last updated: 2026-03-08*
 
 
 
