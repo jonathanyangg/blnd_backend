@@ -19,6 +19,7 @@ class GroupMemberResponse(BaseModel):
     id: str
     username: str
     display_name: str | None = None
+    avatar_url: str | None = None
 
 
 class GroupResponse(BaseModel):
@@ -26,6 +27,7 @@ class GroupResponse(BaseModel):
     name: str
     created_by: str
     member_count: int
+    member_avatars: list[str | None] = []
     created_at: datetime
 
 

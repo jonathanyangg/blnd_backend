@@ -50,17 +50,20 @@ def list_groups(user_id: str, db: Session) -> dict:
 
     results = []
     for g in groups:
-        count = (
-            db.query(func.count(GroupMember.user_id))
+        members_rows = (
+            db.query(GroupMember, Profile)
+            .join(Profile, GroupMember.user_id == Profile.id)
             .filter(GroupMember.group_id == g.id)
-            .scalar()
+            .all()
         )
+        avatars = [p.avatar_url for _, p in members_rows[:4]]
         results.append(
             {
                 "id": g.id,
                 "name": g.name,
                 "created_by": str(g.created_by),
-                "member_count": count or 0,
+                "member_count": len(members_rows),
+                "member_avatars": avatars,
                 "created_at": g.created_at,
             }
         )
@@ -503,6 +506,7 @@ def _group_detail(group: Group, db: Session) -> dict:
             "id": str(p.id),
             "username": p.username,
             "display_name": p.display_name,
+            "avatar_url": p.avatar_url,
         }
         for _, p in members_rows
     ]
