@@ -101,6 +101,8 @@ def update_profile(
             profile.username = new_username
     if "display_name" in updates:
         profile.display_name = updates["display_name"]
+    if "avatar_url" in updates:
+        profile.avatar_url = updates["avatar_url"]
     if "favorite_genres" in updates:
         old_genres = profile.favorite_genres or []
         new_genres = updates["favorite_genres"]

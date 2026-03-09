@@ -53,6 +53,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Username validation: 3–30 chars, alphanumeric + periods + underscores, no leading/trailing/consecutive special chars, auto-lowercased, uniqueness check
   - Username updatable via PATCH /auth/profile (same validation + uniqueness)
   - GET /auth/users/search?q= — prefix search (ILIKE) for friend autocomplete, excludes current user, returns up to 10 results
+  - Avatar upload: Supabase Storage `avatars` bucket (public), RLS policies (SELECT: public, INSERT/UPDATE/DELETE: owner only via folder path), frontend uploads to `avatars/{user_id}/avatar.png`, sends public URL via PATCH /auth/profile `avatar_url` field
 - Movies domain: fully implemented
   - Model: Movie (SQLAlchemy, includes director, cast, tagline, backdrop_path, imdb_id)
   - Schemas: MovieResponse (all fields including credits, vote_average scaled from TMDB 0-10 to 0-5 via Pydantic validator), MovieSearchResult
@@ -189,8 +190,9 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [x] TMDB Changes API sync (POST /import/sync-movies — polls changes, upserts cached movies, re-embeds on overview change)
 - [x] Probabilistic recommendation sampling: softmax-weighted 500→200 candidate selection for fresh results each request
 - [x] Top-rated movies endpoint (GET /movies/top-rated — TMDB top_rated with match_score)
+- [x] Avatar upload support (Supabase Storage bucket + PATCH /auth/profile accepts avatar_url)
 
-*Last updated: 2026-03-08*
+*Last updated: 2026-03-09*
 
 
 

@@ -70,6 +70,7 @@ class UserSearchResponse(BaseModel):
 class UpdateProfileRequest(BaseModel):
     username: str | None = None
     display_name: str | None = None
+    avatar_url: str | None = None
     taste_bio: str | None = None
     favorite_genres: list[str] | None = None
 
