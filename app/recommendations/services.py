@@ -8,7 +8,11 @@ from sqlalchemy.orm import Session
 from app.auth.models import Profile
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
-from app.recommendations.ranking import rerank_candidates, to_match_percentage
+from app.recommendations.ranking import (
+    probabilistic_sample,
+    rerank_candidates,
+    to_match_percentage,
+)
 from app.tracking.models import WatchedMovie
 
 logger = logging.getLogger(__name__)
@@ -214,7 +218,7 @@ def rebuild_taste_profile(
     return profile
 
 
-CANDIDATE_POOL_SIZE = 200
+CANDIDATE_POOL_SIZE = 500
 
 
 def get_recommendations(
@@ -286,6 +290,7 @@ def get_recommendations(
     # Re-rank with structured signals
     user_genres, top_directors, top_cast = get_user_signal_context(user_id, db)
     ranked = rerank_candidates(candidates, user_genres, top_directors, top_cast)
+    ranked = probabilistic_sample(ranked)
 
     # Apply pagination
     page = ranked[offset : offset + limit]

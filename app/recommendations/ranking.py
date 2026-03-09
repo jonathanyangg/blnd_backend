@@ -1,11 +1,14 @@
 """Re-ranking layer for recommendation candidates.
 
-Architecture: pgvector returns ~200 candidates by cosine similarity,
+Architecture: pgvector returns ~500 candidates by cosine similarity,
 then this module re-ranks using structured signals (genre, consensus, director, cast).
-Candidates within the same score tier are shuffled for variety.
+Probabilistic softmax sampling selects 200 from the pool (favoring higher scores),
+then candidates within the same score tier are shuffled for additional variety.
 """
 
 import random
+
+import numpy as np
 
 from app.movies.models import Movie
 
@@ -116,7 +119,35 @@ def _shuffle_within_tiers(candidates: list[dict]) -> list[dict]:
     return result
 
 
-MATCH_BOOST = 0.4
+SAMPLE_TEMPERATURE = 1.0  # Tunable: 0.5 = conservative, 2.0 = exploratory
+SAMPLE_SIZE = 200  # How many to sample from the over-fetched pool
+
+
+def probabilistic_sample(
+    candidates: list[dict],
+    sample_size: int = SAMPLE_SIZE,
+    temperature: float = SAMPLE_TEMPERATURE,
+) -> list[dict]:
+    """Softmax-weighted sampling from candidates. Higher scores = higher probability."""
+    if len(candidates) <= sample_size:
+        return candidates
+
+    scores = np.array([c["score"] for c in candidates])
+    # Softmax with temperature
+    exp_scores = np.exp(scores / temperature)
+    probabilities = exp_scores / exp_scores.sum()
+
+    # Sample without replacement
+    indices = np.random.choice(
+        len(candidates), size=sample_size, replace=False, p=probabilities
+    )
+    sampled = [candidates[i] for i in indices]
+    # Re-sort by score descending
+    sampled.sort(key=lambda c: c["score"], reverse=True)
+    return sampled
+
+
+MATCH_BOOST = 0.5
 
 
 def to_match_percentage(score: float) -> float:

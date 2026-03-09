@@ -32,6 +32,28 @@ async def get_trending_movies(
     return data
 
 
+@router.get("/top-rated", response_model=schemas.MovieSearchResult)
+@limiter.limit(LIMIT_DEFAULT)
+async def get_top_rated_movies(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+):
+    try:
+        data = await services.get_top_rated_movies(page, tmdb_client)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
+
+    tmdb_ids = [r["tmdb_id"] for r in data["results"]]
+    scores = services.compute_match_scores(tmdb_ids, user_id, db)
+    for r in data["results"]:
+        r["match_score"] = scores.get(r["tmdb_id"])
+
+    return data
+
+
 @router.get("/discover", response_model=schemas.MovieSearchResult)
 @limiter.limit(LIMIT_SEARCH)
 async def discover_movies(

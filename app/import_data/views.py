@@ -40,6 +40,26 @@ async def seed_movies(
     return {"status": "started", "min_popularity": min_popularity}
 
 
+async def _run_sync_pipeline_async() -> None:
+    db = SessionLocal()
+    try:
+        await services.run_sync_pipeline(db, settings.tmdb_api_key, openai_client)
+    except Exception:
+        logger.exception("Sync pipeline failed")
+    finally:
+        db.close()
+
+
+@router.post("/sync-movies", status_code=status.HTTP_202_ACCEPTED)
+@limiter.limit(LIMIT_HEAVY)
+async def sync_movies(
+    request: Request,
+    _user_id: str = Depends(get_current_user),
+):
+    asyncio.ensure_future(_run_sync_pipeline_async())
+    return {"status": "started"}
+
+
 @router.post("/letterboxd", response_model=ImportSummaryResponse)
 @limiter.limit(LIMIT_IMPORT)
 async def import_letterboxd(
