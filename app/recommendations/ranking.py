@@ -147,9 +147,9 @@ def probabilistic_sample(
     return sampled
 
 
-MATCH_BOOST = 0.5
+MATCH_BOOST = 0.2
 
 
 def to_match_percentage(score: float) -> float:
-    """Scale raw score to 0–1 with upward compression."""
-    return round(score + (1 - score) * MATCH_BOOST, 4)
+    """Shift raw score up by MATCH_BOOST, capped at 1.0."""
+    return round(min(score + MATCH_BOOST, 1.0), 4)

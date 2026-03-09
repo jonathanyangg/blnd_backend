@@ -1,7 +1,7 @@
 from collections.abc import AsyncGenerator, Generator
 
 import httpx
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from openai import OpenAI
 from sqlalchemy.orm import Session
@@ -47,3 +47,18 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
         )
+
+
+async def get_optional_user(request: Request) -> str | None:
+    """Extract user ID from Bearer token if present, otherwise return None."""
+    auth = request.headers.get("authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth[7:]
+    try:
+        user_response = supabase.auth.get_user(token)
+        if not user_response or not user_response.user:
+            return None
+        return str(user_response.user.id)
+    except Exception:
+        return None
