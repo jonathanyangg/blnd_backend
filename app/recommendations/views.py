@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
-from app.core.rate_limit import LIMIT_DEFAULT, LIMIT_REFRESH, limiter
+from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.dependencies import get_current_user, get_db, openai_client
 from app.recommendations import schemas, services
 
@@ -22,7 +22,7 @@ def get_recommendations(
 
 
 @router.post("/me/refresh", response_model=schemas.RecommendationsResponse)
-@limiter.limit(LIMIT_REFRESH)
+@limiter.limit(LIMIT_DEFAULT)
 def refresh_recommendations(
     request: Request,
     user_id: str = Depends(get_current_user),
