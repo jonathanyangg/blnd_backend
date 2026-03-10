@@ -1,63 +1,46 @@
+---
+gsd_state_version: 1.0
+milestone: v1.0
+milestone_name: Letterboxd Import
+status: milestone_complete
+stopped_at: v1.0 milestone archived
+last_updated: "2026-03-09T00:00:00Z"
+last_activity: 2026-03-09 — v1.0 milestone completed and archived
+progress:
+  total_phases: 3
+  completed_phases: 3
+  total_plans: 6
+  completed_plans: 6
+  percent: 100
+---
+
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-03)
+See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** Users can import their complete Letterboxd history into BLND with a single zip upload — watched movies, ratings, reviews, watchlist, and likes all transfer accurately.
-**Current focus:** Phase 1 — Schema
+**Current focus:** v1.0 complete — planning next milestone
 
 ## Current Position
 
-Phase: 1 of 3 (Schema)
-Plan: 0 of TBD in current phase
-Status: Ready to plan
-Last activity: 2026-03-03 — Roadmap created
+Milestone: v1.0 Letterboxd Import — SHIPPED
+All 3 phases complete, 6 plans executed, 22/22 requirements satisfied.
+Archived to `.planning/milestones/`
 
-Progress: [░░░░░░░░░░] 0%
-
-## Performance Metrics
-
-**Velocity:**
-- Total plans completed: 0
-- Average duration: -
-- Total execution time: -
-
-**By Phase:**
-
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| - | - | - | - |
-
-**Recent Trend:**
-- Last 5 plans: -
-- Trend: -
-
-*Updated after each plan completion*
+Progress: [██████████] 100%
 
 ## Accumulated Context
 
 ### Decisions
 
-Decisions are logged in PROJECT.md Key Decisions table.
-Recent decisions affecting current work:
-
-- All phases: TMDB search by name+year to resolve IDs (Letterboxd doesn't export TMDB IDs)
-- Phase 1: Add `liked` boolean to watched_movies (keeps likes tied to watched entries)
-- Phase 1: Separate watchlist_movies table (conceptually different from watched)
-- Phase 2: Skip existing entries on import (preserve existing manual entries)
+See: .planning/PROJECT.md Key Decisions table (updated with outcomes after v1.0)
 
 ### Pending Todos
 
-None yet.
+None.
 
 ### Blockers/Concerns
 
-- Phase 2: Research notes `get_movie_details` calls `db.commit()` internally — implementation should evaluate whether to batch-cache movies separately or accept N commits during the caching sub-step
-- Phase 2: TMDB `year` vs. `primary_release_year` parameter semantics unconfirmed — verify via test call during implementation; fallback handles it either way
-
-## Session Continuity
-
-Last session: 2026-03-03
-Stopped at: Roadmap created, STATE.md initialized
-Resume file: None
+- supabase db push pending user auth (migrations verified correct at SQL level)
