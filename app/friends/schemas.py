@@ -1,10 +1,10 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SendFriendRequestRequest(BaseModel):
-    addressee_username: str
+    addressee_username: str = Field(max_length=30)
 
 
 class FriendResponse(BaseModel):

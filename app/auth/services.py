@@ -74,9 +74,10 @@ def get_profile(user_id: str, db: Session) -> Profile | None:
 
 def search_users(query: str, user_id: str, db: Session, limit: int = 10) -> list[dict]:
     """Search users by username prefix (ILIKE), excluding the current user."""
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     profiles = (
         db.query(Profile)
-        .filter(Profile.username.ilike(f"{query}%"), Profile.id != user_id)
+        .filter(Profile.username.ilike(f"{escaped}%"), Profile.id != user_id)
         .limit(limit)
         .all()
     )

@@ -25,7 +25,7 @@ from app.recommendations.ranking import (
 
 CANDIDATE_POOL_SIZE = 500
 EXPLORE_POOL_SIZE = 500
-ALGO_RATIO = 0.85  # 85% algo, 15% exploration
+ALGO_RATIO = 0.92  # 92% algo, 8% exploration
 
 
 @dataclass
@@ -123,6 +123,9 @@ def _run_main_algorithm(ctx: RecommendationContext, db: Session) -> list[dict]:
     for tmdb_id in tmdb_ids:
         movie = movie_map.get(tmdb_id)
         if not movie:
+            continue
+        # Filter out movies with no community validation (vote_average < 1.0)
+        if (movie.vote_average or 0) < 1.0:
             continue
         candidates.append(
             {

@@ -175,7 +175,7 @@ def probabilistic_sample(
     return sampled
 
 
-MATCH_BOOST = 0.2
+MATCH_BOOST = 0.33
 
 
 def to_match_percentage(score: float) -> float:

@@ -123,9 +123,13 @@ def update_watched_movie(
             status_code=status.HTTP_404_NOT_FOUND, detail="Movie not in watch history"
         )
 
-    update_data = updates.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(entry, field, value)
+    data = updates.model_dump(exclude_unset=True)
+    if "rating" in data:
+        entry.rating = data["rating"]
+    if "review" in data:
+        entry.review = data["review"]
+    if "watched_date" in data:
+        entry.watched_date = data["watched_date"]
 
     db.commit()
     db.refresh(entry)

@@ -10,12 +10,22 @@ from app.tracking import schemas, services
 router = APIRouter()
 
 
-def _trigger_taste_rebuild(
-    background_tasks: BackgroundTasks, user_id: str, db: Session
-) -> None:
+def _rebuild_taste_in_background(user_id: str) -> None:
+    from app.database import SessionLocal
     from app.recommendations.services import rebuild_taste_profile
 
-    background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)
+    db = SessionLocal()
+    try:
+        rebuild_taste_profile(user_id, db, openai_client)
+    finally:
+        db.close()
+
+
+def _trigger_taste_rebuild(
+    background_tasks: BackgroundTasks,
+    user_id: str,
+) -> None:
+    background_tasks.add_task(_rebuild_taste_in_background, user_id)
 
 
 def _should_rebuild(user_id: str, rating: float | None, db: Session) -> bool:
@@ -48,7 +58,7 @@ async def track_movie(
         source=body.source,
     )
     if _should_rebuild(user_id, body.rating, db):
-        _trigger_taste_rebuild(background_tasks, user_id, db)
+        _trigger_taste_rebuild(background_tasks, user_id)
     return result
 
 
@@ -103,7 +113,7 @@ async def update_watched_movie(
 ):
     result = services.update_watched_movie(user_id, tmdb_id, body, db)
     if _should_rebuild(user_id, body.rating, db):
-        _trigger_taste_rebuild(background_tasks, user_id, db)
+        _trigger_taste_rebuild(background_tasks, user_id)
     return result
 
 
@@ -127,4 +137,4 @@ async def delete_watched_movie(
     deleted_rating = float(entry.rating) if entry and entry.rating is not None else None
     services.delete_watched_movie(user_id, tmdb_id, db)
     if _should_rebuild(user_id, deleted_rating, db):
-        _trigger_taste_rebuild(background_tasks, user_id, db)
+        _trigger_taste_rebuild(background_tasks, user_id)

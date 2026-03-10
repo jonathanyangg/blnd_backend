@@ -4,7 +4,16 @@ import logging
 import zipfile
 
 import httpx
-from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
@@ -17,6 +26,14 @@ from app.import_data.schemas import ImportSummaryResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+ADMIN_IDS: set[str] = {settings.admin_user_id} if settings.admin_user_id else set()
+
+
+def _require_admin(user_id: str) -> None:
+    if not ADMIN_IDS or user_id not in ADMIN_IDS:
+        raise HTTPException(status_code=403, detail="Admin only")
+
 
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
 MAX_DECOMPRESSION_RATIO = 100
@@ -49,9 +66,10 @@ async def _run_seed_pipeline_async(min_popularity: float) -> None:
 @limiter.limit(LIMIT_HEAVY)
 async def seed_movies(
     request: Request,
-    min_popularity: float = 5.0,
-    _user_id: str = Depends(get_current_user),
+    min_popularity: float = Query(default=5.0, ge=1.0),
+    user_id: str = Depends(get_current_user),
 ):
+    _require_admin(user_id)
     asyncio.ensure_future(_run_seed_pipeline_async(min_popularity))
     return {"status": "started", "min_popularity": min_popularity}
 
@@ -70,8 +88,9 @@ async def _run_sync_pipeline_async() -> None:
 @limiter.limit(LIMIT_HEAVY)
 async def sync_movies(
     request: Request,
-    _user_id: str = Depends(get_current_user),
+    user_id: str = Depends(get_current_user),
 ):
+    _require_admin(user_id)
     asyncio.ensure_future(_run_sync_pipeline_async())
     return {"status": "started"}
 

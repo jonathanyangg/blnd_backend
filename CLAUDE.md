@@ -108,17 +108,16 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Recommendations domain: fully implemented
   - Schemas: RecommendedMovieResponse, RecommendationsResponse, HiddenMovieResponse, HiddenMoviesListResponse
   - Services: dual embedding strategy (switchable via `EMBEDDING_STRATEGY` in services.py):
-    - `"average"` (current default): `compute_taste_embeddings()` splits rated movies at 40th percentile → positive embedding (liked) + negative embedding (disliked + hidden movies)
+    - `"average"` (current default): `compute_taste_embeddings()` uses rating-weighted average of ALL rated movies (5-star = 10x pull of 0.5-star). Negative embedding only from hidden movies.
     - `"llm"`: gpt-4o-mini generates ideal movie synopsis → embedded with text-embedding-3-small
-    - Both strategies compute negative embedding from low-rated + hidden movies
   - Shared 4-step pipeline (`app/recommendations/pipeline.py`): used by both user and group recs
-    - Step 1: pgvector candidate generation (500 items) + re-ranking with negative penalty
+    - Step 1: pgvector candidate generation (500 items) + quality filter (vote_average >= 1.0) + re-ranking with negative penalty
     - Step 2: Softmax probabilistic sampling (500→200) + tier shuffle
     - Step 3: Exploration scoring (genre novelty + consensus + trending) on high-rated DB movies
-    - Step 4: Exploration sampling + blending (85% algo / 15% exploration per page)
+    - Step 4: Exploration sampling + blending (92% algo / 8% exploration per page)
   - Re-ranking formula: `0.50*cosine + 0.20*genre + 0.20*consensus + 0.05*director + 0.05*cast - 0.15*negative_cosine`, clamped ≥ 0
   - Views: GET /recommendations/me, POST /recommendations/me/refresh, POST /recommendations/{tmdb_id}/hide, DELETE /recommendations/{tmdb_id}/hide, GET /recommendations/hidden
-  - Hidden movies: HiddenMovie model, excluded from recs + fed into negative embedding with weight 1.0
+  - Hidden movies: HiddenMovie model, excluded from recs. Negative embedding only from hidden movies (not inferred from ratings).
   - Taste profile auto-rebuilds in background when: user has <50 rated movies and rates/updates/deletes a movie, or updates favorite_genres via PATCH /auth/profile. Users with 50+ ratings use manual refresh only.
   - Exploration picks: movies from underrepresented genres with high vote_average, scored by `0.50*novelty + 0.40*consensus + 0.10*trending`, rescaled to P25-P75 of main scores
 - Ninth migration: added `source` column to watched_movies and watchlist_movies (tracks origin: 'manual', 'recommendation', 'letterboxd_import')
@@ -139,7 +138,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - TMDB Changes API sync: `POST /import/sync-movies` polls TMDB Changes API for movies modified since last sync, updates cached movies in-place, re-embeds movies whose overviews changed. Uses `sync_state` table (key-value) to track `last_movie_sync_date`. `_cache_movie()` now supports upsert via `existing_movie` param and returns `(movie, overview_changed)` tuple. Migration: `sync_state` table. Rate-limited to 1/day (LIMIT_HEAVY).
 - Eleventh migration: added `negative_embedding` vector(1536) to profiles, created `hidden_movies` table (user_id, tmdb_id, unique constraint)
 - Auth refresh: POST /auth/refresh (accepts refresh_token, returns new access_token + refresh_token, no JWT required)
-- Negative taste signals: `compute_taste_embeddings()` in services.py splits at 40th percentile rating, weights by |z-score|, includes hidden movies in negative pool. Both positive and negative embeddings persisted on profile.
+- Taste embedding overhaul: `compute_taste_embeddings()` now uses rating-weighted average of ALL rated movies (no percentile split). Negative embedding only from hidden movies. Quality filter (vote_average >= 1.0) on pgvector candidates removes junk results.
 - Hidden movies: HiddenMovie model in `app/recommendations/models.py`, CRUD in services.py, endpoints in views.py (POST/DELETE /recommendations/{tmdb_id}/hide, GET /recommendations/hidden)
 - Shared recommendation pipeline: `app/recommendations/pipeline.py` — `RecommendationContext` dataclass + `run_recommendation_pipeline()` used by both user and group recs. Eliminates code duplication.
 - Exploration slots: 15% of each page filled with movies from underrepresented genres (high vote_average, scored by novelty + consensus + trending). Scores rescaled to P25-P75 of main algorithm scores so they blend naturally.
@@ -153,22 +152,20 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   4. Cache in `movies` table via SQLAlchemy
   5. Embed overviews with OpenAI `text-embedding-3-small` → store in `movie_embeddings` table
 - **Taste embeddings** (`compute_taste_embeddings()` in `app/recommendations/services.py`):
-  - Splits rated movies at user's 40th percentile rating threshold
-  - **Positive embedding**: weighted average of movies above threshold, weights = |z-score|
-  - **Negative embedding**: weighted average of movies at/below threshold + hidden movies (weight 1.0)
-  - Fallback: if <5 ratings or std < 0.01, uses fixed 2.5 threshold with `|rating - 2.5|` weights
+  - **Positive embedding**: rating-weighted average of ALL rated movies (weight = rating, 0.5–5.0). A 5-star movie has 10x the pull of a 0.5-star. No threshold/split needed.
+  - **Negative embedding**: only from explicitly hidden movies (mean of hidden movie embeddings). No longer inferred from ratings — a 3/5 is not a dislike signal.
   - Both embeddings persisted on Profile model
 - **Shared 4-step pipeline** (`app/recommendations/pipeline.py`):
   - `RecommendationContext` dataclass holds all inputs (embeddings, exclusions, signal context, genre watch counts)
   - Used by both `get_recommendations()` (user) and `get_group_recommendations()` (group)
-  - **Step 1**: pgvector candidate generation (500 items) + re-ranking with negative penalty
+  - **Step 1**: pgvector candidate generation (500 items) + quality filter (vote_average >= 1.0) + re-ranking with negative penalty
   - **Step 2**: Softmax probabilistic sampling (500→200, temp=1.0) + tier shuffle
   - **Step 3**: Exploration scoring on high-rated DB movies (genre novelty + consensus + trending)
   - **Step 4**: Exploration sampling (temp=1.5) + blending (85% algo / 15% exploration)
 - **Re-ranking** (`app/recommendations/ranking.py`): `final_score = 0.50*cosine + 0.20*genre + 0.20*consensus + 0.05*director + 0.05*cast - 0.15*negative_cosine`, clamped ≥ 0
 - **Exploration scoring**: `0.50*genre_novelty + 0.40*consensus + 0.10*trending`. Genre novelty = 1 - max familiarity of movie's genres. Trending = recency by release year. Scores rescaled to P25-P75 of main algorithm scores.
 - **Score scaling**: `to_match_percentage(score) = min(score + MATCH_BOOST, 1.0)` (MATCH_BOOST=0.2). Applied to all score outputs.
-- **Hidden movies**: `hidden_movies` table, excluded from candidate pool + included in negative embedding. CRUD: POST/DELETE /recommendations/{tmdb_id}/hide, GET /recommendations/hidden
+- **Hidden movies**: `hidden_movies` table, excluded from candidate pool. Only source of negative embedding. CRUD: POST/DELETE /recommendations/{tmdb_id}/hide, GET /recommendations/hidden
 - **Auto-refresh triggers**: rating changes trigger rebuild only if user has <50 rated movies. Genre updates always trigger rebuild. Users with 50+ ratings use manual POST /recommendations/me/refresh.
 - **Group context**: averages members' positive + negative embeddings, union of watched + hidden IDs, combined genre watch counts for exploration
 - **Source tracking**: `source` column on watched_movies/watchlist_movies tracks origin
@@ -221,6 +218,8 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [x] Refactored auto-rebuild: <50 ratings = auto-rebuild on changes, 50+ = manual refresh only
 
 *Last updated: 2026-03-10*
+
+- [x] Fix recommendation quality: rating-weighted taste embedding + quality filter on candidates
 
 
 

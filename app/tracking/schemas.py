@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -6,14 +7,14 @@ from pydantic import BaseModel, Field
 class TrackMovieRequest(BaseModel):
     tmdb_id: int
     rating: float | None = Field(default=None, ge=0.5, le=5.0)
-    review: str | None = None
+    review: str | None = Field(default=None, max_length=10000)
     watched_date: date | None = None
-    source: str = "manual"
+    source: Literal["manual", "recommendation"] = "manual"
 
 
 class UpdateTrackingRequest(BaseModel):
     rating: float | None = Field(default=None, ge=0.5, le=5.0)
-    review: str | None = None
+    review: str | None = Field(default=None, max_length=10000)
     watched_date: date | None = None
 
 
@@ -36,7 +37,7 @@ class WatchHistoryResponse(BaseModel):
 
 class AddToWatchlistRequest(BaseModel):
     tmdb_id: int
-    source: str = "manual"
+    source: Literal["manual", "recommendation"] = "manual"
 
 
 class WatchlistMovieResponse(BaseModel):

@@ -19,7 +19,7 @@ router = APIRouter()
 @limiter.limit(LIMIT_DEFAULT)
 async def get_trending_movies(
     request: Request,
-    page: int = Query(default=1, ge=1),
+    page: int = Query(default=1, ge=1, le=500),
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
@@ -41,7 +41,7 @@ async def get_trending_movies(
 @limiter.limit(LIMIT_DEFAULT)
 async def get_top_rated_movies(
     request: Request,
-    page: int = Query(default=1, ge=1),
+    page: int = Query(default=1, ge=1, le=500),
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
@@ -64,7 +64,7 @@ async def get_top_rated_movies(
 async def discover_movies(
     request: Request,
     genres: str = Query(description="Comma-separated genre names"),
-    page: int = Query(default=1, ge=1),
+    page: int = Query(default=1, ge=1, le=500),
     user_id: str | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
@@ -89,7 +89,7 @@ async def discover_movies(
 async def search_movies(
     request: Request,
     query: str = Query(min_length=1),
-    page: int = Query(default=1, ge=1),
+    page: int = Query(default=1, ge=1, le=500),
     _user_id: str = Depends(get_current_user),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):

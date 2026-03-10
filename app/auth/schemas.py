@@ -1,6 +1,6 @@
 import re
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9._]+$")
 USERNAME_MIN = 3
@@ -26,7 +26,7 @@ class SignupRequest(BaseModel):
     email: str
     password: str
     username: str
-    display_name: str | None = None
+    display_name: str | None = Field(default=None, max_length=100)
 
     @field_validator("username")
     @classmethod
@@ -73,10 +73,9 @@ class UserSearchResponse(BaseModel):
 
 class UpdateProfileRequest(BaseModel):
     username: str | None = None
-    display_name: str | None = None
+    display_name: str | None = Field(default=None, max_length=100)
     avatar_url: str | None = None
-    taste_bio: str | None = None
-    favorite_genres: list[str] | None = None
+    favorite_genres: list[str] | None = Field(default=None, max_length=20)
 
     @field_validator("username")
     @classmethod
@@ -84,3 +83,24 @@ class UpdateProfileRequest(BaseModel):
         if v is None:
             return v
         return validate_username(v)
+
+    @field_validator("avatar_url")
+    @classmethod
+    def check_avatar_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not v.startswith("https://"):
+            raise ValueError("Avatar URL must use HTTPS")
+        if len(v) > 2048:
+            raise ValueError("Avatar URL too long")
+        return v
+
+    @field_validator("favorite_genres")
+    @classmethod
+    def check_genres(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        for g in v:
+            if len(g) > 50:
+                raise ValueError("Genre name too long")
+        return v

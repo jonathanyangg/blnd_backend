@@ -4,6 +4,7 @@ from starlette.requests import Request
 
 from app.auth import schemas, services
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
+from app.database import SessionLocal
 from app.dependencies import get_current_user, get_db, openai_client
 
 router = APIRouter()
@@ -30,8 +31,10 @@ def signup(
         return services.signup(
             body.email, body.password, body.username, body.display_name, db
         )
-    except Exception as e:
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Signup failed")
 
 
 @router.post("/login", response_model=schemas.LoginResponse)
@@ -39,8 +42,8 @@ def signup(
 def login(request: Request, body: schemas.LoginRequest):
     try:
         return services.login(body.email, body.password)
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
 
 @router.post("/refresh", response_model=schemas.LoginResponse)
@@ -48,8 +51,8 @@ def login(request: Request, body: schemas.LoginRequest):
 def refresh(request: Request, body: schemas.RefreshRequest):
     try:
         return services.refresh_session(body.refresh_token)
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Session refresh failed")
 
 
 @router.get("/me", response_model=schemas.UserResponse)
@@ -95,7 +98,14 @@ def update_profile(
     if genres_changed:
         from app.recommendations.services import rebuild_taste_profile
 
-        background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)
+        def _rebuild_in_background() -> None:
+            bg_db = SessionLocal()
+            try:
+                rebuild_taste_profile(user_id, bg_db, openai_client)
+            finally:
+                bg_db.close()
+
+        background_tasks.add_task(_rebuild_in_background)
 
     return schemas.UserResponse(
         id=str(profile.id),
