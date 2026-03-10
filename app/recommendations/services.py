@@ -2,35 +2,31 @@ import logging
 
 import numpy as np
 from openai import OpenAI
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
-from app.recommendations.ranking import (
-    probabilistic_sample,
-    rerank_candidates,
-    to_match_percentage,
-)
+from app.recommendations.models import HiddenMovie
 from app.tracking.models import WatchedMovie
 
 logger = logging.getLogger(__name__)
 
+AUTO_REBUILD_THRESHOLD = 50
 
-def would_affect_top_n(user_id: str, rating: float, db: Session, n: int = 25) -> bool:
-    """Check if a new rating would crack the user's top N rated movies."""
-    rows = (
-        db.query(WatchedMovie.rating)
+
+def should_auto_rebuild(user_id: str, db: Session) -> bool:
+    """Decide whether to auto-rebuild taste profile after a rating change.
+
+    Always rebuild if user has <50 rated movies (still learning).
+    Never auto-rebuild if 50+ (manual refresh only).
+    """
+    count = (
+        db.query(WatchedMovie)
         .filter(WatchedMovie.user_id == user_id, WatchedMovie.rating.isnot(None))
-        .order_by(WatchedMovie.rating.desc())
-        .limit(n)
-        .all()
+        .count()
     )
-    if len(rows) < n:
-        return True
-    lowest_top_rating = float(rows[-1][0])
-    return rating >= lowest_top_rating
+    return count < AUTO_REBUILD_THRESHOLD
 
 
 def get_top_rated_movies(user_id: str, db: Session, limit: int = 25) -> list[dict]:
@@ -160,27 +156,80 @@ def embed_taste_bio(taste_bio: str, openai_client: OpenAI) -> list[float]:
 EMBEDDING_STRATEGY = "average"
 
 
-def compute_average_embedding(user_id: str, db: Session) -> list[float] | None:
-    """Average the embeddings of the user's top-rated movies, weighted by rating."""
+def compute_taste_embeddings(
+    user_id: str, db: Session
+) -> tuple[list[float] | None, list[float] | None]:
+    """Compute positive and negative taste embeddings using z-score weighting.
+
+    Splits at user's 40th percentile rating. Falls back to fixed 2.5 threshold
+    if <5 ratings or std < 0.01.
+
+    Returns (positive_embedding, negative_embedding).
+    """
     rows = (
-        db.query(WatchedMovie.rating, MovieEmbedding.embedding)
+        db.query(WatchedMovie.tmdb_id, WatchedMovie.rating, MovieEmbedding.embedding)
         .join(MovieEmbedding, WatchedMovie.tmdb_id == MovieEmbedding.tmdb_id)
         .filter(WatchedMovie.user_id == user_id, WatchedMovie.rating.isnot(None))
-        .order_by(WatchedMovie.rating.desc())
-        .limit(25)
         .all()
     )
     if not rows:
-        return None
+        return None, None
 
-    ratings = np.array([float(r) for r, _ in rows])
-    embeddings = np.array([e for _, e in rows])
+    ratings = np.array([float(r) for _, r, _ in rows])
+    embeddings = np.array([e for _, _, e in rows])
 
-    if ratings.sum() == 0:
-        return None
+    # Determine split threshold and weights
+    use_fallback = len(ratings) < 5 or np.std(ratings) < 0.01
+    if use_fallback:
+        threshold = 2.5
+        weights = np.abs(ratings - 2.5)
+        # Ensure non-zero weights
+        weights = np.maximum(weights, 0.1)
+    else:
+        threshold = float(np.percentile(ratings, 40))
+        mean = np.mean(ratings)
+        std = np.std(ratings)
+        weights = np.abs((ratings - mean) / std)
+        weights = np.maximum(weights, 0.1)
 
-    weighted_avg = np.average(embeddings, axis=0, weights=ratings)
-    return weighted_avg.tolist()
+    # Split into positive (above threshold) and negative (at/below threshold)
+    pos_mask = ratings > threshold
+    neg_mask = ~pos_mask
+
+    positive_emb = None
+    if pos_mask.any():
+        pos_weights = weights[pos_mask]
+        pos_embeddings = embeddings[pos_mask]
+        positive_emb = np.average(pos_embeddings, axis=0, weights=pos_weights).tolist()
+
+    negative_emb = None
+    neg_embeddings_list = []
+    neg_weights_list = []
+
+    if neg_mask.any():
+        neg_embeddings_list.append(embeddings[neg_mask])
+        neg_weights_list.append(weights[neg_mask])
+
+    # Include hidden movies in negative pool with fixed weight 1.0
+    hidden_rows = (
+        db.query(MovieEmbedding.embedding)
+        .join(HiddenMovie, HiddenMovie.tmdb_id == MovieEmbedding.tmdb_id)
+        .filter(HiddenMovie.user_id == user_id)
+        .all()
+    )
+    if hidden_rows:
+        hidden_embeddings = np.array([e for (e,) in hidden_rows])
+        neg_embeddings_list.append(hidden_embeddings)
+        neg_weights_list.append(np.ones(len(hidden_rows)))
+
+    if neg_embeddings_list:
+        all_neg_embeddings = np.concatenate(neg_embeddings_list, axis=0)
+        all_neg_weights = np.concatenate(neg_weights_list)
+        negative_emb = np.average(
+            all_neg_embeddings, axis=0, weights=all_neg_weights
+        ).tolist()
+
+    return positive_emb, negative_emb
 
 
 def rebuild_taste_profile(
@@ -195,10 +244,11 @@ def rebuild_taste_profile(
 
     # Taste embedding: switch between strategies
     if EMBEDDING_STRATEGY == "average":
-        taste_embedding = compute_average_embedding(user_id, db)
-        if not taste_embedding:
+        positive_emb, negative_emb = compute_taste_embeddings(user_id, db)
+        if not positive_emb:
             raise Exception("User has no movies rated yet")
-        profile.taste_embedding = taste_embedding
+        profile.taste_embedding = positive_emb
+        profile.negative_embedding = negative_emb
     else:
         # LLM strategy: embed the generated taste bio
         prompt = build_taste_prompt(profile.favorite_genres, movies)
@@ -208,6 +258,9 @@ def rebuild_taste_profile(
         taste_embedding = embed_taste_bio(taste_bio, openai_client)
         profile.taste_bio = taste_bio
         profile.taste_embedding = taste_embedding
+        # Still compute negative for LLM strategy
+        _, negative_emb = compute_taste_embeddings(user_id, db)
+        profile.negative_embedding = negative_emb
 
     db.commit()
     db.refresh(profile)
@@ -218,98 +271,90 @@ def rebuild_taste_profile(
     return profile
 
 
-CANDIDATE_POOL_SIZE = 500
+# --- Hidden movies CRUD ---
 
 
-def get_recommendations(
-    user_id: str,
-    db: Session,
-    openai_client: OpenAI,
-    limit: int = 20,
-    offset: int = 0,
-) -> dict:
-    """Get movie recommendations via pgvector similarity + re-ranking."""
-    profile = db.query(Profile).filter(Profile.id == user_id).first()
-    if not profile:
-        return {"results": [], "taste_bio": None}
-
-    # Build taste profile inline if missing
-    if profile.taste_embedding is None:
-        profile = rebuild_taste_profile(user_id, db, openai_client)
-        if not profile or profile.taste_embedding is None:
-            return {"results": [], "taste_bio": profile.taste_bio if profile else None}
-
-    # Get watched movie IDs to exclude
-    watched_ids = [
-        row[0]
-        for row in db.query(WatchedMovie.tmdb_id)
-        .filter(WatchedMovie.user_id == user_id)
-        .all()
-    ]
-
-    # Over-fetch candidates from pgvector
-    embedding_str = "[" + ",".join(str(v) for v in profile.taste_embedding) + "]"
-
-    result = db.execute(
-        text(
-            "SELECT * FROM match_movies("
-            "cast(:query_embedding AS vector(1536)), :match_count, :exclude_ids"
-            ")"
-        ),
-        {
-            "query_embedding": embedding_str,
-            "match_count": CANDIDATE_POOL_SIZE,
-            "exclude_ids": watched_ids if watched_ids else [],
-        },
+def hide_movie(user_id: str, tmdb_id: int, db: Session) -> HiddenMovie:
+    """Hide a movie from recommendations."""
+    existing = (
+        db.query(HiddenMovie)
+        .filter(HiddenMovie.user_id == user_id, HiddenMovie.tmdb_id == tmdb_id)
+        .first()
     )
-    rows = result.fetchall()
+    if existing:
+        return existing
 
-    if not rows:
-        return {"results": [], "taste_bio": profile.taste_bio}
+    hidden = HiddenMovie(user_id=user_id, tmdb_id=tmdb_id)
+    db.add(hidden)
+    db.commit()
+    db.refresh(hidden)
+    return hidden
 
-    # Build candidate list with full movie objects
-    tmdb_ids = [row[0] for row in rows]
-    similarity_map = {row[0]: row[1] for row in rows}
 
-    movies = db.query(Movie).filter(Movie.tmdb_id.in_(tmdb_ids)).all()
-    movie_map = {m.tmdb_id: m for m in movies}
+def unhide_movie(user_id: str, tmdb_id: int, db: Session) -> bool:
+    """Unhide a movie. Returns True if found and deleted."""
+    deleted = (
+        db.query(HiddenMovie)
+        .filter(HiddenMovie.user_id == user_id, HiddenMovie.tmdb_id == tmdb_id)
+        .delete()
+    )
+    db.commit()
+    return deleted > 0
 
-    candidates = []
-    for tmdb_id in tmdb_ids:
-        movie = movie_map.get(tmdb_id)
-        if not movie:
-            continue
-        candidates.append(
-            {
-                "tmdb_id": tmdb_id,
-                "similarity": similarity_map[tmdb_id],
-                "movie": movie,
-            }
-        )
 
-    # Re-rank with structured signals
-    user_genres, top_directors, top_cast = get_user_signal_context(user_id, db)
-    ranked = rerank_candidates(candidates, user_genres, top_directors, top_cast)
-    ranked = probabilistic_sample(ranked)
-
-    # Apply pagination
-    page = ranked[offset : offset + limit]
+def get_hidden_movies(
+    user_id: str, db: Session, limit: int = 50, offset: int = 0
+) -> dict:
+    """Get user's hidden movies with movie details."""
+    query = (
+        db.query(HiddenMovie, Movie)
+        .join(Movie, HiddenMovie.tmdb_id == Movie.tmdb_id)
+        .filter(HiddenMovie.user_id == user_id)
+        .order_by(HiddenMovie.created_at.desc())
+    )
+    total = db.query(HiddenMovie).filter(HiddenMovie.user_id == user_id).count()
+    rows = query.offset(offset).limit(limit).all()
 
     results = []
-    for c in page:
-        movie = c["movie"]
+    for hidden, movie in rows:
         results.append(
             {
                 "tmdb_id": movie.tmdb_id,
                 "title": movie.title,
                 "year": movie.year,
-                "overview": movie.overview,
                 "poster_path": movie.poster_path,
-                "genres": movie.genres or [],
-                "director": movie.director,
-                "similarity": round(c["similarity"], 4),
-                "score": to_match_percentage(c["score"]),
+                "hidden_at": hidden.created_at.isoformat(),
             }
         )
+    return {"results": results, "total": total}
 
-    return {"results": results, "taste_bio": profile.taste_bio}
+
+def get_hidden_movie_ids(user_id: str, db: Session) -> list[int]:
+    """Get list of hidden tmdb_ids for a user."""
+    return [
+        row[0]
+        for row in db.query(HiddenMovie.tmdb_id)
+        .filter(HiddenMovie.user_id == user_id)
+        .all()
+    ]
+
+
+def compute_genre_watch_counts(user_id: str, db: Session) -> tuple[dict[str, int], int]:
+    """Count how many watched movies contain each genre for a user.
+
+    Returns (genre_counts, total_movies_watched).
+    """
+    rows = (
+        db.query(Movie.genres)
+        .join(WatchedMovie, WatchedMovie.tmdb_id == Movie.tmdb_id)
+        .filter(WatchedMovie.user_id == user_id)
+        .all()
+    )
+    genre_counts: dict[str, int] = {}
+    total = len(rows)
+    for (genres,) in rows:
+        for g in genres or []:
+            name = g.get("name", "").lower()
+            if name:
+                genre_counts[name] = genre_counts.get(name, 0) + 1
+    return genre_counts, total

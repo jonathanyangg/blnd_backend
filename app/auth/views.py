@@ -43,6 +43,15 @@ def login(request: Request, body: schemas.LoginRequest):
         raise HTTPException(status_code=401, detail=str(e))
 
 
+@router.post("/refresh", response_model=schemas.LoginResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def refresh(request: Request, body: schemas.RefreshRequest):
+    try:
+        return services.refresh_session(body.refresh_token)
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
 @router.get("/me", response_model=schemas.UserResponse)
 @limiter.limit(LIMIT_DEFAULT)
 def me(

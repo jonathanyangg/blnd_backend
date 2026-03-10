@@ -2,14 +2,19 @@ import logging
 
 import numpy as np
 from fastapi import HTTPException, status
-from sqlalchemy import func, text
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
 from app.groups.models import Group, GroupMember
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
-from app.recommendations.ranking import rerank_candidates, to_match_percentage
+from app.recommendations.models import HiddenMovie
+from app.recommendations.pipeline import (
+    RecommendationContext,
+    run_recommendation_pipeline,
+)
+from app.recommendations.services import compute_genre_watch_counts
 from app.tracking.models import Watchlist, WatchedMovie
 
 logger = logging.getLogger(__name__)
@@ -250,9 +255,6 @@ def delete_group(group_id: int, user_id: str, db: Session) -> None:
     db.commit()
 
 
-CANDIDATE_POOL_SIZE = 200
-
-
 def get_group_recommendations(
     group_id: int,
     user_id: str,
@@ -260,7 +262,7 @@ def get_group_recommendations(
     limit: int = 20,
     offset: int = 0,
 ) -> dict:
-    """Generate group recommendations by averaging member taste embeddings + re-ranking."""
+    """Generate group recommendations using the shared pipeline."""
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group:
         raise HTTPException(
@@ -269,93 +271,67 @@ def get_group_recommendations(
 
     _verify_membership(group_id, user_id, db)
 
-    # Get member IDs
     members = db.query(GroupMember).filter(GroupMember.group_id == group_id).all()
     member_ids = [str(m.user_id) for m in members]
 
     if not member_ids:
         return {"results": []}
 
-    # Per member: top N rated movie embeddings, weighted average
-    per_member_limit = max(5, 50 // len(member_ids))
-    member_embeddings = []
-
+    # Build averaged positive + negative embeddings from member profiles
+    pos_embeddings = []
+    neg_embeddings = []
     for mid in member_ids:
-        rows = (
-            db.query(WatchedMovie.rating, MovieEmbedding.embedding)
-            .join(MovieEmbedding, WatchedMovie.tmdb_id == MovieEmbedding.tmdb_id)
-            .filter(WatchedMovie.user_id == mid, WatchedMovie.rating.isnot(None))
-            .order_by(WatchedMovie.rating.desc())
-            .limit(per_member_limit)
-            .all()
-        )
-        if not rows:
-            continue
+        profile = db.query(Profile).filter(Profile.id == mid).first()
+        if profile and profile.taste_embedding is not None:
+            pos_embeddings.append(np.array(list(profile.taste_embedding)))
+            if profile.negative_embedding is not None:
+                neg_embeddings.append(np.array(list(profile.negative_embedding)))
 
-        ratings = np.array([float(r) for r, _ in rows])
-        embeddings = np.array([e for _, e in rows])
+    if not pos_embeddings:
+        # Fallback: build from rated movies directly
+        per_member_limit = max(5, 50 // len(member_ids))
+        for mid in member_ids:
+            rows = (
+                db.query(WatchedMovie.rating, MovieEmbedding.embedding)
+                .join(MovieEmbedding, WatchedMovie.tmdb_id == MovieEmbedding.tmdb_id)
+                .filter(WatchedMovie.user_id == mid, WatchedMovie.rating.isnot(None))
+                .order_by(WatchedMovie.rating.desc())
+                .limit(per_member_limit)
+                .all()
+            )
+            if not rows:
+                continue
+            ratings = np.array([float(r) for r, _ in rows])
+            embeddings = np.array([e for _, e in rows])
+            if ratings.sum() == 0:
+                continue
+            weighted_avg = np.average(embeddings, axis=0, weights=ratings)
+            pos_embeddings.append(weighted_avg)
 
-        if ratings.sum() == 0:
-            continue
-
-        weighted_avg = np.average(embeddings, axis=0, weights=ratings)
-        member_embeddings.append(weighted_avg)
-
-    if not member_embeddings:
+    if not pos_embeddings:
         return {"results": []}
 
-    # Average all member embeddings together
-    group_embedding = np.mean(member_embeddings, axis=0)
+    group_positive = np.mean(pos_embeddings, axis=0).tolist()
+    group_negative = (
+        np.mean(neg_embeddings, axis=0).tolist() if neg_embeddings else None
+    )
 
-    # Union of all members' watched tmdb_ids for exclusion
+    # Union of all members' watched + hidden movie IDs
     watched_ids = [
         row[0]
         for row in db.query(WatchedMovie.tmdb_id)
         .filter(WatchedMovie.user_id.in_(member_ids))
         .all()
     ]
+    hidden_ids = [
+        row[0]
+        for row in db.query(HiddenMovie.tmdb_id)
+        .filter(HiddenMovie.user_id.in_(member_ids))
+        .all()
+    ]
+    exclude_ids = list(set(watched_ids + hidden_ids))
 
-    # Over-fetch candidates from pgvector
-    embedding_str = "[" + ",".join(str(v) for v in group_embedding) + "]"
-
-    result = db.execute(
-        text(
-            "SELECT * FROM match_movies("
-            "cast(:query_embedding AS vector(1536)), :match_count, :exclude_ids"
-            ")"
-        ),
-        {
-            "query_embedding": embedding_str,
-            "match_count": CANDIDATE_POOL_SIZE,
-            "exclude_ids": watched_ids if watched_ids else [],
-        },
-    )
-    rows = result.fetchall()
-
-    if not rows:
-        return {"results": []}
-
-    # Build candidate list with full movie objects
-    tmdb_ids = [row[0] for row in rows]
-    similarity_map = {row[0]: row[1] for row in rows}
-
-    movies = db.query(Movie).filter(Movie.tmdb_id.in_(tmdb_ids)).all()
-    movie_map = {m.tmdb_id: m for m in movies}
-
-    candidates = []
-    for tmdb_id in tmdb_ids:
-        movie = movie_map.get(tmdb_id)
-        if not movie:
-            continue
-        candidates.append(
-            {
-                "tmdb_id": tmdb_id,
-                "similarity": similarity_map[tmdb_id],
-                "movie": movie,
-            }
-        )
-
-    # Build group signal context: union of all members' genres, directors, cast
+    # Merge signal context across all members
     all_genres: list[str] = []
     all_directors: set[str] = set()
     all_cast: set[str] = set()
@@ -363,7 +339,6 @@ def get_group_recommendations(
         profile = db.query(Profile).filter(Profile.id == mid).first()
         if profile and profile.favorite_genres:
             all_genres.extend(profile.favorite_genres)
-        # Top 10 rated movies per member for director/cast
         top_movies = (
             db.query(Movie)
             .join(WatchedMovie, WatchedMovie.tmdb_id == Movie.tmdb_id)
@@ -379,32 +354,29 @@ def get_group_recommendations(
                 name = c.get("name", "")
                 if name:
                     all_cast.add(name.lower())
-
-    # Deduplicate genres
     unique_genres = list(set(all_genres))
 
-    ranked = rerank_candidates(candidates, unique_genres, all_directors, all_cast)
+    # Combined genre watch counts across all members
+    combined_counts: dict[str, int] = {}
+    combined_total = 0
+    for mid in member_ids:
+        member_counts, member_total = compute_genre_watch_counts(mid, db)
+        for genre, count in member_counts.items():
+            combined_counts[genre] = combined_counts.get(genre, 0) + count
+        combined_total += member_total
 
-    # Apply pagination
-    page = ranked[offset : offset + limit]
+    ctx = RecommendationContext(
+        positive_embedding=group_positive,
+        negative_embedding=group_negative,
+        exclude_ids=exclude_ids,
+        user_genres=unique_genres,
+        top_directors=all_directors,
+        top_cast=all_cast,
+        genre_watch_counts=combined_counts,
+        total_watches=combined_total,
+    )
 
-    results = []
-    for c in page:
-        movie = c["movie"]
-        results.append(
-            {
-                "tmdb_id": movie.tmdb_id,
-                "title": movie.title,
-                "year": movie.year,
-                "overview": movie.overview,
-                "poster_path": movie.poster_path,
-                "genres": movie.genres or [],
-                "director": movie.director,
-                "similarity": round(c["similarity"], 4),
-                "score": to_match_percentage(c["score"]),
-            }
-        )
-
+    results = run_recommendation_pipeline(ctx, db, limit, offset)
     return {"results": results}
 
 

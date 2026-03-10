@@ -19,6 +19,7 @@ class Profile(Base):
     taste_bio: Mapped[str | None] = mapped_column(Text, nullable=True)
     favorite_genres: Mapped[list | None] = mapped_column(JSONB, default=list)
     taste_embedding = mapped_column(Vector(1536), nullable=True)
+    negative_embedding = mapped_column(Vector(1536), nullable=True)
     watchlist_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

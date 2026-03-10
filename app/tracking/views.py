@@ -19,12 +19,12 @@ def _trigger_taste_rebuild(
 
 
 def _should_rebuild(user_id: str, rating: float | None, db: Session) -> bool:
-    """Only rebuild if rating would affect the top 25."""
+    """Rebuild if user has <50 rated movies (still learning). Skip otherwise."""
     if rating is None:
         return False
-    from app.recommendations.services import would_affect_top_n
+    from app.recommendations.services import should_auto_rebuild
 
-    return would_affect_top_n(user_id, rating, db)
+    return should_auto_rebuild(user_id, db)
 
 
 @router.post("/", response_model=schemas.WatchedMovieResponse)

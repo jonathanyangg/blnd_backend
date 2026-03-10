@@ -1,4 +1,3 @@
-import numpy as np
 import httpx
 from sqlalchemy.orm import Session
 
@@ -10,22 +9,16 @@ from app.recommendations.ranking import (
     W_CONSENSUS,
     W_DIRECTOR,
     W_GENRE,
+    W_NEGATIVE,
     W_SIMILARITY,
     _cast_boost,
     _consensus_score,
+    _cosine_sim,
     _director_boost,
     _genre_overlap,
     to_match_percentage,
 )
 from app.recommendations.services import get_user_signal_context
-
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    va, vb = np.array(a), np.array(b)
-    denom = np.linalg.norm(va) * np.linalg.norm(vb)
-    if denom == 0:
-        return 0.0
-    return float(np.dot(va, vb) / denom)
 
 
 def _compute_score(
@@ -34,19 +27,21 @@ def _compute_score(
     user_genres: list[str],
     top_directors: set[str],
     top_cast: set[str],
+    negative_sim: float = 0.0,
 ) -> float:
     genre = _genre_overlap(movie.genres or [], user_genres)
     consensus = _consensus_score(movie.vote_average)
     director = _director_boost(movie.director, top_directors)
     cast = _cast_boost(movie.cast or [], top_cast)
-    return round(
+    score = (
         W_SIMILARITY * similarity
         + W_GENRE * genre
         + W_CONSENSUS * consensus
         + W_DIRECTOR * director
-        + W_CAST * cast,
-        4,
+        + W_CAST * cast
+        - W_NEGATIVE * max(negative_sim, 0.0)
     )
+    return round(max(score, 0.0), 4)
 
 
 def compute_match_scores(
@@ -61,6 +56,11 @@ def compute_match_scores(
         return {}
 
     taste_emb = list(profile.taste_embedding)
+    negative_emb = (
+        list(profile.negative_embedding)
+        if profile.negative_embedding is not None
+        else None
+    )
 
     # Batch-fetch embeddings
     embeddings = (
@@ -80,8 +80,11 @@ def compute_match_scores(
         movie = movie_map.get(tid)
         if not movie_emb or not movie:
             continue
-        similarity = _cosine_similarity(taste_emb, movie_emb)
-        raw = _compute_score(movie, similarity, user_genres, top_directors, top_cast)
+        similarity = _cosine_sim(taste_emb, movie_emb)
+        neg_sim = _cosine_sim(movie_emb, negative_emb) if negative_emb else 0.0
+        raw = _compute_score(
+            movie, similarity, user_genres, top_directors, top_cast, neg_sim
+        )
         scores[tid] = to_match_percentage(raw)
 
     return scores

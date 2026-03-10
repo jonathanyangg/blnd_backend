@@ -55,6 +55,19 @@ def login(email: str, password: str) -> dict:
     }
 
 
+def refresh_session(refresh_token: str) -> dict:
+    """Refresh session via Supabase Auth."""
+    auth_response = supabase.auth.refresh_session(refresh_token)
+    if not auth_response.user or not auth_response.session:
+        raise ValueError("Refresh failed")
+
+    return {
+        "access_token": auth_response.session.access_token,
+        "refresh_token": auth_response.session.refresh_token,
+        "user_id": str(auth_response.user.id),
+    }
+
+
 def get_profile(user_id: str, db: Session) -> Profile | None:
     return db.query(Profile).filter(Profile.id == user_id).first()
 

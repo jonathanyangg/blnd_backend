@@ -16,3 +16,16 @@ class RecommendedMovieResponse(BaseModel):
 class RecommendationsResponse(BaseModel):
     results: list[RecommendedMovieResponse]
     taste_bio: str | None = None
+
+
+class HiddenMovieResponse(BaseModel):
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    poster_path: str | None = None
+    hidden_at: str
+
+
+class HiddenMoviesListResponse(BaseModel):
+    results: list[HiddenMovieResponse]
+    total: int
