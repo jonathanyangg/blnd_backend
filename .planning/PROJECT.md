@@ -1,8 +1,16 @@
 # Letterboxd Import Feature
 
+## Current Milestone: v1.1 Letterboxd Integration Frontend
+
+**Goal:** Give users a native iOS experience to trigger the Letterboxd import and see results, while closing the taste profile rebuild gap on the backend.
+
+**Target features:**
+- iOS import screen: file picker, upload flow, import results display
+- Backend: trigger taste profile rebuild after bulk import completes
+
 ## What This Is
 
-A backend workflow that accepts a Letterboxd data export zip file, parses the relevant CSVs (ratings, reviews, watched, watchlist, likes/films), resolves each movie to a TMDB ID via search, and persists the data to the user's account in the BLND backend. Includes production hardening with file validation, TMDB rate limiting, and per-movie error isolation.
+A Letterboxd integration spanning backend and iOS frontend. The backend accepts a Letterboxd export zip, parses CSVs, resolves movies via TMDB, and persists the data. The iOS app provides a native UI to trigger the import, show progress and results, and surfaces the imported data (watched, ratings, reviews).
 
 ## Core Value
 
@@ -26,17 +34,12 @@ Users can import their complete Letterboxd history into BLND with a single zip u
 
 ### Active
 
-- [ ] Expose `liked` field in tracking API responses
-- [ ] Watchlist read/CRUD API endpoints
-- [ ] Trigger taste profile rebuild after bulk import
-- [ ] Two-step TMDB search (fallback without year + year proximity scoring)
-- [ ] TMDB rate limit throttling via asyncio.Semaphore
-- [ ] Per-movie result detail in import response
-- [ ] Async background job processing for large imports (500+ films)
+- [ ] iOS import screen with file picker for Letterboxd zip upload — v1.1
+- [ ] Upload progress and import results (imported/skipped/failed counts) in iOS — v1.1
+- [ ] Trigger taste profile rebuild after bulk import completes (backend) — v1.1
 
 ### Out of Scope
 
-- Frontend UI for the import flow — backend only
 - Importing profile.csv, diary.csv, comments.csv, deleted/*, orphaned/*, likes/reviews.csv, likes/lists.csv
 - Re-import / incremental import detection
 - Rewatch tracking from diary.csv
@@ -44,10 +47,12 @@ Users can import their complete Letterboxd history into BLND with a single zip u
 
 ## Context
 
-Shipped v1.0 with ~2,062 LOC Python + 179 LOC SQL.
-Tech stack: FastAPI, SQLAlchemy, Supabase Postgres, httpx async TMDB client.
-End-to-end verified with real Letterboxd export data.
-Known tech debt: `liked` and watchlist data are write-only (no read API), taste profile not rebuilt after import.
+v1.0 shipped backend pipeline: ~2,062 LOC Python + 179 LOC SQL. Endpoint: `POST /import/letterboxd`.
+Backend stack: FastAPI, SQLAlchemy, Supabase Postgres, httpx async TMDB client.
+Frontend stack: SwiftUI iOS 17+, `@Observable`, `async/await`, `APIClient` singleton, zero third-party deps.
+Design: dark monochrome, Cal.com/X aesthetic — movie posters provide all color.
+Taste profile not rebuilt after import (v1.1 target). Liked/watchlist data write-only via import (deferred beyond v1.1).
+v1.1 adds iOS frontend features: file picker upload, results display, with backend taste profile rebuild hook.
 
 ## Constraints
 
@@ -73,4 +78,4 @@ Known tech debt: `liked` and watchlist data are write-only (no read API), taste 
 | db.rollback() before logging in exception handler | Resets session state before any further work to prevent cascading failures | Good — enables per-movie isolation |
 
 ---
-*Last updated: 2026-03-09 after v1.0 milestone*
+*Last updated: 2026-03-09 after v1.1 milestone start*
