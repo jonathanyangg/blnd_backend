@@ -31,7 +31,10 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details.
   1. After a successful `POST /import/letterboxd`, the user's taste profile is rebuilt without any additional API call
   2. The taste rebuild fires after the import response is returned to the client (non-blocking)
   3. A failed or zero-import result does not trigger an unnecessary rebuild
-**Plans**: TBD
+**Plans**: 1 plan
+
+Plans:
+- [ ] 04-01-PLAN.md — Add BackgroundTasks rebuild hook to import_letterboxd endpoint (TDD)
 
 #### Phase 5: iOS Webview Import Flow
 
@@ -68,7 +71,10 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details.
   1. After a successful `POST /import/letterboxd`, the user's taste profile is rebuilt without any additional API call
   2. The taste rebuild fires after the import response is returned to the client (non-blocking)
   3. A failed or zero-import result does not trigger an unnecessary rebuild
-**Plans**: TBD
+**Plans**: 1 plan
+
+Plans:
+- [ ] 04-01-PLAN.md — Add BackgroundTasks rebuild hook to import_letterboxd endpoint (TDD)
 
 ### Phase 5: iOS Webview Import Flow
 **Goal**: User can reach the Letterboxd export page inside BLND and the app captures the ZIP download automatically
@@ -103,6 +109,6 @@ Phases 4 and 5 are independent (parallel tracks). Phase 6 depends on Phase 5. Re
 | 1. Schema | v1.0 | 2/2 | Complete | 2026-03-04 |
 | 2. Core Import Workflow | v1.0 | 3/3 | Complete | 2026-03-05 |
 | 3. Polish and Hardening | v1.0 | 1/1 | Complete | 2026-03-05 |
-| 4. Backend Taste Rebuild Hook | v1.1 | 0/TBD | Not started | - |
+| 4. Backend Taste Rebuild Hook | v1.1 | 0/1 | Not started | - |
 | 5. iOS Webview Import Flow | v1.1 | 0/TBD | Not started | - |
 | 6. iOS Upload and Results | v1.1 | 0/TBD | Not started | - |
