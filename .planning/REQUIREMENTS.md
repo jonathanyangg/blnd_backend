@@ -59,22 +59,22 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| IMPT-01 | — | Pending |
-| IMPT-02 | — | Pending |
-| IMPT-03 | — | Pending |
-| IMPT-04 | — | Pending |
-| IMPT-05 | — | Pending |
-| IMPT-06 | — | Pending |
-| IMPT-07 | — | Pending |
-| IMPT-08 | — | Pending |
-| IMPT-09 | — | Pending |
-| BKND-01 | — | Pending |
+| IMPT-01 | Phase 5 | Pending |
+| IMPT-02 | Phase 5 | Pending |
+| IMPT-03 | Phase 5 | Pending |
+| IMPT-04 | Phase 5 | Pending |
+| IMPT-05 | Phase 6 | Pending |
+| IMPT-06 | Phase 6 | Pending |
+| IMPT-07 | Phase 6 | Pending |
+| IMPT-08 | Phase 6 | Pending |
+| IMPT-09 | Phase 6 | Pending |
+| BKND-01 | Phase 4 | Pending |
 
 **Coverage:**
 - v1.1 requirements: 10 total
-- Mapped to phases: 0
-- Unmapped: 10 ⚠️
+- Mapped to phases: 10
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-03-09*
-*Last updated: 2026-03-09 after initial definition*
+*Last updated: 2026-03-09 — traceability filled after roadmap creation*
