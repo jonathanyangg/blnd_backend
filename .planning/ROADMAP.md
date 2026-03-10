@@ -49,7 +49,7 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 05-01-PLAN.md — WKWebView bridge with download interception + Letterboxd webview container
+- [x] 05-01-PLAN.md — WKWebView bridge with download interception + Letterboxd webview container
 - [ ] 05-02-PLAN.md — Import button on ProfileView + context/instructions screen + flow wiring
 
 #### Phase 6: iOS Upload and Results
@@ -92,7 +92,7 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 05-01-PLAN.md — WKWebView bridge with download interception + Letterboxd webview container
+- [x] 05-01-PLAN.md — WKWebView bridge with download interception + Letterboxd webview container
 - [ ] 05-02-PLAN.md — Import button on ProfileView + context/instructions screen + flow wiring
 
 ### Phase 6: iOS Upload and Results
@@ -118,5 +118,5 @@ Phases 4 and 5 are independent (parallel tracks). Phase 6 depends on Phase 5. Re
 | 2. Core Import Workflow | v1.0 | 3/3 | Complete | 2026-03-05 |
 | 3. Polish and Hardening | v1.0 | 1/1 | Complete | 2026-03-05 |
 | 4. Backend Taste Rebuild Hook | v1.1 | 1/1 | Complete | 2026-03-10 |
-| 5. iOS Webview Import Flow | v1.1 | 0/2 | Not started | - |
+| 5. iOS Webview Import Flow | v1.1 | 1/2 | In Progress | - |
 | 6. iOS Upload and Results | v1.1 | 0/TBD | Not started | - |

@@ -10,9 +10,9 @@ Requirements for the Letterboxd Integration Frontend milestone. Each maps to roa
 ### Import Flow
 
 - [ ] **IMPT-01**: User can tap "Import from Letterboxd" from Profile to start the import flow
-- [ ] **IMPT-02**: User sees an in-app webview loading Letterboxd's data export page
-- [ ] **IMPT-03**: User can log into Letterboxd within the in-app webview
-- [ ] **IMPT-04**: When user taps "Export Your Data" on Letterboxd, the app intercepts the ZIP download without leaving the app
+- [x] **IMPT-02**: User sees an in-app webview loading Letterboxd's data export page
+- [x] **IMPT-03**: User can log into Letterboxd within the in-app webview
+- [x] **IMPT-04**: When user taps "Export Your Data" on Letterboxd, the app intercepts the ZIP download without leaving the app
 - [ ] **IMPT-05**: After ZIP is captured, the app automatically uploads it to the backend import endpoint
 - [ ] **IMPT-06**: User sees a loading indicator while the import is processing
 - [ ] **IMPT-07**: User sees import results (imported/skipped/failed counts) when import completes
@@ -60,9 +60,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | IMPT-01 | Phase 5 | Pending |
-| IMPT-02 | Phase 5 | Pending |
-| IMPT-03 | Phase 5 | Pending |
-| IMPT-04 | Phase 5 | Pending |
+| IMPT-02 | Phase 5 | Complete |
+| IMPT-03 | Phase 5 | Complete |
+| IMPT-04 | Phase 5 | Complete |
 | IMPT-05 | Phase 6 | Pending |
 | IMPT-06 | Phase 6 | Pending |
 | IMPT-07 | Phase 6 | Pending |
