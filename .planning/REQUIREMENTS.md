@@ -21,7 +21,7 @@ Requirements for the Letterboxd Integration Frontend milestone. Each maps to roa
 
 ### Backend
 
-- [ ] **BKND-01**: Taste profile is automatically rebuilt after a successful bulk import
+- [x] **BKND-01**: Taste profile is automatically rebuilt after a successful bulk import
 
 ## Future Requirements
 
@@ -68,7 +68,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | IMPT-07 | Phase 6 | Pending |
 | IMPT-08 | Phase 6 | Pending |
 | IMPT-09 | Phase 6 | Pending |
-| BKND-01 | Phase 4 | Pending |
+| BKND-01 | Phase 4 | Complete |
 
 **Coverage:**
 - v1.1 requirements: 10 total
