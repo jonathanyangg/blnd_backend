@@ -1,8 +1,10 @@
 import asyncio
+import io
 import logging
+import zipfile
 
 import httpx
-from fastapi import APIRouter, Depends, File, UploadFile, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
@@ -15,6 +17,20 @@ from app.import_data.schemas import ImportSummaryResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_DECOMPRESSION_RATIO = 100
+
+
+def _validate_zip(file_bytes: bytes) -> None:
+    """Validate that file_bytes is a valid zip archive with safe decompression ratio."""
+    if not zipfile.is_zipfile(io.BytesIO(file_bytes)):
+        raise HTTPException(status_code=400, detail="File is not a valid zip archive")
+
+    with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+        total_uncompressed = sum(info.file_size for info in zf.infolist())
+        if total_uncompressed / len(file_bytes) > MAX_DECOMPRESSION_RATIO:
+            raise HTTPException(status_code=400, detail="Zip archive failed validation")
 
 
 async def _run_seed_pipeline_async(min_popularity: float) -> None:
@@ -68,7 +84,14 @@ async def import_letterboxd(
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+    content_length: int = Header(default=0, le=MAX_UPLOAD_SIZE),
 ):
     file_bytes = await file.read()
+
+    if len(file_bytes) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="File too large (max 10 MB)")
+
+    _validate_zip(file_bytes)
+
     result = await workflows.run_letterboxd_import(user_id, file_bytes, db, tmdb_client)
     return result
