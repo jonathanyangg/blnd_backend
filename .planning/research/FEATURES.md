@@ -1,139 +1,17 @@
 # Feature Research
 
-**Domain:** Letterboxd data import (CSV parsing + TMDB resolution + DB persistence)
-**Researched:** 2026-03-03
-**Confidence:** HIGH (based on actual Letterboxd export zip in project root, existing codebase inspection)
+**Domain:** iOS file import UI + backend taste profile rebuild (v1.1 milestone)
+**Researched:** 2026-03-09
+**Confidence:** HIGH (codebase inspection) / MEDIUM (UX patterns from HIG + search)
 
 ---
 
-## CSV Format Reference (Verified from Real Export)
+## Scope Note
 
-The following was derived by directly inspecting `letterboxd-arose3000-2026-03-04-03-09-utc.zip` in the project root — this is ground truth, not documentation.
-
-### watched.csv
-
-```
-Date,Name,Year,Letterboxd URI
-2024-12-29,The Matrix,1999,https://boxd.it/2a1m
-2024-12-29,"The French Dispatch of the Liberty, Kansas Evening Sun",2021,https://boxd.it/jLP8
-```
-
-- `Date`: ISO 8601 date when entry was added to Letterboxd (not necessarily when watched)
-- `Name`: Movie title — RFC 4180 quoted when it contains commas
-- `Year`: 4-digit release year (string, not int in CSV)
-- `Letterboxd URI`: Short URL like `https://boxd.it/2a1m` — NOT a TMDB ID
-
-### ratings.csv
-
-```
-Date,Name,Year,Letterboxd URI,Rating
-2024-12-29,The Matrix,1999,https://boxd.it/2a1m,4
-2025-03-12,Hell or High Water,2016,https://boxd.it/bfGM,4.5
-2025-03-23,Mamma Mia!,2008,https://boxd.it/1Tnq,0.5
-```
-
-- Superset of watched.csv — every rated movie is also watched
-- `Rating`: float in 0.5 increments from 0.5 to 5.0. Whole numbers stored as integers (`4` not `4.0`). Half-stars stored as decimals (`4.5`). Matches DB check constraint exactly.
-- Not all watched movies have ratings (watched.csv has more rows than ratings.csv)
-
-### reviews.csv
-
-```
-Date,Name,Year,Letterboxd URI,Rating,Rewatch,Review,Tags,Watched Date
-2026-03-04,A Minecraft Movie,2025,https://boxd.it/do4kz9,2,,Shit movie GGs,test,2026-03-03
-```
-
-- `Rating`: optional — can be empty string
-- `Rewatch`: boolean-ish field — empty string or `true`
-- `Review`: free text — can contain commas, quotes, newlines (RFC 4180 quoted)
-- `Tags`: comma-separated tag list within one field — ambiguous parsing challenge (see Edge Cases)
-- `Watched Date`: ISO 8601 date when user actually watched the film — distinct from `Date` (entry creation date)
-- Note: The `Date` column here is when the review was written/logged on Letterboxd, `Watched Date` is the actual viewing date
-
-### diary.csv
-
-```
-Date,Name,Year,Letterboxd URI,Rating,Rewatch,Tags,Watched Date
-```
-
-- Same as reviews.csv but **no Review column** — diary tracks viewings without written reviews
-- `Tags` and `Watched Date` present
-- A movie can appear multiple times in diary.csv if the user rewatched and logged it multiple times
-
-### watchlist.csv
-
-```
-Date,Name,Year,Letterboxd URI
-2024-12-29,The Truman Show,1998,https://boxd.it/18U8
-```
-
-- Same schema as watched.csv
-- `Date` = when user added it to their watchlist
-- Movies on watchlist have NOT been watched
-
-### likes/films.csv
-
-```
-Date,Name,Year,Letterboxd URI
-2024-12-29,Fight Club,1999,https://boxd.it/2a9q
-```
-
-- Same schema as watched.csv
-- Represents films the user "hearted" on Letterboxd
-- A liked film is usually (but not always) also in watched.csv
-
-### profile.csv
-
-```
-Date Joined,Username,Given Name,Family Name,Email Address,Location,Website,Bio,Pronoun,Favorite Films
-2024-12-29,arose3000,,,,,,,They / their,
-```
-
-- Single data row (header + 1 row)
-- Most fields are optional/empty
-- `Favorite Films` appears to be empty or a string representation
-
-### deleted/ and orphaned/ directories
-
-```
-deleted/diary.csv   — header only, no data rows in this export
-deleted/reviews.csv — header only, no data rows
-orphaned/diary.csv  — header only, no data rows
-orphaned/reviews.csv — header only, no data rows
-```
-
-- Headers match their non-deleted counterparts
-- Represent entries Letterboxd could not associate with a film (orphaned) or user deleted
-- In practice: likely always empty or near-empty
-
-### likes/reviews.csv and likes/lists.csv
-
-- Header only in this export (`Date` column only for lists)
-- Represent reviews/lists the user liked (not films) — not relevant to import
-
----
-
-## Edge Cases (Verified from Real Export)
-
-| Edge Case | Example | Impact |
-|-----------|---------|--------|
-| Commas in movie titles | `"The French Dispatch of the Liberty, Kansas Evening Sun"` | Must use RFC 4180 CSV parser, not naive split |
-| Apostrophes in titles | `Ferris Bueller's Day Off`, `O Brother, Where Art Thou?` | No escaping needed — apostrophes are fine |
-| Parentheses in titles | `(500) Days of Summer` | TMDB search must handle leading punctuation |
-| Ratings as integers vs floats | `4` vs `4.5` | Must coerce to float — `float("4")` works fine |
-| Half-star minimum | `0.5` (Mamma Mia!) | DB constraint already handles 0.5-5.0 |
-| Movie with no rating | Row in watched.csv but not ratings.csv | Import as watched with `rating=None` |
-| Movie in reviews.csv with empty Rating | `Rating` field is empty string | Parse as `None`, not 0 |
-| `Rewatch` field | Empty string or `true` | Not currently in schema — ignore or store as boolean |
-| `Tags` field | `test` (single), potentially comma-separated | Not currently in schema — ignore for now |
-| `Watched Date` vs `Date` | Different dates in reviews.csv | Use `Watched Date` (actual viewing), not `Date` (log entry creation) |
-| Film in likes but not watched | Letterboxd allows liking without logging | Must handle creating watched entry to attach liked=true, or create a separate liked_films table |
-| Film in diary multiple times | User watched + logged same film twice | Multiple diary rows per film — affects rewatch logic |
-| Year is string in CSV | `"1999"` not `1999` | Must cast to int for TMDB search |
-| Letterboxd URI is NOT TMDB ID | `https://boxd.it/2a1m` | Must use TMDB search-by-name+year to resolve |
-| TMDB search ambiguity | Short titles, common names | Best match heuristic needed — see TMDB notes |
-| Films with no TMDB match | Obscure films, short films, TV movies | Must handle gracefully — skip with logging |
-| Zip structure | `likes/` subdirectory, `deleted/` subdirectory | Need `zipfile` module path handling, not naive file listing |
+This file covers ONLY net-new features for v1.1. The backend import pipeline (ZIP parse,
+TMDB resolve, DB write returning `{imported, skipped, failed, failed_titles}`) shipped in
+v1.0. The iOS app has 16 screens, APIClient, and auth flow fully built. Net-new surface
+area: import screen, multipart upload, in-progress state, results display, one backend hook.
 
 ---
 
@@ -141,115 +19,95 @@ orphaned/reviews.csv — header only, no data rows
 
 ### Table Stakes (Users Expect These)
 
-Features a Letterboxd import must have. Missing any = import is incomplete/broken.
+Features users assume exist. Missing these = product feels incomplete.
 
 | Feature | Why Expected | Complexity | Notes |
 |---------|--------------|------------|-------|
-| Accept zip file upload | Letterboxd exports as zip — users just want to upload the file they downloaded | LOW | `zipfile` stdlib, read in-memory |
-| Parse watched.csv | Core user history — everything else is enhancement | LOW | Standard CSV with RFC 4180 quoting |
-| Parse ratings.csv | Ratings are the primary data that drives recommendations | LOW | Same schema + Rating column |
-| Parse reviews.csv | Users write reviews specifically to preserve them | LOW | Additional Review + Tags + Watched Date columns |
-| Parse watchlist.csv | "Want to watch" list is distinct and expected to transfer | LOW | Same schema as watched.csv |
-| Parse likes/films.csv | "Heart" list is a distinct Letterboxd concept | LOW | Same schema as watched.csv |
-| Resolve movie names to TMDB IDs | Letterboxd exports names, not TMDB IDs — resolution is required to store anything | MEDIUM | TMDB search endpoint, name+year lookup |
-| Import watched movies | Primary history — without this, nothing else works | LOW | Insert to watched_movies, skip existing |
-| Import ratings | Core user preference data | LOW | Float cast from CSV, attach to watched entry |
-| Import reviews | Text reviews are high-value user content | LOW | Text field, attach to watched entry |
-| Import watchlist | Conceptually separate from watched — needs own table | MEDIUM | Requires new watchlist_movies table + migration |
-| Import liked films | Liked flag on watched entries | MEDIUM | Requires `liked` boolean on watched_movies + migration |
-| Skip existing entries | Prevent overwriting manually entered data | LOW | Filter on existing (user_id, tmdb_id) before insert |
-| Return import summary | User needs to know what happened — how many imported, how many skipped, how many failed | LOW | Return counts in response body |
-| Handle TMDB resolution failures gracefully | Some movies won't resolve (obscure films, alternate titles) | LOW | Skip with count, log title+year |
+| File picker for .zip selection | iOS standard: tapping a button opens Files.app to pick a file | LOW | `.fileImporter(allowedContentTypes: [UTType(filenameExtension: "zip")!])` — standard SwiftUI modifier. Must call `startAccessingSecurityScopedResource()` on result URL before reading; `stopAccessingSecurityScopedResource()` after. |
+| In-progress state during upload | Users assume async ops show feedback; silent wait feels frozen | LOW | `AppButton` already supports `isLoading: true`. Import takes 5-30s (TMDB rate-limited at 25ms/call x N films). Spinner + disabled state is minimum viable feedback. |
+| Results summary (imported / skipped / failed counts) | Backend returns `{imported, skipped, failed, failed_titles}` — user expects to see what happened | LOW | New results state in `ImportView`. Backend schema already defined: `ImportSummaryResponse`. Show all four fields. |
+| Error handling for wrong file or network failure | User might pick a non-zip or have connectivity issues; backend returns 400 if zip is invalid | LOW | UTType filter prevents non-zip selection. Inline error state for backend rejections and `APIError` variants already used across other views. |
+| Entry point in existing navigation | Import needs to live somewhere discoverable | LOW | `SettingsView` already has a placeholder list ("Account", "Notifications", "Privacy", "About"). "Import from Letterboxd" row fits here as a new navigation destination. |
+| Authenticated upload | Backend `POST /import/letterboxd` requires Bearer token | LOW | `APIClient.shared` injects Bearer token. Import function follows existing `AuthAPI` / `MoviesAPI` domain API enum pattern. |
 
 ### Differentiators (Competitive Advantage)
 
-Features that go beyond what a basic import does.
+Features that set the product apart. Not required, but valued.
 
 | Feature | Value Proposition | Complexity | Notes |
 |---------|-------------------|------------|-------|
-| Use `Watched Date` from reviews/diary (not `Date`) | Most tools use the log date — actual viewing date is more accurate and valuable for taste timeline | LOW | Reviews.csv has both columns; use `Watched Date` for watched_date field |
-| Auto-cache movies in TMDB movies table | Other tools just store IDs; caching full movie data means recommendations are immediately available after import | MEDIUM | `get_movie_details` already does this — just wire it in |
-| TMDB rate limit throttling | Large imports (100+ films) hit TMDB's ~40 req/s limit; throttling prevents failures | MEDIUM | `asyncio.sleep` between batches or semaphore |
-| Detailed per-movie result in response | Return list of resolved/skipped/failed with title+reason, not just counts | LOW | Structured response helps user understand what didn't import |
-| Handle liked-but-not-watched films | Letterboxd allows liking a film you haven't logged — a strict "liked requires watched" would silently drop these | MEDIUM | Create watched entry with `liked=True` and no other data, or skip with explanation |
-| Rewatch detection from diary.csv | Diary has `Rewatch` flag and multiple entries — detect rewatches to show accurate view counts | HIGH | Requires schema changes (view count or multiple diary entries), scope risk |
+| Taste profile rebuild after import | Bulk import adds hundreds of ratings; without a rebuild the recommendation engine stays stale until user manually refreshes | MEDIUM | Backend only: add `background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)` in `import_data/views.py` after `run_letterboxd_import` returns. Mirrors the pattern already in `tracking/views.py`. iOS sees no change; this is transparent. |
+| Failed titles disclosure | Shows which specific films failed TMDB resolution so user knows exactly what didn't transfer | LOW | Backend already returns `failed_titles: list[str]`. Show as collapsible list below counts when `failed > 0`. Most import tools hide this; surfacing it builds trust. |
+| "Already imported" empty-state copy | Users who re-upload get `imported=0, failed=0` — without tailored copy it looks like a bug | LOW | If `imported == 0 && failed == 0`, show "Already up to date — no new films to import." Copy manages expectation without implying an error. |
+| Instructions on screen | Letterboxd's export flow is non-obvious for non-power-users | LOW | Static copy: "Go to letterboxd.com/settings/data, export your data, then select the downloaded .zip file." Eliminates support friction. |
 
-### Anti-Features (Deliberately NOT Build)
+### Anti-Features (Commonly Requested, Often Problematic)
 
-| Anti-Feature | Why Requested | Why Avoid | Alternative |
-|--------------|---------------|-----------|-------------|
-| Re-import / incremental sync | "I want to keep Letterboxd and BLND in sync" | Massively complex: conflict resolution, deletion detection, drift handling. Wrong scope for v1. | Skip existing entries on re-upload — user can re-upload the zip later and new entries will be added |
-| Diary.csv as primary source | Diary has richer data (Rewatch, Tags, Watched Date) | Diary and reviews.csv overlap with watched.csv. Using diary as primary creates duplication logic complexity. Watched.csv is the canonical watched list; diary is supplemental. | Parse watched.csv for the watched list; use reviews.csv for review text; ignore diary |
-| Async background job processing | "Imports should be non-blocking" | True async with job queues (Celery, Arq, etc.) is significant infrastructure. Synchronous is fine for reasonable library sizes (under ~500 films). | Keep synchronous; if timeout is a problem, add streaming response later |
-| Import Tags as first-class data | Tags appear in reviews.csv | Tags are Letterboxd-specific, not normalized, and not currently in the schema. Storing raw tag strings has no downstream value in BLND yet. | Ignore Tags column; add if BLND builds a tagging system later |
-| Import Rewatch flag | Rewatch boolean appears in reviews/diary | No current schema support. Rewatch data is only meaningful with a multi-view tracking model. | Ignore Rewatch column; add if BLND builds a diary/rewatch feature |
-| Import profile.csv | Profile has username, bio, pronouns | BLND users already have accounts. Overwriting BLND profile data with Letterboxd data is destructive and confusing. | Ignore profile.csv entirely |
-| Import deleted/ and orphaned/ | "Why not import everything?" | Deleted entries were deleted for a reason. Orphaned entries have no valid film association. Both are Letterboxd internal bookkeeping. | Ignore these directories |
-| Import likes/reviews.csv and likes/lists.csv | These appear in the zip | These are reviews/lists OTHER users wrote that this user liked — not their own data, not useful for BLND. | Ignore |
-| Frontend import UI | Nice for end users | Out of scope per PROJECT.md — backend only endpoint | Document the POST /import/letterboxd API contract for future frontend work |
+| Feature | Why Requested | Why Problematic | Alternative |
+|---------|---------------|-----------------|-------------|
+| Upload progress percentage / progress bar | Users expect a progress bar for long operations | The backend processes synchronously in one HTTP response. `URLSession.uploadTask` delegate only reports the data-send phase — which completes in <1s. The 5-30s wait is server-side TMDB resolution, which has no progress signal. A progress bar that jumps to 100% in 0.5s then freezes is worse than an honest spinner. | Indeterminate spinner on button + explanatory copy: "Resolving films via TMDB — this takes 10-30 seconds." |
+| Re-import incremental merge | "Sync new Letterboxd entries" | Conflict resolution, deletion detection, and import-date tracking add significant complexity. Skip-on-duplicate behavior already makes re-import safe. | Show skipped count in results — re-upload is already idempotent. Incremental is a v2 concern. |
+| Import via iCloud link / URL | Avoids the file picker step | Backend expects `UploadFile` (multipart). URL-based import requires a different server-side fetch flow. Files.app natively shows iCloud Drive, so users can pick the downloaded zip from iCloud without any code change. | File picker covers iCloud Drive transparently. |
+| CSV-by-CSV selective import | "I only want to import ratings, not watchlist" | Backend workflow processes all five CSVs as a unit. Decomposing it adds a multi-step selection UI and significant workflow refactoring. | All-or-nothing import is correct for a migration use case. Letterboxd exports are small (typically < 500KB). |
+| Cancel button during upload | User changes mind mid-import | `URLSession` cancellation is doable, but the backend has no cancellation hook — partial DB writes may have already committed. Skip logic prevents corruption but leaves an ambiguous state with no summary. | Prevent accidental start with a confirmation dialog. No cancel needed if the action is deliberate. |
+| Streaming progress from server | Real-time per-film progress | Requires changing the backend endpoint from a synchronous response to a streaming response (SSE or chunked transfer). Significant backend complexity for marginal UX gain. | Defer; add if user testing shows the wait is a blocker for completion. |
 
 ---
 
 ## Feature Dependencies
 
 ```
-[Zip extraction]
-    └──requires──> [CSV parsing — watched.csv]
-                       └──requires──> [TMDB name+year resolution]
-                                          └──requires──> [Movie caching via get_movie_details]
-                                                             └──requires──> [watched_movies INSERT]
+[File picker]
+    └──required by──> [Upload trigger]
+                          └──required by──> [Multipart upload via ImportAPI]
+                                                └──required by──> [Results display]
 
-[ratings.csv parsing] ──enhances──> [watched_movies INSERT] (attaches rating)
-[reviews.csv parsing] ──enhances──> [watched_movies INSERT] (attaches review + watched_date)
+[Multipart upload via ImportAPI]
+    NOTE: APIClient.request<T>() is JSON-only.
+    A separate multipart upload method is the single implementation gap.
+    Options: (a) add uploadFile() to APIClient, (b) new ImportAPI with its own URLRequest.
 
-[likes/films.csv parsing]
-    └──requires──> [liked boolean on watched_movies] (migration)
-    └──requires──> [watched_movies INSERT] (entry must exist to set liked=true)
+[Results display]
+    └──enhanced by──> [Failed titles collapsible list]
+    └──enhanced by──> ["Already up to date" copy variant]
 
-[watchlist.csv parsing]
-    └──requires──> [watchlist_movies table] (migration)
-    └──requires──> [TMDB name+year resolution]
-
-[TMDB resolution]
-    └──requires──> [TMDB rate limit handling] (for imports > ~40 films)
+[Backend taste rebuild hook]
+    └──depends on──> [import endpoint completing successfully]
+    └──independent of──> [iOS results display — fire-and-forget BackgroundTasks]
 ```
 
 ### Dependency Notes
 
-- **TMDB resolution requires movie caching:** `get_movie_details` already handles caching as a side effect. Every resolved film will be in the `movies` table before the watched_movies insert, satisfying the FK constraint.
-- **liked flag requires watched entry:** If a film appears in likes/films.csv but NOT in watched.csv, we cannot set liked=true on a non-existent watched_movies row. Decision: create the watched entry with only liked=true (no rating, no review, no watched_date), or skip. Skipping loses data; creating is semantically odd. **Recommended: create watched entry with liked=true and null other fields.**
-- **ratings.csv and reviews.csv are both subsets of watched.csv:** Parse watched.csv first for the master list. Then enrich from ratings.csv and reviews.csv. Do not use ratings.csv or reviews.csv as the source of truth for the watched list — they are supplemental.
-- **watchlist is independent of watched:** Watchlist movies are not watched, so they do not go into watched_movies. They require a separate table.
+- **File picker requires security-scoped resource access:** `startAccessingSecurityScopedResource()` / `stopAccessingSecurityScopedResource()` must wrap file data reading. Missing this causes silent permission failures on iOS 15+ when picking files from outside the app sandbox.
+- **APIClient needs a multipart upload path:** The current generic `request<T: Decodable>` only supports JSON bodies. A `uploadFile(endpoint:fileData:fileName:mimeType:)` method (or dedicated `ImportAPI` struct) must build a `multipart/form-data` request manually. This is the only net-new code pattern required in iOS.
+- **Taste rebuild is backend-only:** No new iOS feature needed. One `background_tasks.add_task(...)` call in `import_data/views.py`. iOS continues to receive `ImportSummaryResponse` unchanged.
+- **Import screen entry point depends on SettingsView:** The "Import from Letterboxd" row is added to `settingsItems` in `SettingsView.swift` and navigates to a new `ImportView`.
+- **ImportView state machine:** Three states needed — `.idle` (picker + start button), `.uploading` (spinner, disabled button), `.done(ImportSummaryResponse)` / `.error(String)`. No separate screen needed; inline state transitions work.
 
 ---
 
 ## MVP Definition
 
-### Launch With (v1)
+### Launch With (v1.1)
 
-Minimum to make the import feature useful and correct.
-
-- [ ] Zip extraction and CSV file discovery — accepts upload, finds expected CSVs
-- [ ] Parse watched.csv — master watched list
-- [ ] Parse ratings.csv — enrich watched entries with ratings
-- [ ] Parse reviews.csv — enrich watched entries with review text and actual watched_date
-- [ ] Parse watchlist.csv — separate watchlist import (requires migration)
-- [ ] Parse likes/films.csv — set liked=true on watched entries (requires migration)
-- [ ] TMDB name+year resolution with graceful skip on failure
-- [ ] Skip existing (user_id, tmdb_id) entries — no overwrite
-- [ ] Return structured summary: imported count, skipped count, failed count, failed titles
+- [ ] **Settings row entry point** — "Import from Letterboxd" added to `SettingsView` settings list; navigates to `ImportView`. No new navigation infrastructure needed.
+- [ ] **ImportView: idle state** — Instructions copy + "Select .zip File" button. Selected filename shown after picker completes. "Start Import" button enabled once file is selected.
+- [ ] **Multipart upload to `/import/letterboxd`** — `ImportAPI.uploadZip(fileData:) async throws -> ImportSummaryResponse`. Builds multipart/form-data request manually (boundary + file part). Bearer token via existing Keychain read.
+- [ ] **ImportView: uploading state** — Button enters `isLoading` state. Copy: "Resolving films via TMDB — this may take 30 seconds."
+- [ ] **ImportView: results state** — Counts displayed (imported / skipped / failed). If `failed > 0`, show collapsed list of `failed_titles`. If `imported == 0 && failed == 0`, show "Already up to date" variant. Dismiss / done button returns to Settings.
+- [ ] **ImportView: error state** — Inline error message surfacing `APIError` description. "Try Again" resets to idle state.
+- [ ] **Backend: taste rebuild hook** — `background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)` appended to `import_letterboxd` endpoint in `import_data/views.py` after successful import.
 
 ### Add After Validation (v1.x)
 
-- [ ] TMDB rate limit throttling — add when real-world imports expose timeout issues
-- [ ] Per-movie result detail in response — add when users report not knowing what failed
+- [ ] **Import prompt in onboarding** — After "You're In" screen, offer import for users migrating from Letterboxd. Add when retention data shows import correlates with activation. Requires onboarding flow change.
+- [ ] **Import timestamp in Settings** — "Last imported: March 4, 2026" line below the import row. Requires a DB field or user metadata endpoint.
 
 ### Future Consideration (v2+)
 
-- [ ] Re-import / incremental update — only after core import is validated at scale
-- [ ] Rewatch tracking from diary.csv — only if BLND builds a multi-view diary model
-- [ ] Tags import — only if BLND builds a tagging system
-- [ ] Async job processing — only if synchronous times out for large libraries (500+ films)
+- [ ] **Incremental re-import** — Detect new entries since last import. Requires per-user import timestamp + Letterboxd export date comparison.
+- [ ] **Import from other sources** — Trakt, IMDb, Plex. Separate backend workflows. Defer until Letterboxd import validates the pattern.
+- [ ] **Streaming progress** — SSE or chunked transfer for per-film progress. Only if the wait is a confirmed user-experience blocker.
 
 ---
 
@@ -257,53 +115,58 @@ Minimum to make the import feature useful and correct.
 
 | Feature | User Value | Implementation Cost | Priority |
 |---------|------------|---------------------|----------|
-| Zip upload + CSV extraction | HIGH | LOW | P1 |
-| watched.csv parsing + TMDB resolution | HIGH | MEDIUM | P1 |
-| ratings.csv parsing | HIGH | LOW | P1 |
-| reviews.csv parsing (with Watched Date) | HIGH | LOW | P1 |
-| Skip existing entries | HIGH | LOW | P1 |
-| Import summary response | MEDIUM | LOW | P1 |
-| watchlist.csv parsing | HIGH | LOW | P1 |
-| likes/films.csv + liked migration | MEDIUM | MEDIUM | P1 |
-| TMDB rate limit throttling | HIGH | LOW | P2 |
-| Per-movie result detail in response | MEDIUM | LOW | P2 |
-| diary.csv rewatch tracking | LOW | HIGH | P3 |
-| Tags import | LOW | MEDIUM | P3 |
-| Async job processing | LOW | HIGH | P3 |
+| File picker (.zip) | HIGH | LOW | P1 |
+| Multipart upload to `/import/letterboxd` | HIGH | MEDIUM (new code pattern) | P1 |
+| In-progress state (spinner + copy) | HIGH | LOW (AppButton.isLoading exists) | P1 |
+| Results display (counts grid) | HIGH | LOW (schema defined) | P1 |
+| Error handling + retry | HIGH | LOW (APIError pattern exists) | P1 |
+| Settings entry point | HIGH | LOW (row in existing list) | P1 |
+| Backend taste rebuild hook | HIGH | LOW (one add_task call) | P1 |
+| Failed titles disclosure | MEDIUM | LOW (data already returned) | P2 |
+| "Already up to date" copy variant | MEDIUM | LOW (conditional copy) | P2 |
+| Instructions copy on ImportView | MEDIUM | LOW (static text) | P2 |
+| Import prompt in onboarding | MEDIUM | HIGH (flow restructuring) | P3 |
+| Upload progress percentage | LOW | HIGH + misleading | DO NOT BUILD |
 
 **Priority key:**
-- P1: Must have for launch
-- P2: Should have, add when possible
-- P3: Nice to have, future consideration
+- P1: Must have for v1.1 launch
+- P2: Should have, add in same pass if time allows
+- P3: Nice to have, future milestone
+- DO NOT BUILD: Creates worse UX than the simpler alternative
 
 ---
 
 ## Competitor Feature Analysis
 
-There is no direct competitor product (other Letterboxd-to-X importers exist for Trakt, Plex, etc. but serve different target systems). The relevant comparison is between approaches taken by community import scripts.
-
-| Feature | Community Python Scripts | Trakt Importer Tools | Our Approach |
-|---------|--------------------------|---------------------|--------------|
-| CSV source | watched.csv or diary.csv | Typically ratings.csv | watched.csv as master, ratings/reviews as enrichment |
-| TMDB resolution | Name search, some use year | Name search | Name + year search, skip on failure |
-| Duplicate handling | Varies — some overwrite | Skip or update | Always skip existing |
-| Liked films | Rarely implemented | Not applicable | liked boolean on watched_movies |
-| Watchlist | Sometimes | Separate list | Separate watchlist_movies table |
-| Rate limiting | Rarely handled | Sometimes | Explicit throttle for >40 req/s |
-| Error reporting | Usually silent | Summary counts | Summary counts + failed title list |
+| Feature | Simkl (web only) | Trakt (web only) | Our Approach |
+|---------|-----------------|-----------------|--------------|
+| File selection | Web browse button | Upload link | iOS `.fileImporter` — native Files.app, iCloud Drive included |
+| Upload feedback | Page reload, silent | Basic spinner | Inline spinner + explicit timing copy |
+| Results display | Success/error message | Count summary | Counts grid + collapsible failed_titles list |
+| Post-import action | Lands on profile | Stays on import page | Results state in-place; explicit dismiss |
+| Taste rebuild | No recommendation engine | No recommendation engine | Background task, transparent to user |
+| Native iOS experience | Web only | Web only | Native SwiftUI — no web redirect needed |
 
 ---
 
 ## Sources
 
-- Direct inspection of `letterboxd-arose3000-2026-03-04-03-09-utc.zip` in project root (HIGH confidence — ground truth from real export)
-- `/Users/adamrose/Desktop/blnd/.planning/PROJECT.md` — project requirements and constraints (HIGH confidence)
-- `/Users/adamrose/Desktop/blnd/blnd_backend/app/tracking/models.py` — WatchedMovie schema (HIGH confidence)
-- `/Users/adamrose/Desktop/blnd/blnd_backend/app/movies/services.py` — `get_movie_details` caching behavior (HIGH confidence)
-- `/Users/adamrose/Desktop/blnd/blnd_backend/CLAUDE.md` — TMDB rate limit (~40 req/s), existing architecture (HIGH confidence)
-- Training knowledge for Letterboxd CSV format corroboration and community importer patterns (MEDIUM confidence — confirmed against real export)
+- Codebase: `/Users/adamrose/Desktop/blnd/blnd_backend/app/import_data/views.py` — endpoint signature, `ImportSummaryResponse` schema confirmed
+- Codebase: `/Users/adamrose/Desktop/blnd/blnd_backend/app/import_data/schemas.py` — `{imported, skipped, failed, failed_titles}` confirmed
+- Codebase: `/Users/adamrose/Desktop/blnd/blnd_frontend/blnd_frontend/Networking/APIClient.swift` — JSON-only request; multipart gap confirmed
+- Codebase: `/Users/adamrose/Desktop/blnd/blnd_frontend/blnd_frontend/Views/Profile/SettingsView.swift` — `settingsItems` list structure confirmed
+- Codebase: `/Users/adamrose/Desktop/blnd/blnd_frontend/blnd_frontend/Views/Shared/AppButton.swift` — `isLoading` prop confirmed
+- Codebase: `/Users/adamrose/Desktop/blnd/blnd_backend/app/tracking/views.py` — established `background_tasks.add_task(rebuild_taste_profile, ...)` pattern confirmed
+- Codebase: `/Users/adamrose/Desktop/blnd/blnd_backend/app/recommendations/views.py` — `rebuild_taste_profile` function signature confirmed
+- [SwiftUI Importing And Exporting Files — Use Your Loaf](https://useyourloaf.com/blog/swiftui-importing-and-exporting-files/)
+- [Accessing Security Scoped Files — Use Your Loaf](https://useyourloaf.com/blog/accessing-security-scoped-files/)
+- [Multipart Request with URLSession and async/await — AsyncLearn](https://asynclearn.medium.com/multipart-request-with-urlsession-and-async-await-in-swift-41b16a016cb2)
+- [Building a Modern File Picker in SwiftUI with Async/Await — Gaurav Tak, Jan 2026](https://gauravtakjaipur.medium.com/building-a-modern-file-picker-in-swiftui-with-async-await-from-basics-to-production-ready-94cb8c71754c)
+- [FastAPI Background Tasks](https://fastapi.tiangolo.com/tutorial/background-tasks/) — confirms `background_tasks.add_task` for fire-and-forget after response
+- [Designing Attractive and Usable Data Importers — Smashing Magazine](https://www.smashingmagazine.com/2020/12/designing-attractive-usable-data-importer-app/)
+- [Settings placement — Apple Developer Documentation](https://developer.apple.com/design/human-interface-guidelines/patterns/settings/)
 
 ---
 
-*Feature research for: Letterboxd CSV import into BLND backend*
-*Researched: 2026-03-03*
+*Feature research for: iOS Letterboxd import UI + backend taste profile rebuild (v1.1)*
+*Researched: 2026-03-09*

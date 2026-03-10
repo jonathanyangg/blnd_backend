@@ -1,183 +1,321 @@
 # Stack Research
 
-**Domain:** Letterboxd CSV import pipeline — FastAPI/SQLAlchemy/Supabase Postgres backend
-**Researched:** 2026-03-03
+**Domain:** iOS file picker + multipart upload + backend taste profile rebuild trigger
+**Researched:** 2026-03-09
 **Confidence:** HIGH
 
 ---
 
-## Context: What Already Exists
+## Context: What This Covers
 
-This is a subsequent milestone on an existing backend. The following are already installed and in use — do not re-research or re-install:
+This is the v1.1 milestone addendum. The existing stack (FastAPI 0.135.1, SQLAlchemy 2.0.47,
+SwiftUI iOS 26.2+, `@Observable`, `APIClient` singleton, zero third-party deps) is already
+validated and not repeated here. This file covers only what is NEW for v1.1:
 
-| Technology | Installed Version | Role |
-|------------|------------------|------|
-| FastAPI | 0.135.x (latest) | API framework, file upload endpoint |
-| SQLAlchemy | 2.0.46 | ORM, DB session, bulk insert |
-| httpx | 0.28.1 (latest) | Async TMDB API client (already wired as `get_tmdb_client` dependency) |
-| psycopg2-binary | 2.9.11 | Postgres driver |
-| python-multipart | 0.0.22 | Multipart file upload (already in requirements.txt) |
-| pydantic | 2.12.5 | Data validation |
-| python-dotenv / pydantic-settings | current | Config |
+1. iOS: file picker for `.zip` files, multipart form-data upload, progress tracking, results display
+2. Backend: taste profile rebuild triggered after bulk import completes
 
-No new runtime dependencies are required for this feature. Every capability needed is already in the installed stack. This is the key finding.
+**Key finding up front:** No new dependencies are required on either platform. Everything needed
+is in the Swift standard library + Foundation framework (iOS) and Python stdlib + already-installed
+FastAPI/SQLAlchemy (backend).
 
 ---
 
-## Recommended Stack
+## iOS Side
 
 ### Core Technologies
 
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| Python `zipfile` (stdlib) | 3.11+ built-in | Extract CSVs from Letterboxd zip in-memory | Zero dependencies. `ZipFile.open()` returns a binary file-like object; wrap with `io.TextIOWrapper` for text mode. Never writes to disk. Verified against Python 3.11 docs. |
-| Python `csv.DictReader` (stdlib) | 3.11+ built-in | Parse individual CSVs into row dicts | Zero dependencies. Handles quoted fields with commas natively (default `quotechar='"'`). Returns plain `dict` (since Python 3.8+). The Letterboxd CSVs use standard RFC-4180 quoting. |
-| `httpx.AsyncClient` (existing) | 0.28.1 | TMDB `/search/movie` calls for name+year resolution | Already installed and wired as `get_tmdb_client` in `dependencies.py`. Use `params={"query": name, "year": year}` — TMDB's `year` parameter is a primary_release_year filter that significantly improves first-result accuracy. |
-| SQLAlchemy 2.0 `insert().on_conflict_do_nothing()` (existing) | 2.0.46 | Bulk insert with skip-on-duplicate | The PostgreSQL dialect (`sqlalchemy.dialects.postgresql.insert`) provides `on_conflict_do_nothing()`. This issues a single `INSERT ... ON CONFLICT DO NOTHING` statement per batch, matching the "skip existing entries" requirement without a SELECT-first round trip. |
-| FastAPI `UploadFile` (existing) | 0.135.x | Accept the zip file upload at `POST /import/letterboxd` | Already in the stub endpoint. `UploadFile.read()` returns the zip bytes in memory; pass to `io.BytesIO` then `zipfile.ZipFile`. |
+| SwiftUI `.fileImporter` modifier | iOS 14+ / available on iOS 26.2 deployment target | Present system file picker sheet | Native API, no extra permissions, integrates with Files app, iCloud Drive, third-party storage providers. Single modifier on any `View`. |
+| `UniformTypeIdentifiers.UTType.zip` | Built into `UniformTypeIdentifiers` framework (iOS 14+) | Restrict picker to zip archives only | `UTType.zip` is a first-class Apple-documented type (identifier: `public.zip-archive`). Verified in Apple Developer docs. Use as `allowedContentTypes: [.zip]`. |
+| `url.startAccessingSecurityScopedResource()` / `stopAccessingSecurityScopedResource()` | Foundation (stdlib) | Access the security-scoped URL returned by `fileImporter` | The URL from `fileImporter` is sandbox-restricted. Must bracket `Data(contentsOf: url)` with start/stop access or the read throws a permissions error. Use `defer` to guarantee `stop` runs. |
+| `URLSession.upload(for:from:delegate:)` | iOS 15+ / Foundation | Async upload with progress delegate | The `async/await` variant of `URLSession` upload. Pass a `URLSessionTaskDelegate` conforming object as the `delegate:` parameter to receive `didSendBodyData` progress callbacks. This is the only async-native way to get per-byte upload progress without Combine. Available iOS 15+, confirmed stable on iOS 17+ and 26.x. |
+| `URLSessionTaskDelegate.urlSession(_:task:didSendBodyData:totalBytesSent:totalBytesExpectedToSend:)` | Foundation (stdlib) | Upload progress callbacks | Fires repeatedly during upload with running byte counts. Compute `Double(totalBytesSent) / Double(totalBytesExpectedToSend)` for a 0.0–1.0 fraction. Must annotate `@MainActor` or dispatch to main to update `@Observable` state. |
+| `@Observable` + `@MainActor` | Swift 5.9+ / iOS 17+ | Upload state management (progress, phase, results) | Already the project-wide state pattern. `ImportState: @Observable` class holds `uploadProgress: Double`, `phase: ImportPhase`, and `result: ImportSummaryResponse?`. Use `@MainActor` on the class so all property mutations are on the main thread and trigger SwiftUI re-renders safely. |
+
+### Supporting Patterns (No New Libraries)
+
+| Pattern | Mechanism | Notes |
+|---------|-----------|-------|
+| Multipart form-data body construction | Manual `Data` construction with boundary string | No `Alamofire` or `MultipartFormData` library needed. 15–20 lines of Swift. Boundary is a UUID string. See pattern section below. |
+| Async upload in existing `APIClient` | New method `uploadZip(endpoint:fileData:fileName:)` on `APIClient` | Keeps the singleton pattern. Method creates the multipart body, configures the `URLRequest`, then calls `URLSession.upload(for:from:delegate:)`. |
+| Import results display | Decode `ImportSummaryResponse` from response body | Backend already returns `{imported, skipped, failed, failed_titles}`. Map to a summary view with three numeric pills and a collapsible failed-titles list. |
+
+### Development Notes (iOS)
+
+- `import UniformTypeIdentifiers` is required to use `UTType.zip`. Add to the file containing the `.fileImporter` modifier.
+- `fileImporter` returns `Result<URL, Error>` in its completion. Always call `startAccessingSecurityScopedResource()` on the success URL before reading bytes.
+- The file read (`Data(contentsOf:)`) is synchronous/blocking. Wrap in `Task { await MainActor.run { ... } }` or call from a background task to avoid blocking the main thread on large zips.
+- `URLSession.upload(for:from:delegate:)` requires `from:` to be a `Data` object (not a file URL) when passing multipart body as pre-built `Data`. This matches the in-memory pattern used by the backend (zip is read into `Data`, wrapped in multipart form body, sent as `Data`).
+- The `delegate` parameter on `URLSession.upload(for:from:delegate:)` is strongly retained by the task until completion. No risk of premature deallocation.
+
+---
+
+## Backend Side
+
+### Core Technologies
+
+| Technology | Version | Purpose | Why Recommended |
+|------------|---------|---------|-----------------|
+| FastAPI `BackgroundTasks` | 0.135.1 (already installed) | Trigger taste rebuild after import response is sent | The established pattern already used in `tracking/views.py` and `auth/views.py`. `background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)` runs after the HTTP response is flushed. Zero new dependencies. |
+| `recommendations.services.rebuild_taste_profile` | (existing function) | Perform the actual taste profile rebuild | Already implemented, synchronous, takes `(user_id, db, openai_client)`. The exact same function already called from tracking and auth endpoints. Import pattern is already established in `tracking/views.py` as a deferred import to avoid circular imports. |
+
+### What Changes on the Backend
+
+The import endpoint at `POST /import/letterboxd` in `app/import_data/views.py` needs exactly two additions:
+
+1. Add `background_tasks: BackgroundTasks` as a FastAPI dependency parameter.
+2. After `result = await workflows.run_letterboxd_import(...)`, call `background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)` — but only if `result.imported > 0` (no point rebuilding if nothing was imported).
+
+No new functions, no new files, no new packages.
+
+### Why BackgroundTasks (not asyncio.create_task)
+
+The project already uses `asyncio.ensure_future()` for the seed pipeline (fires completely detached
+from the request context) and `BackgroundTasks` for taste rebuilds (tied to the request lifecycle,
+uses the same `db` session the request already has). For taste rebuild on import, `BackgroundTasks`
+is correct because:
+
+- The `db` session passed to `rebuild_taste_profile` is the same `get_db`-injected session — still
+  valid when the background task runs (Starlette keeps it open until background tasks complete).
+- `rebuild_taste_profile` is synchronous (no `async def`) — `BackgroundTasks` dispatches it to a
+  thread pool automatically when the function is not a coroutine.
+- `asyncio.create_task` with a sync function would fail; `ensure_future` has the same problem and
+  also detaches from the session lifecycle.
+
+**MEDIUM confidence note:** There is a subtle risk: `BackgroundTasks` keeps the DB session open
+until the task completes. `rebuild_taste_profile` calls OpenAI (network I/O, potentially 2–5s).
+This is an acceptable tradeoff at current scale — it is the same pattern already used for genre
+updates and rating changes, which are also OpenAI-backed. If session contention becomes a problem
+at scale, the mitigation is to open a fresh `SessionLocal()` inside the background task and close
+it in a `finally` block (the same pattern as `_run_seed_pipeline_async` in `import_data/views.py`).
+
+---
+
+## Recommended Stack
+
+### Core Technologies (NEW for v1.1)
+
+| Technology | Version | Purpose | Why Recommended |
+|------------|---------|---------|-----------------|
+| SwiftUI `.fileImporter` | iOS 14+ (stdlib) | Zip file picker | Zero deps, native system UI, handles iCloud/third-party storage. |
+| `UTType.zip` (UniformTypeIdentifiers) | iOS 14+ (stdlib) | Restrict picker to zip only | Apple first-party UTI for public.zip-archive. Confirmed in Apple docs. |
+| `Foundation.URLSession.upload(for:from:delegate:)` | iOS 15+ (stdlib) | Async upload with progress | Only stdlib-native way to get upload progress with async/await. |
+| `URLSessionTaskDelegate` | iOS 15+ (stdlib) | Per-byte upload progress callbacks | Receives `didSendBodyData` during upload. Pass as `delegate:` to upload call. |
+| FastAPI `BackgroundTasks` | 0.135.1 (already installed) | Trigger taste rebuild post-import | Established project pattern, correct lifecycle for same-session rebuild. |
 
 ### Supporting Libraries
 
 | Library | Version | Purpose | When to Use |
 |---------|---------|---------|-------------|
-| `io.BytesIO` / `io.TextIOWrapper` (stdlib) | built-in | In-memory zip + CSV text decoding | Always — bridges `UploadFile` bytes → `ZipFile` → `csv.DictReader` without temp files |
-| `asyncio.Semaphore` (stdlib) | built-in | Cap concurrent TMDB calls to respect ~40 req/s limit | Use instead of `asyncio-throttle` — stdlib, no install, sufficient for a synchronous-workflow import where calls are sequential per movie anyway |
-| `tenacity` | 9.1.4 (latest) | Retry logic for transient TMDB API failures | Only if TMDB returns 429 or 5xx mid-import. Currently NOT installed — add if integration testing reveals flaky behavior under load. Defer until needed. |
+| None | — | — | No new libraries needed on either platform. |
 
 ### Development Tools
 
 | Tool | Purpose | Notes |
 |------|---------|-------|
-| Supabase CLI (`supabase migration new`) | Raw SQL migrations for `liked` column + `watchlist_movies` table | Already configured. Follow the existing pattern: raw SQL in `supabase/migrations/`, push with `supabase db push` |
-| `ruff` + `pyright` (pre-commit) | Linting and type checking | Already configured. Workflow code must pass `pre-commit run --all-files` before commit |
+| Xcode (existing) | iOS build, SwiftLint/SwiftFormat pre-commit | swiftlint max line 120, swiftformat before-first wrapping — already configured |
+| `pre-commit run --all-files` (existing) | ruff, pyright, codespell on backend changes | The 2-line change to `import_data/views.py` must pass pyright strict mode |
 
 ---
 
 ## Installation
 
-No new packages are needed. All required capabilities are provided by:
-1. Python stdlib (`zipfile`, `csv`, `io`, `asyncio`)
-2. Already-installed packages (`httpx`, `SQLAlchemy`, `FastAPI`, `python-multipart`)
-
 ```bash
-# No new installs required.
-# If tenacity is added later for retry logic:
-pip install tenacity==9.1.4
-# Add to requirements.txt
+# iOS: No new packages. UniformTypeIdentifiers and Foundation are system frameworks.
+# Add import to Swift files that use them:
+#   import UniformTypeIdentifiers   (for UTType.zip)
+#   import Foundation               (already imported everywhere)
+
+# Backend: No new packages.
+# The one code change is in app/import_data/views.py — add BackgroundTasks param.
+# rebuild_taste_profile is already importable from app.recommendations.services.
 ```
 
 ---
 
 ## Key Implementation Patterns
 
-### Pattern 1: In-Memory Zip Parsing
+### Pattern 1: iOS File Picker (fileImporter)
 
-```python
-import io
-import csv
-import zipfile
-from fastapi import UploadFile
+```swift
+import SwiftUI
+import UniformTypeIdentifiers
 
-async def parse_letterboxd_zip(file: UploadFile) -> dict[str, list[dict]]:
-    raw = await file.read()
-    with zipfile.ZipFile(io.BytesIO(raw)) as zf:
-        with zf.open("ratings.csv") as f:
-            reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8"))
-            ratings = list(reader)
-    return {"ratings": ratings}
+struct ImportView: View {
+    @State private var showFilePicker = false
+    @State private var importState = ImportState()
+
+    var body: some View {
+        Button("Import from Letterboxd") {
+            showFilePicker = true
+        }
+        .fileImporter(
+            isPresented: $showFilePicker,
+            allowedContentTypes: [.zip]
+        ) { result in
+            switch result {
+            case .success(let url):
+                Task { await importState.upload(url: url) }
+            case .failure(let error):
+                importState.errorMessage = error.localizedDescription
+            }
+        }
+    }
+}
 ```
 
-**Why:** `io.TextIOWrapper` is required because `ZipFile.open()` returns binary mode. Specifying `encoding="utf-8"` is explicit and safe — Letterboxd exports are UTF-8. The `newline=''` argument is not needed here because `TextIOWrapper` handles it correctly when wrapping a binary stream. Verified against Python 3.11 stdlib docs.
+**Why:** `.fileImporter` with `allowedContentTypes: [.zip]` restricts the picker to zip archives
+using the native `public.zip-archive` UTI. No `UIDocumentPickerViewController` wrappers needed —
+`fileImporter` is the SwiftUI-native equivalent introduced in iOS 14.
 
-### Pattern 2: TMDB Name+Year Resolution
+### Pattern 2: Security-Scoped URL + Data Read
 
-```python
-async def resolve_tmdb_id(
-    name: str, year: int, tmdb_client: httpx.AsyncClient
-) -> int | None:
-    resp = await tmdb_client.get(
-        "/search/movie", params={"query": name, "year": year}
+```swift
+func readZipData(from url: URL) throws -> Data {
+    guard url.startAccessingSecurityScopedResource() else {
+        throw ImportError.accessDenied
+    }
+    defer { url.stopAccessingSecurityScopedResource() }
+    return try Data(contentsOf: url)
+}
+```
+
+**Why:** The URL returned by `fileImporter` is security-scoped to the sandbox. Reading without
+`startAccessingSecurityScopedResource()` throws a permissions error. `defer` guarantees the
+resource is released even if `Data(contentsOf:)` throws.
+
+### Pattern 3: Multipart Form-Data Body (No Library)
+
+```swift
+func buildMultipartBody(
+    fileData: Data,
+    fileName: String,
+    boundary: String
+) -> Data {
+    var body = Data()
+    let crlf = "\r\n"
+    body.append("--\(boundary)\(crlf)".data(using: .utf8)!)
+    body.append(
+        "Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\(crlf)".data(using: .utf8)!
     )
-    resp.raise_for_status()
-    results = resp.json().get("results", [])
-    if results:
-        return results[0]["id"]
-    # Fallback: retry without year filter if year-filtered search returns empty
-    resp2 = await tmdb_client.get("/search/movie", params={"query": name})
-    resp2.raise_for_status()
-    results2 = resp2.json().get("results", [])
-    return results2[0]["id"] if results2 else None
+    body.append("Content-Type: application/zip\(crlf)\(crlf)".data(using: .utf8)!)
+    body.append(fileData)
+    body.append("\(crlf)--\(boundary)--\(crlf)".data(using: .utf8)!)
+    return body
+}
 ```
 
-**Why:** TMDB's `year` parameter (maps to `primary_release_year`) filters results to that release year, making `results[0]` the correct match in nearly all cases. The fallback without `year` handles edge cases where year data is missing or off-by-one (e.g., festival vs. wide release year). The existing TMDB client already handles `api_key` injection via base params in `get_tmdb_client`.
+**Why:** The backend expects `multipart/form-data` with field name `file` (matches FastAPI
+`UploadFile = File(...)`). This is the exact wire format FastAPI's `python-multipart` parses.
+The boundary is a UUID string — random per request, included in the `Content-Type` header.
 
-### Pattern 3: Bulk Insert with Skip-on-Duplicate
+### Pattern 4: Async Upload with Progress
+
+```swift
+@Observable
+@MainActor
+final class ImportState: NSObject, URLSessionTaskDelegate {
+    var uploadProgress: Double = 0.0
+    var phase: ImportPhase = .idle
+    var result: ImportSummaryResponse?
+    var errorMessage: String?
+
+    func upload(url: URL) async {
+        phase = .uploading
+        do {
+            let fileData = try readZipData(from: url)
+            let boundary = UUID().uuidString
+            let body = buildMultipartBody(
+                fileData: fileData, fileName: url.lastPathComponent, boundary: boundary
+            )
+            var request = URLRequest(url: URL(string: APIConfig.baseURL + "/import/letterboxd")!)
+            request.httpMethod = "POST"
+            request.setValue(
+                "multipart/form-data; boundary=\(boundary)",
+                forHTTPHeaderField: "Content-Type"
+            )
+            if let token = KeychainManager.readString(key: "accessToken") {
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+            let (data, response) = try await URLSession.shared.upload(
+                for: request, from: body, delegate: self
+            )
+            // handle response...
+        } catch { ... }
+    }
+
+    // URLSessionTaskDelegate — called on an arbitrary queue, dispatch to main
+    nonisolated func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didSendBodyData bytesSent: Int64,
+        totalBytesSent: Int64,
+        totalBytesExpectedToSend: Int64
+    ) {
+        let progress = Double(totalBytesSent) / Double(totalBytesExpectedToSend)
+        Task { @MainActor in self.uploadProgress = progress }
+    }
+}
+```
+
+**Why:** `URLSession.upload(for:from:delegate:)` is the iOS 15+ API that bridges async/await with
+delegate-based progress. The `delegate:` parameter is strongly held by the task, so no retain
+cycle or premature deallocation issues. `nonisolated` on the delegate method is required because
+`URLSessionTaskDelegate` callbacks come on an arbitrary (non-main) thread; the explicit
+`Task { @MainActor in ... }` dispatch to main ensures `@Observable` mutations are safe.
+
+`ImportState: NSObject` is required because `URLSessionTaskDelegate` inherits from `NSObjectProtocol`.
+This is the only reason for `NSObject` — it does not add Objective-C bridging overhead.
+
+### Pattern 5: Backend Taste Rebuild Trigger
 
 ```python
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from app.tracking.models import WatchedMovie
+# In app/import_data/views.py — diff from current:
 
-def bulk_insert_watched(rows: list[dict], db: Session) -> int:
-    if not rows:
-        return 0
-    stmt = (
-        pg_insert(WatchedMovie)
-        .values(rows)
-        .on_conflict_do_nothing(index_elements=["user_id", "tmdb_id"])
-    )
-    result = db.execute(stmt)
-    db.commit()
-    return result.rowcount
+@router.post("/letterboxd", response_model=ImportSummaryResponse)
+@limiter.limit(LIMIT_IMPORT)
+async def import_letterboxd(
+    request: Request,
+    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks,        # ADD THIS
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+    content_length: int = Header(default=0, le=MAX_UPLOAD_SIZE),
+):
+    file_bytes = await file.read()
+    if len(file_bytes) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="File too large (max 10 MB)")
+    _validate_zip(file_bytes)
+    result = await workflows.run_letterboxd_import(user_id, file_bytes, db, tmdb_client)
+
+    # ADD THIS — only rebuild if import actually wrote new data
+    if result.imported > 0:
+        from app.recommendations.services import rebuild_taste_profile
+        background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)
+
+    return result
 ```
 
-**Why:** `on_conflict_do_nothing` maps to `INSERT ... ON CONFLICT (user_id, tmdb_id) DO NOTHING`, which atomically skips existing entries without a SELECT round trip. `watched_movies` already has `unique(user_id, tmdb_id)`, so `index_elements` matches the existing constraint. `rowcount` gives the count of actually-inserted rows for the response summary.
-
-### Pattern 4: TMDB Rate Limiting (Synchronous Workflow)
-
-The workflow is synchronous (no background queue). TMDB allows ~40 req/s. For typical Letterboxd imports (20–200 movies), sequential async calls are fine without explicit throttling — the event loop overhead alone produces ~5-15 ms between awaits. For larger imports (200+ movies), use an `asyncio.Semaphore`:
-
-```python
-sem = asyncio.Semaphore(20)  # max 20 concurrent TMDB calls
-
-async def bounded_resolve(name, year, client):
-    async with sem:
-        return await resolve_tmdb_id(name, year, client)
-```
-
-**Do NOT use `asyncio-throttle`** — adds a dependency for a problem stdlib already solves.
-
----
-
-## CSV Column Map
-
-Verified against the actual Letterboxd export zip at `/Users/adamrose/Desktop/blnd/letterboxd-arose3000-2026-03-04-03-09-utc.zip`:
-
-| File | Columns | Maps To |
-|------|---------|---------|
-| `ratings.csv` | `Date, Name, Year, Letterboxd URI, Rating` | `watched_movies`: tmdb_id, rating, watched_date |
-| `watched.csv` | `Date, Name, Year, Letterboxd URI` | `watched_movies`: tmdb_id, watched_date (no rating) |
-| `reviews.csv` | `Date, Name, Year, Letterboxd URI, Rating, Rewatch, Review, Tags, Watched Date` | `watched_movies`: review, rating, watched_date |
-| `watchlist.csv` | `Date, Name, Year, Letterboxd URI` | `watchlist_movies`: tmdb_id, added_date |
-| `likes/films.csv` | `Date, Name, Year, Letterboxd URI` | `watched_movies.liked = true` |
-
-Key observations:
-- `Letterboxd URI` (e.g. `https://boxd.it/2a1m`) is NOT a TMDB ID — resolution via name+year search is required
-- `Name` fields can contain commas (e.g. `"Harry Potter and the Philosopher's Stone"`) — `csv.DictReader` handles this with default quoting
-- `Rating` in `ratings.csv` is an integer (1-5), not 0.5-step — verify mapping to DB's 0.5-5.0 float scale
-- `reviews.csv` uses a separate `Watched Date` column distinct from `Date` (the Letterboxd log date)
+**Why:** `BackgroundTasks` is the right mechanism here: it uses the same `db` session (already
+open, safe for the task's lifetime), `rebuild_taste_profile` is synchronous so Starlette dispatches
+it to a thread pool, and it mirrors the exact pattern in `tracking/views.py`. The `result.imported > 0`
+guard prevents a pointless OpenAI + pgvector rebuild when the import had nothing new (all skipped).
 
 ---
 
 ## Alternatives Considered
 
-| Recommended | Alternative | Why Not |
-|-------------|-------------|---------|
-| stdlib `csv.DictReader` | `pandas.read_csv()` | Pandas adds ~30MB dependency for reading a 2KB CSV. Letterboxd files are tiny — pandas is complete overkill. No install. |
-| stdlib `zipfile` | `python-zipstream`, `zipimport` | stdlib is sufficient and already available |
-| `pg_insert().on_conflict_do_nothing()` | Query existing IDs first, filter, then insert | SELECT-first approach requires N+1 queries or a large `WHERE tmdb_id NOT IN (...)` — less efficient and more code. Postgres constraint-based skip is correct. |
-| `pg_insert().on_conflict_do_nothing()` | `Session.merge()` per row | `merge()` is an upsert (updates existing rows). The requirement is skip-on-duplicate, not update. |
-| `asyncio.Semaphore` | `asyncio-throttle==1.0.2` | `asyncio-throttle` adds a dependency. The stdlib `Semaphore` achieves the same cap on concurrency. For token-bucket rate limiting (req/s), sequential awaits without semaphore are sufficient at typical import sizes. |
-| TMDB `/search/movie?year=` | TMDB find-by-external-id (`/find/{id}?external_source=`) | Letterboxd URIs (boxd.it) are not recognized external source IDs by TMDB. Name+year search is the only reliable path. |
+| Recommended | Alternative | When to Use Alternative |
+|-------------|-------------|-------------------------|
+| `.fileImporter` modifier | `UIDocumentPickerViewController` wrapped in `UIViewControllerRepresentable` | Never for this project — `fileImporter` is the SwiftUI-native equivalent since iOS 14 and the project has no UIKit views |
+| `URLSession.upload(for:from:delegate:)` with progress delegate | `URLSession.upload(for:from:)` (no delegate) | When upload progress display is not needed — the simpler API returns `(Data, URLResponse)` directly |
+| `URLSession.upload(for:from:delegate:)` with progress delegate | Combine `URLSession.DataTaskPublisher` | When project already uses Combine — this project uses `async/await` throughout and has zero Combine usage; mixing would be inconsistent |
+| Manual multipart body construction | Alamofire / Moya | Never for this project — zero third-party dependency policy. 15 lines of `Data` construction replaces the library. |
+| `BackgroundTasks.add_task(rebuild_taste_profile, ...)` | `asyncio.create_task` with fresh session | If `rebuild_taste_profile` becomes async (coroutine) or if session lifetime becomes a concern at scale; use the `_run_seed_pipeline_async` pattern with `SessionLocal()` in `finally` |
+| `BackgroundTasks.add_task(rebuild_taste_profile, ...)` | ARQ / Celery / Redis queue | When taste rebuilds become too slow for in-process background tasks (>30s), or when you need retry/scheduling. Current rebuild is ~2–5s synchronous I/O. Overkill for current scale. |
 
 ---
 
@@ -185,64 +323,44 @@ Key observations:
 
 | Avoid | Why | Use Instead |
 |-------|-----|-------------|
-| `pandas` for CSV parsing | Massively oversized dependency (30MB+) for files that are a few KB. Adds install surface, import overhead, and type complexity. | stdlib `csv.DictReader` |
-| `aiofiles` for zip reading | The upload bytes are already in memory from FastAPI's `UploadFile.read()`. Async file I/O is only needed for disk reads. | `io.BytesIO` + stdlib `zipfile` |
-| `asyncio-throttle` for rate limiting | Last release was 2021 (version 1.0.2), minimal maintenance. Stdlib `asyncio.Semaphore` is sufficient. | `asyncio.Semaphore` (stdlib) |
-| `Session.bulk_insert_mappings()` | Deprecated in SQLAlchemy 2.0. Removed/discouraged path. | `session.execute(pg_insert(...).values(...).on_conflict_do_nothing(...))` |
-| `Session.execute(insert(...).values(...))` with Core `insert` (not `pg_insert`) | Core `insert` does not have `.on_conflict_do_nothing()`. Must use `sqlalchemy.dialects.postgresql.insert`. | `from sqlalchemy.dialects.postgresql import insert as pg_insert` |
-| Temp files for zip extraction | Writing uploaded content to disk creates cleanup complexity, permission issues, and temp-dir races. | In-memory `io.BytesIO` + `ZipFile.open()` |
-| Letterboxd URI as a TMDB identifier | `boxd.it` short links do not map to TMDB IDs. TMDB's `/find` endpoint does not recognize them. | TMDB `/search/movie?query=name&year=year` |
-
----
-
-## Migration Strategy
-
-Two new migrations are required. Follow the existing convention (`supabase migration new <name>` → raw SQL → `supabase db push`):
-
-**Migration 1:** Add `liked` boolean to `watched_movies`
-```sql
-ALTER TABLE watched_movies ADD COLUMN liked boolean NOT NULL DEFAULT false;
-```
-
-**Migration 2:** Create `watchlist_movies` table
-```sql
-CREATE TABLE watchlist_movies (
-    id bigint generated always as identity primary key,
-    user_id uuid not null references profiles(id) on delete cascade,
-    tmdb_id int not null references movies(tmdb_id),
-    added_date date,
-    created_at timestamptz default now(),
-    unique(user_id, tmdb_id)
-);
-```
-
-After migrations, update the `WatchedMovie` SQLAlchemy model manually (migrations are source of truth per CLAUDE.md convention).
+| Alamofire / Moya for multipart upload | Violates the zero third-party iOS dependencies policy. 15 lines of stdlib `Data` construction replaces it entirely. | Manual multipart body + `URLSession.upload(for:from:delegate:)` |
+| `UIDocumentPickerViewController` | UIKit wrapper adds 40+ lines of boilerplate for functionality that `.fileImporter` provides in 5 lines. | SwiftUI `.fileImporter` modifier |
+| `URLSession.shared.data(for:)` (existing `APIClient.request`) for file uploads | The existing `request<T>` method sets `Content-Type: application/json` and encodes a JSON body. Multipart uploads require a different content type and body format. Reusing it would require special-casing. | New `uploadZip` method on `APIClient` that explicitly builds multipart body |
+| Skipping security scoped resource access | Reading a security-scoped URL without `startAccessingSecurityScopedResource()` throws on device (works only in Simulator where sandbox is relaxed). | Always bracket with start/stop access; use `defer` for stop |
+| `asyncio.ensure_future` for taste rebuild | Already flagged in codebase: `ensure_future` may block the endpoint in FastAPI's execution model. `BackgroundTasks` is the validated pattern for this codebase. | `BackgroundTasks.add_task` |
+| Unconditional taste rebuild (no `result.imported > 0` guard) | If import yields zero new entries, calling OpenAI + pgvector rebuild wastes ~$0.001 per call and adds 2–5s of background load for no gain. | Guard with `if result.imported > 0` |
 
 ---
 
 ## Version Compatibility
 
-| Package | Version in Use | Compatible With | Notes |
-|---------|---------------|-----------------|-------|
-| SQLAlchemy | 2.0.46 | psycopg2-binary 2.9.11 | Stable pair; `on_conflict_do_nothing` available since SQLAlchemy 1.4 |
-| `sqlalchemy.dialects.postgresql.insert` | part of SQLAlchemy 2.0.46 | Postgres 14+ (Supabase) | `index_elements` must match an existing unique constraint or index |
-| Python stdlib `csv` | Python 3.11+ | — | `DictReader` returns `dict` (not `OrderedDict`) since 3.8 |
-| Python stdlib `zipfile` | Python 3.11+ | — | `ZipFile.open()` returns binary; `io.TextIOWrapper` required for text CSV parsing |
-| FastAPI `UploadFile` | 0.135.x | python-multipart 0.0.22 | `python-multipart` already in requirements.txt; required for multipart form data |
+| Package | Version | Compatible With | Notes |
+|---------|---------|-----------------|-------|
+| SwiftUI `.fileImporter` | iOS 14+ | iOS 26.2 (project target) | Stable since iOS 14; no breaking changes in iOS 15–26 |
+| `UTType.zip` | iOS 14+ | iOS 26.2 (project target) | `UniformTypeIdentifiers` framework, system-linked |
+| `URLSession.upload(for:from:delegate:)` | iOS 15+ | iOS 26.2 (project target) | Task-specific delegate parameter added in iOS 15 (WWDC21); stable |
+| FastAPI `BackgroundTasks` | 0.135.1 | SQLAlchemy 2.0.47, Starlette 0.52.1 | Already used in 3 other endpoint files in this codebase |
+| `rebuild_taste_profile` | existing | `openai==2.24.0`, `numpy==2.4.2` | Already installed and callable; synchronous; thread-pool safe |
 
 ---
 
 ## Sources
 
-- Python 3.11 stdlib `csv` docs — `csv.DictReader`, quoting behavior, encoding — HIGH confidence (official docs verified via WebFetch)
-- Python 3.11 stdlib `zipfile` docs — `ZipFile.open()`, `io.TextIOWrapper` wrapping pattern — HIGH confidence (official docs verified via WebFetch)
-- PyPI `pip3 index versions` — version numbers for sqlalchemy, httpx, fastapi, python-multipart, psycopg2-binary, pydantic, asyncio-throttle, tenacity — HIGH confidence (live PyPI query)
-- Codebase inspection — `app/dependencies.py`, `app/movies/services.py`, `app/tracking/models.py`, `app/tracking/services.py`, `app/database.py`, `supabase/migrations/` — HIGH confidence (source of truth)
-- Letterboxd export zip at `/Users/adamrose/Desktop/blnd/letterboxd-arose3000-2026-03-04-03-09-utc.zip` — CSV column schemas verified by direct inspection — HIGH confidence
-- SQLAlchemy 2.0 `on_conflict_do_nothing` — available via `sqlalchemy.dialects.postgresql.insert` since SQLAlchemy 1.4, stable in 2.0 — HIGH confidence (verified against installed version 2.0.46, confirmed `bulk_insert_mappings` deprecation via SQLAlchemy changelog)
-- TMDB `year` search parameter — existing codebase uses `/search/movie` with `query` param; `year` param behavior from TMDB API v3 docs pattern — MEDIUM confidence (WebFetch blocked; based on TMDB API v3 known behavior and existing codebase patterns)
+- Apple Developer Documentation: `UTType.zip` — `public.zip-archive` identifier confirmed — HIGH confidence
+  (https://developer.apple.com/documentation/uniformtypeidentifiers/uttype-swift.struct/zip)
+- Apple Developer Documentation: `fileImporter(isPresented:allowedContentTypes:onCompletion:)` — iOS 14+, `allowedContentTypes` array of UTType — HIGH confidence
+  (https://developer.apple.com/documentation/swiftui/view/fileimporter(ispresented:allowedcontenttypes:oncompletion:))
+- WWDC21 "Use async/await with URLSession" (session 10095) — task-specific delegate for upload progress with async/await — HIGH confidence
+  (https://developer.apple.com/videos/play/wwdc2021/10095/)
+- Apple Developer Forums thread 698248 — upload progress with async/await URLSession confirmed as requiring task-specific delegate — MEDIUM confidence (community-verified, matches WWDC21 docs)
+- FastAPI `BackgroundTasks` docs — runs after response, sync functions dispatched to thread pool — HIGH confidence
+  (https://fastapi.tiangolo.com/tutorial/background-tasks/)
+- Codebase inspection — `app/tracking/views.py`, `app/auth/views.py`: `BackgroundTasks.add_task(rebuild_taste_profile, ...)` pattern verified — HIGH confidence
+- Codebase inspection — `app/recommendations/services.py`: `rebuild_taste_profile(user_id, db, openai_client)` signature confirmed synchronous — HIGH confidence
+- Codebase inspection — `app/import_data/views.py`: current endpoint signature, confirmed `BackgroundTasks` not yet wired — HIGH confidence
+- `requirements.txt` inspection — FastAPI 0.135.1, SQLAlchemy 2.0.47, openai 2.24.0 — HIGH confidence
 
 ---
 
-*Stack research for: Letterboxd CSV import pipeline (FastAPI/SQLAlchemy/Supabase Postgres)*
-*Researched: 2026-03-03*
+*Stack research for: iOS file picker + multipart upload + backend taste profile rebuild (v1.1)*
+*Researched: 2026-03-09*

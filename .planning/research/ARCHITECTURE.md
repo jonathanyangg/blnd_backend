@@ -1,411 +1,551 @@
 # Architecture Research
 
-**Domain:** Letterboxd CSV import workflow — FastAPI + SQLAlchemy + TMDB backend
-**Researched:** 2026-03-03
-**Confidence:** HIGH (based on direct codebase inspection + stdlib knowledge)
+**Domain:** iOS file import UI + backend taste profile rebuild (v1.1 milestone)
+**Researched:** 2026-03-09
+**Confidence:** HIGH (based on direct codebase inspection of all relevant files)
 
 ## Standard Architecture
 
 ### System Overview
 
 ```
-POST /import/letterboxd
-        │
-        ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    views.py (HTTP layer)                     │
-│  Receives: UploadFile (zip), user_id from JWT               │
-│  Returns: ImportResultResponse                              │
-└──────────────────────────┬──────────────────────────────────┘
-                           │ calls
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 workflows.py (orchestrator)                  │
-│  run_letterboxd_import(file_bytes, user_id, db, tmdb)       │
-│                                                             │
-│  1. extract_csvs(zip_bytes)  →  ParsedCSVs dataclass       │
-│  2. resolve_tmdb_ids(rows, tmdb_client) → {name+year: int} │
-│  3. ensure_movies_cached(tmdb_ids, db, tmdb_client)        │
-│  4. insert_watched(rows, tmdb_map, user_id, db)            │
-│  5. insert_watchlist(rows, tmdb_map, user_id, db)          │
-│  6. apply_likes(like_rows, tmdb_map, user_id, db)          │
-└──────────────────────────┬──────────────────────────────────┘
-                           │ calls
-          ┌────────────────┼────────────────┐
-          ▼                ▼                ▼
-┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐
-│  zipfile     │  │  TMDB API    │  │  SQLAlchemy / DB     │
-│  (stdlib)    │  │  (httpx)     │  │  watched_movies      │
-│  csv         │  │  /search/    │  │  watchlist_movies    │
-│  (stdlib)    │  │  movie?q=..  │  │  movies (FK cache)   │
-└──────────────┘  └──────────────┘  └──────────────────────┘
+┌──────────────────────────────── iOS App ────────────────────────────────────┐
+│                                                                               │
+│  Views/Profile/              Networking/               State/                 │
+│  ┌────────────────┐          ┌─────────────────┐       ┌─────────────────┐   │
+│  │ ProfileView    │          │ ImportAPI        │       │ ImportState     │   │
+│  │ (entry point)  │          │ (static enum,    │       │ (@Observable,   │   │
+│  └──────┬─────────┘          │  calls           │       │  phase enum +   │   │
+│         │ NavigationLink     │  APIClient.upload│       │  result counts) │   │
+│         v                   └────────┬──────────┘       └────────┬────────┘   │
+│  ┌────────────────┐                  │                            │            │
+│  │ ImportView     │ ─── async ──→    │                            │ @Observable│
+│  │ (.fileImporter │ ←── phase ──── ImportState ───────────────────┘            │
+│  │  + progress    │                  │ calls APIClient.shared.upload()          │
+│  │  + results)    │                  │                                          │
+│  └────────────────┘          ┌───────┴──────────┐                              │
+│                               │ APIClient        │                              │
+│                               │ (MODIFIED:       │                              │
+│                               │  + upload()      │                              │
+│                               │  + multipart     │                              │
+│                               │    body builder) │                              │
+│                               └───────┬──────────┘                              │
+└───────────────────────────────────────┼─────────────────────────────────────────┘
+                                        │ POST /import/letterboxd
+                                        │ multipart/form-data
+                                        │ Authorization: Bearer <token>
+                                        v
+┌─────────────────────────────── FastAPI Backend ─────────────────────────────────┐
+│                                                                                   │
+│  app/import_data/                                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │ views.py (MODIFIED)                                                          │ │
+│  │  import_letterboxd(file, user_id, db, tmdb_client, background_tasks)        │ │
+│  │    ├─ validate zip                                                            │ │
+│  │    ├─ await workflows.run_letterboxd_import(...)                              │ │
+│  │    └─ background_tasks.add_task(rebuild_taste_profile, user_id, db, oai)     │ │
+│  └──────────────────────────────┬──────────────────────────────────────────────┘ │
+│                                  │ returns ImportSummaryResponse (sync)           │
+│                                  │ triggers rebuild (async, post-response)        │
+│                                  │                                                │
+│  ┌────────────────────┐          │  ┌──────────────────────────────────────────┐ │
+│  │ workflows.py       │ ←────────┘  │ recommendations/services.py              │ │
+│  │ (unchanged logic)  │             │ rebuild_taste_profile(user_id, db, oai)  │ │
+│  │ run_letterboxd_    │             │   ├─ get_top_rated_movies (top 25)        │ │
+│  │ import → db.commit │  BackgroundTask  ├─ compute_average_embedding           │ │
+│  └────────────────────┘  ──────────────>│   (weighted avg of movie_embeddings)  │ │
+│                                         │ └─ profile.taste_embedding = vector    │ │
+│                                         │    db.commit()                          │ │
+│                                         └──────────────────────────────────────┘ │
+└───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Component Responsibilities
 
-| Component | Responsibility | Implementation |
-|-----------|----------------|----------------|
-| `views.py` | HTTP endpoint, file receive, dependency injection, response shaping | FastAPI `UploadFile`, calls `workflows.py` |
-| `workflows.py` | Top-level orchestration — ties all steps together, returns summary | Single `async def run_letterboxd_import(...)` |
-| ZIP extractor | Open zip bytes in-memory, read named CSV files, decode UTF-8 | `zipfile.ZipFile(io.BytesIO(bytes))` |
-| CSV parser | Parse each CSV into typed row dicts; handle quoted commas in titles | `csv.DictReader(io.StringIO(text))` |
-| TMDB resolver | Search TMDB by `Name + Year`, return first-result TMDB ID; cache results in a local dict to avoid duplicate API calls | `movies.services.search_movies` or direct `/search/movie` |
-| Movie cacher | Ensure each resolved TMDB ID exists in `movies` table (FK constraint) | `movies.services.get_movie_details` (already handles cache-or-fetch) |
-| DB inserter — watched | Bulk-skip-insert `watched_movies` rows; skip if `(user_id, tmdb_id)` already exists | SQLAlchemy INSERT ... ON CONFLICT DO NOTHING via `execute()` |
-| DB inserter — watchlist | Bulk-skip-insert `watchlist_movies` rows (new table needed) | Same conflict-skip pattern |
-| Like applier | SET `liked=true` on existing `watched_movies` rows that match liked films | SQLAlchemy UPDATE WHERE IN |
+| Component | Responsibility | Status |
+|-----------|----------------|--------|
+| `ImportView` | File picker (`.fileImporter`), upload spinner, results summary card, error + retry | NEW |
+| `ImportState` | `@Observable` class — `phase` enum: `idle/uploading/done/failed`, owns `upload()` async method | NEW |
+| `ImportAPI` | Static enum — one `upload(fileData:fileName:)` func, calls `APIClient.shared.upload()` | NEW |
+| `ImportModels` | `ImportSummaryResponse` — `Decodable` struct matching backend JSON | NEW |
+| `APIClient.upload()` | New `multipart/form-data` method on the existing singleton; reuses `handleResponse` | MODIFIED |
+| `ProfileView` | Add "Import from Letterboxd" entry point that navigates to `ImportView` | MODIFIED |
+| `blndApp.swift` | Instantiate `ImportState`, inject via `.environment()` alongside `AuthState` | MODIFIED |
+| `import_data/views.py` | Add `BackgroundTasks` param; after workflow returns, schedule taste rebuild | MODIFIED |
+| `import_data/workflows.py` | No changes to existing logic; rebuild is NOT called here | UNCHANGED |
+| `recommendations/services.py` | `rebuild_taste_profile` — already exists, no changes needed | UNCHANGED |
 
 ## Recommended Project Structure
 
-The workflow lives entirely inside the existing `app/import_data/` domain — no new top-level folders needed.
+### iOS
+
+```
+blnd_frontend/blnd_frontend/
+├── App/
+│   └── blndApp.swift               MODIFIED — instantiate + inject ImportState
+├── Models/
+│   ├── AuthModels.swift             (existing)
+│   └── ImportModels.swift           NEW — ImportSummaryResponse Decodable struct
+├── Networking/
+│   ├── APIClient.swift              MODIFIED — add upload() + makeMultipartBody()
+│   ├── AuthAPI.swift                (existing)
+│   └── ImportAPI.swift              NEW — static enum, upload(fileData:fileName:)
+├── State/
+│   ├── AuthState.swift              (existing)
+│   └── ImportState.swift            NEW — @Observable, phase enum, upload() method
+└── Views/
+    └── Profile/
+        ├── ProfileView.swift        MODIFIED — add import entry point row
+        ├── SettingsView.swift       (existing, no changes)
+        └── ImportView.swift         NEW — .fileImporter + progress + results
+```
+
+### Backend
 
 ```
 app/import_data/
-├── __init__.py
-├── views.py        # HTTP endpoint — receives zip, calls workflow, returns summary
-├── schemas.py      # Pydantic: ImportResultResponse (counts of imported rows per type)
-└── workflows.py    # All logic: extraction → parsing → TMDB resolution → DB writes
-```
-
-All DB table additions (migration files) go in the existing location:
-
-```
-supabase/migrations/
-├── 20260302052101_initial_schema.sql          (existing)
-├── 20260302053704_add_taste_profile_to_profiles.sql  (existing)
-├── 20260303034025_add_trailer_url_to_movies.sql      (existing)
-├── YYYYMMDDHHMMSS_add_liked_to_watched_movies.sql    (new — adds `liked` boolean)
-└── YYYYMMDDHHMMSS_create_watchlist_movies.sql        (new — creates watchlist_movies table)
+├── views.py      MODIFIED — add BackgroundTasks, schedule rebuild after workflow
+├── workflows.py  UNCHANGED — run_letterboxd_import already complete
+└── schemas.py    UNCHANGED — ImportSummaryResponse already has all needed fields
 ```
 
 ### Structure Rationale
 
-- **workflows.py only:** PROJECT.md explicitly requires all logic in `app/import_data/workflows.py`. The existing codebase uses `workflows.py` for multi-step orchestration (same convention as `recommendations/` and `groups/`).
-- **No `services.py` for import_data:** Unlike the other domains, import is a single workflow not a set of reusable service functions. Keep everything in `workflows.py` unless it grows significantly.
-- **Reuse `movies.services.get_movie_details`:** This function already handles cache-or-fetch-from-TMDB and respects the FK constraint on `movies`. Do not duplicate it.
+- **`ImportState` is a separate `@Observable` class, not merged into `AuthState`:** Import is transient screen state (active for the duration of one user interaction). `AuthState` owns session identity and persists across the app lifetime. Mixing them couples unrelated concerns and forces `ContentView`'s auth gate — which observes `AuthState` — to re-render on import progress updates. Keep them separate; inject both via `.environment()`.
+- **`ImportAPI` as a static enum:** Matches `AuthAPI` exactly. One static function per backend endpoint. The enum itself has no state.
+- **`ImportView` under `Views/Profile/`:** Import is an account-management action. It belongs in the Profile tab navigation stack as a pushed view, not a new tab.
+- **Rebuild in `views.py`, not `workflows.py`:** `workflows.py` does not have access to `BackgroundTasks` (a FastAPI HTTP layer construct) or `openai_client` (injected at the view layer). Pushing rebuild into the workflow would require threading HTTP-layer concerns through pure business logic. The correct separation: workflow owns data transformation; view layer owns FastAPI dependencies.
 
 ## Architectural Patterns
 
-### Pattern 1: In-Memory Zip Extraction
+### Pattern 1: Multipart Upload via APIClient Overload
 
-**What:** Read the uploaded file bytes entirely into memory, then open with `zipfile.ZipFile(io.BytesIO(content))`. Extract only the specific named files needed; ignore everything else.
+**What:** Add a second method `upload<T: Decodable>()` to `APIClient` for `multipart/form-data` uploads. Keep it alongside the existing `request<T>()` — do not replace or modify `request<T>()`.
 
-**When to use:** Always for this feature. Letterboxd exports are small (< 1 MB for typical users). Temp files on disk add complexity with no benefit.
+**When to use:** Any endpoint that accepts `UploadFile` in FastAPI. Currently only `POST /import/letterboxd`.
 
-**Trade-offs:** Simplest approach; works for any file size a user would realistically have. Would only be a concern at 100MB+ which is not a Letterboxd export scenario.
+**Trade-offs:** A small amount of duplication vs. a unified method. At one call site, a separate named method is cleaner and immediately clear at the call site.
+
+**Key constraint:** The FastAPI endpoint declares `file: UploadFile = File(...)`. The multipart field name must be `"file"` exactly — this is already the case in the existing `import_letterboxd` view.
+
+**Example:**
+```swift
+// APIClient.swift — add alongside existing request<T>()
+
+func upload<T: Decodable>(
+    endpoint: String,
+    fileData: Data,
+    fileName: String,
+    mimeType: String
+) async throws -> T {
+    guard let url = URL(string: APIConfig.baseURL + endpoint) else {
+        throw APIError.invalidURL
+    }
+    let boundary = UUID().uuidString
+    var req = URLRequest(url: url)
+    req.httpMethod = "POST"
+    req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+    if let token = KeychainManager.readString(key: "accessToken") {
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    }
+    req.httpBody = makeMultipartBody(
+        fileData: fileData, fileName: fileName, mimeType: mimeType, boundary: boundary
+    )
+    let (data, response): (Data, URLResponse)
+    do {
+        (data, response) = try await URLSession.shared.data(for: req)
+    } catch {
+        throw APIError.networkError(error)
+    }
+    guard let http = response as? HTTPURLResponse else { throw APIError.serverError(0) }
+    return try handleResponse(http: http, data: data)
+}
+
+private func makeMultipartBody(
+    fileData: Data, fileName: String, mimeType: String, boundary: String
+) -> Data {
+    var body = Data()
+    let crlf = "\r\n"
+    body.append("--\(boundary)\(crlf)".data(using: .utf8)!)
+    body.append(
+        "Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\(crlf)"
+            .data(using: .utf8)!
+    )
+    body.append("Content-Type: \(mimeType)\(crlf)\(crlf)".data(using: .utf8)!)
+    body.append(fileData)
+    body.append("\(crlf)--\(boundary)--\(crlf)".data(using: .utf8)!)
+    return body
+}
+```
+
+### Pattern 2: ImportState as @Observable Phase Machine
+
+**What:** `ImportState` holds the current phase as an enum with associated values. `ImportView` switches on `importState.phase` to render the appropriate UI section. `ImportState.upload()` drives the phase transitions.
+
+**When to use:** Any multi-step async UI flow with discrete, mutually exclusive visual states. Import has exactly four: nothing shown, file picker active, uploading, and terminal (success or error).
+
+**Trade-offs:** More explicit than flat booleans + optionals, but makes impossible states unrepresentable. You cannot be simultaneously `uploading` and `done`.
+
+**Example:**
+```swift
+// State/ImportState.swift
+
+@Observable
+final class ImportState {
+    enum Phase {
+        case idle
+        case uploading
+        case done(ImportSummaryResponse)
+        case failed(String)
+    }
+
+    var phase: Phase = .idle
+
+    func upload(fileData: Data, fileName: String) async {
+        phase = .uploading
+        do {
+            let result: ImportSummaryResponse = try await ImportAPI.upload(
+                fileData: fileData, fileName: fileName
+            )
+            phase = .done(result)
+        } catch {
+            phase = .failed(error.localizedDescription)
+        }
+    }
+
+    func reset() { phase = .idle }
+}
+
+// Networking/ImportAPI.swift
+
+enum ImportAPI {
+    /// Upload a Letterboxd export zip to POST /import/letterboxd.
+    static func upload(fileData: Data, fileName: String) async throws -> ImportSummaryResponse {
+        try await APIClient.shared.upload(
+            endpoint: "/import/letterboxd",
+            fileData: fileData,
+            fileName: fileName,
+            mimeType: "application/zip"
+        )
+    }
+}
+
+// Models/ImportModels.swift
+
+struct ImportSummaryResponse: Decodable {
+    let imported: Int
+    let skipped: Int
+    let failed: Int
+    let failedTitles: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case imported, skipped, failed
+        case failedTitles = "failed_titles"
+    }
+}
+```
+
+### Pattern 3: Background Taste Rebuild in views.py (Post-Response)
+
+**What:** After `workflows.run_letterboxd_import` returns, the view calls `background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)`. The iOS client receives `ImportSummaryResponse` immediately; the rebuild runs after FastAPI sends the response.
+
+**When to use:** Any time a bulk write makes the taste profile stale. The import writes many rated movies at once — always warrants a rebuild. No `would_affect_top_n` guard is needed (the tracking domain uses it for single-rating events; bulk import bypasses that optimization).
+
+**This is identical to the pattern already in `tracking/views.py`** (lines 13-18). It is not a new pattern.
 
 **Example:**
 ```python
-import io
-import zipfile
-import csv
+# app/import_data/views.py — diff from current
 
-async def extract_csvs(file_bytes: bytes) -> dict[str, list[dict]]:
-    result = {}
-    target_files = {
-        "ratings.csv",
-        "reviews.csv",
-        "watched.csv",
-        "watchlist.csv",
-        "likes/films.csv",
-    }
-    with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
-        available = set(z.namelist())
-        for name in target_files:
-            if name not in available:
-                result[name] = []
-                continue
-            text = z.read(name).decode("utf-8")
-            reader = csv.DictReader(io.StringIO(text))
-            result[name] = list(reader)
+from fastapi import BackgroundTasks                    # ADD to imports
+from app.recommendations.services import rebuild_taste_profile  # ADD to imports
+from app.dependencies import openai_client             # already imported
+
+@router.post("/letterboxd", response_model=ImportSummaryResponse)
+@limiter.limit(LIMIT_IMPORT)
+async def import_letterboxd(
+    request: Request,
+    background_tasks: BackgroundTasks,                 # ADD parameter
+    file: UploadFile = File(...),
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+    content_length: int = Header(default=0, le=MAX_UPLOAD_SIZE),
+):
+    file_bytes = await file.read()
+    if len(file_bytes) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="File too large (max 10 MB)")
+    _validate_zip(file_bytes)
+
+    result = await workflows.run_letterboxd_import(user_id, file_bytes, db, tmdb_client)
+
+    # Trigger taste profile rebuild after import — same pattern as tracking/views.py
+    background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)  # ADD
+
     return result
 ```
 
-### Pattern 2: TMDB Resolution with Local Cache Dict
+### Pattern 4: Security-Scoped Resource Access for .fileImporter
 
-**What:** For each CSV row, construct a `(Name, Year)` key. Before calling TMDB, check an in-memory dict built during this import run. Return the first TMDB search result's ID. If no match found, log and skip the row — do not error.
+**What:** Files selected via SwiftUI's `.fileImporter` modifier are security-scoped resources. The URL is only valid while the app holds a security scope. Read the file data within the scope before dispatching the upload task.
 
-**When to use:** Always. A single import may reference hundreds of movies. Without deduplication, `ratings.csv` and `watched.csv` share all the same movies, causing 2x TMDB API calls for every film.
-
-**Trade-offs:** A user with 500 watched films triggers 500 TMDB search requests. At TMDB's ~40 req/s limit, this takes ~12.5 seconds synchronously. Acceptable for v1. Rate limiting with `asyncio.sleep` between batches is the mitigation if needed.
+**When to use:** Always when reading files from `.fileImporter`. Skipping `startAccessingSecurityScopedResource()` causes a silent permissions failure on device.
 
 **Example:**
-```python
-async def resolve_tmdb_ids(
-    rows: list[dict],
-    tmdb_client: httpx.AsyncClient,
-    tmdb_map: dict[tuple, int],  # mutable, shared across all CSV files
-) -> None:
-    """Resolve Name+Year → TMDB ID for rows not already in tmdb_map."""
-    for row in rows:
-        key = (row["Name"], row.get("Year", ""))
-        if key in tmdb_map:
-            continue
-        query = f"{row['Name']} {row.get('Year', '')}".strip()
-        try:
-            response = await tmdb_client.get(
-                "/search/movie", params={"query": query, "page": 1}
-            )
-            response.raise_for_status()
-            results = response.json().get("results", [])
-            if results:
-                tmdb_map[key] = results[0]["id"]
-        except httpx.HTTPError:
-            pass  # Skip unresolvable rows
+```swift
+// In ImportView.swift — .fileImporter onCompletion handler
+
+.fileImporter(
+    isPresented: $showFilePicker,
+    allowedContentTypes: [.zip],
+    allowsMultipleSelection: false
+) { result in
+    switch result {
+    case let .success(urls):
+        guard let url = urls.first else { return }
+        guard url.startAccessingSecurityScopedResource() else { return }
+        defer { url.stopAccessingSecurityScopedResource() }
+        guard let data = try? Data(contentsOf: url) else { return }
+        let name = url.lastPathComponent
+        Task { await importState.upload(fileData: data, fileName: name) }
+    case .failure:
+        break
+    }
+}
 ```
-
-### Pattern 3: INSERT ... ON CONFLICT DO NOTHING for Bulk Skip-Insert
-
-**What:** Use SQLAlchemy Core's `insert()` with PostgreSQL's `on_conflict_do_nothing()` to bulk-insert rows while silently skipping any that would violate the `unique(user_id, tmdb_id)` constraint.
-
-**When to use:** For `watched_movies` and `watchlist_movies` bulk inserts. This is more efficient than a Python-level "check if exists, then insert" loop, which would require N SELECT queries before N INSERT queries.
-
-**Trade-offs:** Requires SQLAlchemy Core (not ORM) for the conflict clause. Slightly less readable than ORM pattern but substantially more efficient for batches of 100+ rows.
-
-**Example:**
-```python
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from app.tracking.models import WatchedMovie
-
-def bulk_insert_watched(
-    rows: list[dict],  # pre-filtered: only rows with resolved tmdb_ids
-    user_id: str,
-    db: Session,
-) -> int:
-    if not rows:
-        return 0
-    stmt = pg_insert(WatchedMovie).values(rows)
-    stmt = stmt.on_conflict_do_nothing(index_elements=["user_id", "tmdb_id"])
-    result = db.execute(stmt)
-    db.commit()
-    return result.rowcount
-```
-
-### Pattern 4: Separate Resolution from Insertion (Two-Pass)
-
-**What:** First pass — resolve all rows from all CSVs to TMDB IDs and cache all movies. Second pass — do all DB inserts. Never interleave TMDB API calls with DB transactions.
-
-**When to use:** Always. Keeps the TMDB-network phase and the DB-write phase cleanly separated. A TMDB failure doesn't leave a partial DB transaction. A DB failure doesn't cause extra TMDB calls.
-
-**Trade-offs:** Slightly more memory (hold all resolved rows in-memory before writing). For a typical Letterboxd export this is negligible.
 
 ## Data Flow
 
-### Full Import Flow
+### Full iOS Import Flow
 
 ```
-Client
-  │  POST /import/letterboxd
-  │  Content-Type: multipart/form-data
-  │  Body: file=<zip bytes>
-  ▼
-views.py
-  │  file.read() → bytes
-  │  user_id from get_current_user()
-  │
-  ▼
-workflows.py: run_letterboxd_import(zip_bytes, user_id, db, tmdb_client)
-  │
-  ├─ Step 1: extract_csvs(zip_bytes)
-  │    zipfile.ZipFile(io.BytesIO)
-  │    csv.DictReader per file
-  │    → ParsedRows{watched, ratings, reviews, watchlist, likes}
-  │
-  ├─ Step 2: resolve_tmdb_ids(all_rows, tmdb_client, tmdb_map={})
-  │    For each unique (Name, Year) across all CSVs:
-  │      GET /search/movie?query=...
-  │      → tmdb_map[(Name, Year)] = tmdb_id
-  │
-  ├─ Step 3: ensure_movies_cached(unique_tmdb_ids, db, tmdb_client)
-  │    For each resolved tmdb_id:
-  │      movies.services.get_movie_details(tmdb_id, db, tmdb_client)
-  │      → movie row exists in `movies` table (satisfies FK)
-  │
-  ├─ Step 4: bulk_insert_watched(watched+ratings+reviews rows, user_id, db)
-  │    Merge data: watched.csv provides base, ratings.csv adds rating,
-  │    reviews.csv adds review text + watched_date
-  │    INSERT INTO watched_movies ON CONFLICT DO NOTHING
-  │    → watched_count (number of new rows inserted)
-  │
-  ├─ Step 5: bulk_insert_watchlist(watchlist rows, user_id, db)
-  │    INSERT INTO watchlist_movies ON CONFLICT DO NOTHING
-  │    → watchlist_count
-  │
-  └─ Step 6: apply_likes(like_rows, tmdb_map, user_id, db)
-       UPDATE watched_movies SET liked=true
-       WHERE user_id=? AND tmdb_id IN (resolved like tmdb_ids)
-       → liked_count (rows updated)
-  │
-  ▼
-views.py returns ImportResultResponse:
-  {
-    "watched_imported": 47,
-    "watchlist_imported": 12,
-    "liked_applied": 8,
-    "skipped": 3,   # rows where TMDB resolution failed
-  }
+User opens Profile tab
+    ↓
+ProfileView shows "Import from Letterboxd" row
+    ↓
+User taps row → NavigationLink pushes ImportView
+    ↓
+importState.phase == .idle → ImportView shows "Select Zip File" button
+    ↓
+User taps "Select Zip File" → showFilePicker = true
+    ↓
+.fileImporter presents UIDocumentPickerViewController (system UI)
+    ↓
+User selects .zip → onCompletion fires
+    ↓
+Read file bytes within security scope
+    ↓
+Task { await importState.upload(fileData: data, fileName: name) }
+    ↓
+importState.phase = .uploading
+    ↓
+ImportView shows ProgressView + "Importing your history…"
+    ↓
+ImportAPI.upload() → APIClient.shared.upload(endpoint: "/import/letterboxd", ...)
+    ↓
+URLSession sends multipart/form-data POST with Bearer token
+    ↓
+[Backend processes import — see backend flow below]
+    ↓
+Returns ImportSummaryResponse JSON
+    ↓
+importState.phase = .done(result)
+    ↓
+ImportView shows results card:
+    "Imported: 423 films"
+    "Skipped: 12 (already in library)"
+    "Failed: 3" [with failed_titles list if any]
 ```
 
-### CSV Merge Strategy (Watched + Ratings + Reviews)
-
-The three CSVs all represent watched movies but carry different fields. Merge them by `(Name, Year)` key before inserting:
+### Backend Import + Rebuild Flow
 
 ```
-watched.csv    → provides: Name, Year, Letterboxd URI (base "watched" fact)
-ratings.csv    → provides: Rating (0.5–5.0 half-star scale)
-reviews.csv    → provides: Rating, Review text, Tags, Watched Date, Rewatch flag
+POST /import/letterboxd received
+    ↓
+import_data/views.py: validate size + zip integrity
+    ↓
+await workflows.run_letterboxd_import(user_id, file_bytes, db, tmdb_client)
+    ├─ _parse_csvs() — extract 5 CSVs, merge by Letterboxd URI into FilmRecord dict
+    ├─ Per-film loop:
+    │   ├─ _resolve_tmdb_id(name, year, tmdb_client)
+    │   ├─ asyncio.sleep(0.025)  [rate limit]
+    │   ├─ get_movie_details(tmdb_id, db, tmdb_client)  [cache movie]
+    │   ├─ INSERT WatchedMovie if in_watched or liked and not existing
+    │   └─ INSERT WatchlistMovie if in_watchlist and not existing
+    └─ db.commit()  ← single commit after full batch
+    ↓
+Returns ImportSummaryResponse to view layer
+    ↓
+background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)
+    ↓
+HTTP 200 sent to iOS client with ImportSummaryResponse
+    ↓ (concurrently, in background)
+rebuild_taste_profile(user_id, db, openai_client)
+    ├─ get_top_rated_movies(user_id, db)  — top 25 by rating, joined with movies
+    ├─ compute_average_embedding(user_id, db)  — weighted avg of movie_embeddings
+    ├─ profile.taste_embedding = weighted_avg
+    └─ db.commit()
+    ↓
+Next GET /recommendations/me uses the updated taste_embedding
 ```
 
-Build a single merged dict keyed by `(Name, Year)`. `reviews.csv` has the richest data per row; treat it as the highest-priority source. `ratings.csv` fills in rating where no review exists. `watched.csv` covers everything else (films logged without rating or review).
-
-### Data Flow for Liked Films
-
-Likes require special handling: `likes/films.csv` entries may or may not be in `watched.csv`. The safest approach:
+### State Management — iOS
 
 ```
-likes/films.csv rows
-  │
-  ▼ resolve tmdb_ids (same tmdb_map — no extra API calls if already watched)
-  │
-  ▼ UPDATE watched_movies SET liked=true
-    WHERE user_id=:uid AND tmdb_id IN (:ids)
-    -- only updates rows that exist; silently skips liked-but-not-watched films
-    -- (a film can be liked on Letterboxd without being marked watched)
-```
+blndApp.swift creates:
+    let authState = AuthState()       (existing)
+    let importState = ImportState()   (NEW)
 
-Do not INSERT a watched_movies row just because a film is liked — that would create phantom watched entries.
+WindowGroup {
+    ContentView()
+        .environment(authState)
+        .environment(importState)   ← add alongside existing .environment(authState)
+}
 
-## Build Order
+ProfileView
+    └─ NavigationLink → ImportView
+        @Environment(ImportState.self) var importState
 
-Dependencies between components drive this sequencing:
-
-```
-1. Migrations (no dependencies)
-   ├── Add `liked` boolean to watched_movies
-   └── Create watchlist_movies table
-
-2. schemas.py (no code dependencies, just Pydantic types)
-   └── ImportResultResponse
-
-3. ZIP extractor + CSV parser (pure stdlib, no DB/TMDB dependencies)
-   └── extract_csvs() function in workflows.py
-
-4. TMDB resolver (depends on: httpx client from dependencies.py)
-   └── resolve_tmdb_ids() in workflows.py
-   └── Reuses: movies.services.search_movies (or direct tmdb_client call)
-
-5. Movie cacher (depends on: DB session + TMDB client)
-   └── Reuses: movies.services.get_movie_details (already exists — no new code)
-
-6. DB inserters (depends on: migrations from step 1, Movie rows from step 5)
-   ├── bulk_insert_watched()
-   ├── bulk_insert_watchlist()
-   └── apply_likes()
-
-7. Workflow orchestrator (depends on: all above)
-   └── run_letterboxd_import() in workflows.py
-
-8. views.py endpoint (depends on: workflow from step 7, schemas from step 2)
-   └── POST /import/letterboxd with UploadFile + auth
+ImportView switches on importState.phase:
+    .idle      → "Select Zip File" AppButton
+    .uploading → ProgressView (indeterminate) + "Importing your history…"
+    .done(r)   → Results card: r.imported / r.skipped / r.failed + failedTitles
+    .failed(e) → error message + "Try Again" button calling importState.reset()
 ```
 
 ## Scaling Considerations
 
+The import is user-scoped and synchronous for v1.1. The rebuild is already async (BackgroundTask).
+
 | Scale | Architecture Adjustments |
 |-------|--------------------------|
-| 0-500 watched films | Synchronous is fine. Single import takes 5-15s (TMDB rate limit is the bottleneck). Return result directly in HTTP response. |
-| 500-2000 films | Add `asyncio.sleep(0.025)` between TMDB batches to stay under 40 req/s. Still synchronous — HTTP timeout becomes a risk (FastAPI default is no timeout, so client timeout is what matters). |
-| 2000+ films | Move to background task: return 202 Accepted + job ID immediately, poll for result. Requires a jobs table or Redis. Out of scope for v1. |
+| 0-500 watched films | Current approach is fine. Import takes 5-20s. Synchronous response acceptable. |
+| 500-2000 films | TMDB resolution at 25ms/call becomes the timeout risk. If needed: fire import as `asyncio.ensure_future` (202 pattern like seed-movies), poll for result. Not needed yet. |
+| 100k+ users | Background worker queue (Celery/Redis). Out of scope. |
 
 ### Scaling Priorities
 
-1. **First bottleneck — TMDB rate limit:** 40 requests/second. A 500-film import needs 500 search calls + 500 detail calls = 1000 TMDB calls = ~25 seconds. Deduplicate aggressively (the shared `tmdb_map` dict handles this). For detail calls, the existing `get_movie_details` cache-check means repeat runs of the same import are much faster.
-2. **Second bottleneck — synchronous HTTP response timeout:** At 2000+ films, the import takes minutes. The client will likely timeout before the server finishes. Mitigation: background task with polling. Not needed for v1.
+1. **First bottleneck:** TMDB resolution latency. A 1000-film library at 25ms/call = ~25s minimum for TMDB alone. The existing `asyncio.sleep(TMDB_RATE_LIMIT_DELAY)` in `workflows.py` is serial. If timeouts become a problem, the fix is a 202-with-polling pattern, not parallelism (TMDB rate limit makes parallelism counterproductive).
+2. **Second bottleneck:** OpenAI embedding call in `rebuild_taste_profile` adds ~500ms-1s. Already handled by BackgroundTask — no client-side impact.
 
 ## Anti-Patterns
 
-### Anti-Pattern 1: Row-by-Row DB Existence Checks
+### Anti-Pattern 1: Merging ImportState into AuthState
 
-**What people do:** For each CSV row, query `SELECT 1 FROM watched_movies WHERE user_id=? AND tmdb_id=?` in Python, then conditionally INSERT.
+**What people do:** Add `isImporting`, `importResult`, `importError` properties directly to `AuthState`.
 
-**Why it's wrong:** 500 films = 500 SELECT queries + up to 500 INSERT queries = 1000 round trips to the DB. `ON CONFLICT DO NOTHING` does this in a single statement.
+**Why it's wrong:** `AuthState` is observed by `ContentView` (the auth gate) and every view that reads user identity. Adding import progress properties to it causes the entire view tree to re-render on upload progress changes. More importantly, import state is transient — it dies when the user leaves `ImportView`. Session state lives for the entire app lifetime.
 
-**Do this instead:** Build the full list of rows to insert in Python, then issue one `INSERT ... ON CONFLICT DO NOTHING` statement with all rows.
+**Do this instead:** A separate `ImportState` `@Observable` class injected alongside `AuthState`. Same pattern, separate concern.
 
-### Anti-Pattern 2: Interleaving TMDB Calls with DB Transactions
+### Anti-Pattern 2: Calling rebuild_taste_profile synchronously before returning the response
 
-**What people do:** For each row: resolve TMDB ID → open DB transaction → INSERT → commit. Repeat.
+**What people do:** Call `services.rebuild_taste_profile(user_id, db, openai_client)` directly inside `import_letterboxd` before `return result`.
 
-**Why it's wrong:** TMDB network latency (100-300ms per call) holds open DB transactions needlessly. A TMDB failure mid-loop leaves partial state. N separate commits instead of one.
+**Why it's wrong:** `rebuild_taste_profile` makes OpenAI API calls (embedding generation) that add 1-3 seconds to an already slow import response. For a 500-film library that already takes 20+ seconds, adding 3 more seconds of synchronous OpenAI calls degrades UX with no benefit to the user.
 
-**Do this instead:** Two clean phases — (1) all TMDB resolution, (2) all DB writes. No open DB sessions during TMDB calls.
+**Do this instead:** `background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)` — the exact pattern from `tracking/views.py`. The rebuild runs after the response is sent.
 
-### Anti-Pattern 3: Creating Watched Entries for Liked-Only Films
+### Anti-Pattern 3: Triggering rebuild_taste_profile inside workflows.py
 
-**What people do:** See a film in `likes/films.csv`, INSERT it into `watched_movies` to set `liked=true`.
+**What people do:** Add a `rebuild_taste_profile` call at the end of `run_letterboxd_import()`.
 
-**Why it's wrong:** Letterboxd allows liking a film without having watched it. This would create false "watched" entries that corrupt the user's watch history and mess up recommendation signals.
+**Why it's wrong:** `workflows.py` has no access to `BackgroundTasks` (a FastAPI HTTP construct) or `openai_client` (a module-level singleton in `dependencies.py`). Putting it there requires threading HTTP-layer concerns through business logic and makes the rebuild synchronous with the response. It also violates the single-responsibility of the workflow: parse, resolve, persist. The rebuild is a side effect of the HTTP action, not of the data transformation.
 
-**Do this instead:** `UPDATE watched_movies SET liked=true WHERE user_id=? AND tmdb_id IN (?)`. Only updates films the user has actually watched.
+**Do this instead:** The view layer handles it. `views.py` already owns all FastAPI dependencies.
 
-### Anti-Pattern 4: Stopping the Import on Any TMDB Failure
+### Anti-Pattern 4: Using URLSession without security-scoped resource access
 
-**What people do:** If `GET /search/movie` returns a non-200 or empty results for one film, raise an exception and abort.
+**What people do:** Pass the `URL` from `.fileImporter` directly to `URLSession.shared.data(for:)` or `Data(contentsOf:)` without `startAccessingSecurityScopedResource()`.
 
-**Why it's wrong:** Obscure film titles, foreign films, or short-lived TMDB outages will cause the entire import to fail when 499/500 films resolved fine.
+**Why it's wrong:** Files from the document picker are in a sandboxed security scope. Attempting to read without the scope results in a permissions error that is easy to mistake for a network error.
 
-**Do this instead:** Skip unresolvable rows, count them, and return the count in the response as `"skipped": N`. The user can see what didn't import.
+**Do this instead:** Call `url.startAccessingSecurityScopedResource()` before reading, and `url.stopAccessingSecurityScopedResource()` in a `defer` block after.
 
 ## Integration Points
 
-### External Services
+### New iOS Components
 
-| Service | Integration Pattern | Notes |
-|---------|---------------------|-------|
-| TMDB `/search/movie` | Async httpx via existing `get_tmdb_client` dependency | Use `query="{Name} {Year}"` — Year significantly reduces false positives for remakes/series |
-| TMDB `/movie/{id}` | Via existing `movies.services.get_movie_details` — no new code | Already handles DB cache-or-fetch + FK constraint satisfaction |
+| Component | File | Integrates With |
+|-----------|------|-----------------|
+| `ImportState` | `State/ImportState.swift` | Injected via `.environment()` in `blndApp.swift`. Read by `ImportView`. Calls `ImportAPI`. |
+| `ImportAPI` | `Networking/ImportAPI.swift` | Calls `APIClient.shared.upload()`. No other callers. |
+| `ImportSummaryResponse` | `Models/ImportModels.swift` | Decoded by `APIClient.upload()`. Stored in `ImportState.phase`. Displayed by `ImportView`. |
+| `APIClient.upload()` | `Networking/APIClient.swift` | New method. Reuses existing `handleResponse(http:data:)` and `KeychainManager`. |
+| `ImportView` | `Views/Profile/ImportView.swift` | Pushed from `ProfileView`. Reads `importState.phase`. Fires `importState.upload()`. |
 
-### Internal Boundaries
+### Modified iOS Components
 
-| Boundary | Communication | Notes |
-|----------|---------------|-------|
-| `views.py` → `workflows.py` | Direct async function call | `views.py` passes `file.read()` bytes + injected dependencies |
-| `workflows.py` → `movies.services` | Direct function call (same process) | Reuse `get_movie_details` — do not duplicate movie caching logic |
-| `workflows.py` → DB | SQLAlchemy Session passed as dependency | Use Core `insert()` for bulk ops, ORM for single-row queries |
-| `workflows.py` → TMDB | httpx.AsyncClient passed as dependency | Same client instance that all other endpoints use |
+| Component | File | Change |
+|-----------|------|--------|
+| `ProfileView` | `Views/Profile/ProfileView.swift` | Add "Import from Letterboxd" navigation row. |
+| `blndApp.swift` | `App/blndApp.swift` | Instantiate `ImportState()`, add `.environment(importState)`. |
 
-### New DB Tables Required
+### Modified Backend Components
 
-Both tables must exist before the workflow can run. Create via Supabase migrations (raw SQL):
+| Component | File | Change |
+|-----------|------|--------|
+| `import_letterboxd` | `app/import_data/views.py` | Add `background_tasks: BackgroundTasks` parameter. Add `rebuild_taste_profile` import at top. Add `background_tasks.add_task(...)` after workflow call. Three lines total. |
 
-**Migration 1: `liked` column on `watched_movies`**
-```sql
-alter table watched_movies
-add column liked boolean not null default false;
+### Unchanged Backend Components
+
+| Component | File | Why Unchanged |
+|-----------|------|---------------|
+| `workflows.py` | `app/import_data/workflows.py` | All import logic is complete and correct. Rebuild belongs in the view layer. |
+| `recommendations/services.py` | `rebuild_taste_profile` | Already exists with the exact signature needed. No changes required. |
+| `schemas.py` | `app/import_data/schemas.py` | `ImportSummaryResponse` already has `imported`, `skipped`, `failed`, `failed_titles` — all fields needed by iOS. |
+
+## Build Order
+
+Two independent tracks converge at integration testing:
+
+```
+Track A — Backend (1 file, ~30 min)
+  1. app/import_data/views.py
+     - Add BackgroundTasks import and parameter
+     - Add rebuild_taste_profile import
+     - Add background_tasks.add_task() call after workflow returns
+     Test: curl POST /import/letterboxd with a zip, confirm 200 + summary JSON,
+           then wait 5s and GET /recommendations/me — taste_embedding should be fresh
+
+Track B — iOS (dependency order matters)
+  1. Models/ImportModels.swift              [NEW]
+     - ImportSummaryResponse: Decodable struct (imported, skipped, failed, failedTitles)
+  2. Networking/APIClient.swift             [MODIFIED]
+     - Add upload<T: Decodable>() method
+     - Add private makeMultipartBody() helper
+  3. Networking/ImportAPI.swift             [NEW]
+     - ImportAPI enum with static upload(fileData:fileName:) calling APIClient.shared.upload()
+  4. State/ImportState.swift               [NEW]
+     - @Observable ImportState with Phase enum and upload() async method
+  5. Views/Profile/ImportView.swift        [NEW]
+     - .fileImporter modifier, progress view, results card, error + retry
+  6. Views/Profile/ProfileView.swift       [MODIFIED]
+     - Add "Import from Letterboxd" navigation row that pushes ImportView
+  7. App/blndApp.swift                     [MODIFIED]
+     - Instantiate ImportState(), add .environment(importState)
+
+Integration (after both tracks)
+  8. End-to-end: select Letterboxd zip in simulator → confirm upload progress shown →
+     confirm ImportSummaryResponse displayed → confirm recommendations refresh on
+     next GET /recommendations/me
 ```
 
-**Migration 2: `watchlist_movies` table**
-```sql
-create table watchlist_movies (
-    id bigint generated always as identity primary key,
-    user_id uuid not null references profiles(id) on delete cascade,
-    tmdb_id int not null references movies(tmdb_id),
-    added_date date,
-    created_at timestamptz default now(),
-    unique(user_id, tmdb_id)
-);
-```
-
-The `unique(user_id, tmdb_id)` constraint on both tables is what enables `ON CONFLICT DO NOTHING` — the constraint must exist for the conflict clause to target it.
+Items B1-B4 can be built and independently verified (unit tested or REPL-tested) before any UI exists. The dependency chain is strictly: Models → APIClient → ImportAPI → ImportState → ImportView. Do not build ImportView before ImportState exists.
 
 ## Sources
 
-- Direct codebase inspection: `/Users/adamrose/Desktop/blnd/blnd_backend/` (HIGH confidence — actual source of truth)
-- Letterboxd export ZIP inspection: `/Users/adamrose/Desktop/blnd/letterboxd-arose3000-2026-03-04-03-09-utc.zip` (HIGH confidence — real export used to confirm CSV schemas)
-- Python stdlib `zipfile`, `csv`, `io` — standard library, no versioning concern (HIGH confidence)
-- SQLAlchemy `insert().on_conflict_do_nothing()` — PostgreSQL dialect, well-established pattern (HIGH confidence from training + codebase already uses SQLAlchemy dialects)
-- FastAPI `UploadFile.read()` — core FastAPI primitive, used throughout existing codebase (HIGH confidence)
+- Direct codebase inspection — `blnd_frontend/blnd_frontend/Networking/APIClient.swift`: confirmed `request<T>()` signature, `handleResponse(http:data:)`, `KeychainManager` usage, `APIError` enum — all reusable for the new `upload()` method
+- Direct codebase inspection — `blnd_frontend/blnd_frontend/State/AuthState.swift`: confirmed `@Observable` class pattern, error string, loading state conventions
+- Direct codebase inspection — `blnd_frontend/blnd_frontend/Networking/AuthAPI.swift`: confirmed static enum pattern with `async throws` functions
+- Direct codebase inspection — `blnd_backend/app/tracking/views.py` lines 13-27: `_trigger_taste_rebuild()` + `BackgroundTasks.add_task()` pattern — exact precedent for the import rebuild trigger
+- Direct codebase inspection — `blnd_backend/app/import_data/views.py`: confirmed current `import_letterboxd` signature; `BackgroundTasks` not yet present; the three-line diff is precisely specified
+- Direct codebase inspection — `blnd_backend/app/import_data/workflows.py`: confirmed `run_letterboxd_import` returns `ImportSummaryResponse` after `db.commit()`; no rebuild call exists
+- Direct codebase inspection — `blnd_backend/app/recommendations/services.py`: confirmed `rebuild_taste_profile(user_id, db, openai_client)` signature and behavior
+- Direct codebase inspection — `blnd_backend/app/import_data/schemas.py`: confirmed `ImportSummaryResponse` has `imported`, `skipped`, `failed`, `failed_titles` — exact fields needed by `ImportModels.swift`
+- Apple Developer Documentation (training data, HIGH confidence for stable APIs): `.fileImporter` SwiftUI modifier, `startAccessingSecurityScopedResource()` / `stopAccessingSecurityScopedResource()`, `UTType.zip`
+- Apple Developer Documentation (training data, HIGH confidence): `URLSession` multipart/form-data RFC 2046 boundary format
 
 ---
-*Architecture research for: Letterboxd CSV import workflow — FastAPI + SQLAlchemy + TMDB*
-*Researched: 2026-03-03*
+*Architecture research for: iOS Letterboxd import UI + backend taste profile rebuild (v1.1)*
+*Researched: 2026-03-09*

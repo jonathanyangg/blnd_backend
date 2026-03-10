@@ -1,170 +1,245 @@
 # Project Research Summary
 
-**Project:** BLND — Letterboxd CSV Import Pipeline
-**Domain:** File upload, CSV parsing, third-party API resolution, bulk DB persistence
-**Researched:** 2026-03-03
+**Project:** BLND — iOS Letterboxd Integration Frontend (v1.1)
+**Domain:** iOS file picker + multipart upload + backend taste profile rebuild
+**Researched:** 2026-03-09
 **Confidence:** HIGH
 
 ## Executive Summary
 
-This is a well-scoped, single-endpoint feature that adds a `POST /import/letterboxd` endpoint to an existing FastAPI/SQLAlchemy/Supabase backend. The workflow accepts a Letterboxd export zip, parses five CSV files, resolves each film to a TMDB ID via name+year search, caches resolved movies, and bulk-inserts into `watched_movies` and `watchlist_movies`. Critically, zero new runtime dependencies are needed — every required capability is already in the installed stack (stdlib `zipfile`/`csv`/`io`, existing `httpx`, SQLAlchemy 2.0, FastAPI `UploadFile`). The implementation complexity lives almost entirely in two decisions: how to merge the CSV files correctly, and how to handle TMDB resolution robustly.
+The v1.1 milestone adds the iOS-side of the Letterboxd import flow. The backend pipeline already exists and ships complete from v1.0: `POST /import/letterboxd` accepts a multipart ZIP, parses five CSVs, resolves films via TMDB, writes to the database, and returns `{imported, skipped, failed, failed_titles}`. What v1.1 adds is the iOS surface (file picker, upload, progress state, results display) and a single backend hook that triggers a taste profile rebuild after a successful bulk import. No new dependencies are required on either platform. Everything needed is in Swift's standard library, Foundation, and the already-installed FastAPI stack.
 
-The recommended approach is a two-phase workflow in `app/import_data/workflows.py`: a complete TMDB resolution pass first (building a shared `(Name, Year) → tmdb_id` cache), followed by a single bulk DB write pass using PostgreSQL's `INSERT ... ON CONFLICT DO NOTHING`. This separation keeps network latency out of DB transactions, prevents partial-state corruption on TMDB failures, and enables a single commit for the entire batch. Two Supabase migrations are required before any code runs: adding a `liked` boolean to `watched_movies` and creating a new `watchlist_movies` table.
+The recommended implementation pattern is: `.fileImporter` with `UTType.zip` for file selection, manual multipart body construction (15–20 lines of `Data` assembly — no Alamofire), `URLSession.upload(for:from:delegate:)` with a `URLSessionTaskDelegate` for upload progress, and an `@Observable @MainActor ImportState` class driving a phase enum (`idle → uploading → done/failed`). On the backend, a single `background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)` call is appended to `import_letterboxd` in `views.py` — the identical pattern already used in `tracking/views.py`. The new iOS components (4 new files, 3 modified files) slot cleanly into the existing architectural conventions: static API enum, `@Observable` state class, `APIClient` singleton extended with an `upload<T>()` overload.
 
-The primary risk is incorrect CSV merge logic. Direct inspection of the actual Letterboxd export confirms that 69% of liked films are absent from `watched.csv`, and reviewed films can appear in `reviews.csv` with no corresponding entry in `watched.csv` or `ratings.csv`. Any implementation that treats these files as nested subsets — rather than independent sources to union — will silently drop a significant fraction of the user's data. Every other risk (TMDB year mismatches, popularity bias, session poisoning on exception) has a well-defined, low-effort mitigation pattern documented in research.
+The dominant risks are all implementation-time traps rather than architectural unknowns: security-scoped resource access must bracket the file read synchronously inside the `.fileImporter` completion closure (not in a later async Task), the URLSession must use a custom configuration with a 300-second timeout (the default 60 seconds kills large library imports while the backend is still processing), the background task on the backend must open a fresh `SessionLocal()` rather than reusing the request's `db` session (which closes when the response is sent), and all `@Observable` mutations must originate on the main actor. Every one of these is a well-documented pitfall with a clear, low-effort mitigation.
+
+---
 
 ## Key Findings
 
 ### Recommended Stack
 
-The existing stack is complete for this feature. No new packages need to be installed. Python's stdlib `zipfile` + `csv` modules handle in-memory zip extraction and RFC 4180-compliant CSV parsing without the 30MB overhead of pandas. The existing `httpx.AsyncClient` (wired as `get_tmdb_client` in `dependencies.py`) handles TMDB search calls. SQLAlchemy 2.0's PostgreSQL dialect provides `insert().on_conflict_do_nothing()` for the skip-on-duplicate bulk insert pattern. The only conditional addition is `tenacity` for retry logic — defer until integration testing reveals a need.
+No new libraries or packages are required. The iOS side uses SwiftUI `.fileImporter` (iOS 14+, stdlib), `UTType.zip` from `UniformTypeIdentifiers` (iOS 14+, system framework), and `URLSession.upload(for:from:delegate:)` with `URLSessionTaskDelegate` (iOS 15+, Foundation). The backend side uses FastAPI `BackgroundTasks` (already installed at 0.135.1) and the existing `rebuild_taste_profile` function (already callable from `app.recommendations.services`). The zero-third-party-dependency policy on iOS is preserved. The two-line backend diff passes the existing `pre-commit` hooks (ruff, pyright strict, codespell).
 
-**Core technologies:**
-- `zipfile` + `io.BytesIO` (stdlib): In-memory zip extraction — zero dependencies, safe, no temp files on disk
-- `csv.DictReader` + `io.TextIOWrapper` (stdlib): RFC 4180-compliant CSV parsing — handles quoted commas in movie titles natively
-- `httpx.AsyncClient` (existing, 0.28.1): TMDB `/search/movie` resolution — already wired as a FastAPI dependency
-- `sqlalchemy.dialects.postgresql.insert` (existing, 2.0.46): `ON CONFLICT DO NOTHING` bulk insert — single statement, no N+1 SELECT pattern
-- `asyncio.Semaphore` (stdlib): TMDB concurrency cap for large imports — no additional install needed
+**Core technologies (new for v1.1):**
+- `.fileImporter` + `UTType.zip`: native system file picker, no UIKit wrapper, iCloud Drive and third-party storage included automatically
+- Manual multipart body (`Data` construction with UUID boundary): replaces Alamofire; exactly 15–20 lines of Swift; field name must be `"file"` to match FastAPI's `UploadFile = File(...)`
+- `URLSession.upload(for:from:delegate:)`: the only stdlib-native path to async upload with per-byte progress callbacks; requires `URLSessionTaskDelegate` conformance
+- `URLSessionConfiguration` with `timeoutIntervalForRequest = 300`: mandatory override of the 60-second default for large library imports
+- FastAPI `BackgroundTasks.add_task(rebuild_taste_profile, ...)`: established project pattern, correct lifecycle for post-response work
 
-**Critical version notes:**
-- Must use `from sqlalchemy.dialects.postgresql import insert as pg_insert` — the generic Core `insert` does not expose `.on_conflict_do_nothing()`
-- `Session.bulk_insert_mappings()` is deprecated in SQLAlchemy 2.0 — do not use
+**What does NOT change:**
+- Backend import pipeline (`workflows.py`, `schemas.py`) — unchanged from v1.0
+- `APIClient.request<T>()` — untouched; a new `upload<T>()` overload is added alongside it
+- `AuthState` — separate from `ImportState`; no coupling
 
 ### Expected Features
 
-Verified against the actual Letterboxd export zip at project root. All CSV schemas are confirmed ground truth.
+The feature surface is deliberately narrow. Every P1 item maps to an existing backend contract or existing iOS pattern. P2 items add polish with no new code patterns.
 
-**Must have (table stakes):**
-- Zip upload and in-memory extraction — users download a zip; they expect to upload that exact file
-- Parse and import `watched.csv` as the master watched list — core history data
-- Parse and import `ratings.csv` — enriches watched entries with 0.5–5.0 half-star ratings
-- Parse and import `reviews.csv` — enriches watched entries with review text and actual `Watched Date`
-- Parse and import `watchlist.csv` into separate `watchlist_movies` table — requires migration
-- Parse and import `likes/films.csv` — sets `liked=true` on watched entries; requires `liked` column migration
-- TMDB name+year resolution with graceful skip on failure — Letterboxd URIs are NOT TMDB IDs
-- Skip-on-duplicate for re-imports — never overwrite existing user data
-- Structured import summary response — `imported`, `skipped_duplicates`, `failed` counts with failed titles
+**Must have (P1 — table stakes):**
+- Settings/Profile entry point — "Import from Letterboxd" row in `ProfileView` navigates to `ImportView`
+- `ImportView` idle state — instructions copy ("Go to letterboxd.com/settings/data, export your data, then select the downloaded ZIP"), "Select ZIP File" button, selected filename confirmation
+- Multipart upload to `POST /import/letterboxd` — via new `ImportAPI.upload(fileData:fileName:)` calling `APIClient.upload<T>()`
+- In-progress state — indeterminate `ProgressView`, copy: "Resolving films via TMDB — this may take 30 seconds"
+- Results state — imported / skipped / failed counts; failed_titles collapsible list when `failed > 0`
+- Error state — inline `APIError` message, "Try Again" resets to idle
+- Backend taste rebuild hook — `background_tasks.add_task(rebuild_taste_profile, ...)` in `views.py`, guarded by `result.imported > 0`
 
-**Should have (differentiators):**
-- Use `Watched Date` from `reviews.csv` as `watched_date` rather than the log creation date — more accurate watch history timeline
-- TMDB rate limit throttling (asyncio.Semaphore) for imports over ~40 films — prevents 429 failures on large libraries
-- Per-movie result detail in response — helps users understand exactly what failed and why
+**Should have (P2 — differentiators):**
+- "Already up to date" copy variant when `imported == 0 && failed == 0`
+- Failed titles collapsible list (data already returned by backend — display only)
 
 **Defer (v2+):**
-- Re-import / incremental sync — conflict resolution and deletion detection are significantly complex
-- `diary.csv` rewatch tracking — requires a multi-view schema model not currently present
-- Tags import from `reviews.csv` — no downstream consumer in current BLND schema
-- Async background job processing — synchronous is sufficient for libraries under ~500 films
+- Import prompt in onboarding (requires onboarding restructuring; add when retention data confirms import correlates with activation)
+- Import timestamp in Settings ("Last imported: March 4, 2026") — requires DB field or user metadata endpoint
+- Incremental re-import — detect new entries since last import; needs per-user import timestamp
+- Streaming server-side progress — SSE or chunked transfer; only if confirmed UX blocker
 
-**Confirmed anti-features (never build):**
-- Import `profile.csv` — would overwrite BLND profile data with Letterboxd data
-- Import `likes/reviews.csv` or `likes/lists.csv` — these are other users' content, not the importer's data
-- Import `deleted/` or `orphaned/` directories — bookkeeping artifacts
+**Do not build:**
+- Upload progress percentage / progress bar — the upload completes in <1s; the 10–90 second wait is server-side TMDB resolution with no progress signal; a bar that jumps to 100% then freezes is worse UX than an honest spinner
+- Cancel button during upload — backend has no cancellation hook; partial DB writes may have committed; use a pre-confirmation prompt instead
+- In-app webview to Letterboxd export page — auth does not transfer across cookie jars; download stays in webview sandbox; fragile to Letterboxd UI changes
+- OAuth integration with Letterboxd — API is invite-only beta with no export endpoint; every comparable app uses the manual ZIP flow
 
 ### Architecture Approach
 
-The entire workflow lives in `app/import_data/workflows.py` per PROJECT.md's explicit requirement. A single orchestrator function `run_letterboxd_import(zip_bytes, user_id, db, tmdb_client)` sequences six steps: extract CSVs, resolve TMDB IDs (with shared cache dict), ensure movies are cached in the `movies` table, bulk insert watched entries, bulk insert watchlist entries, and apply liked flags. `views.py` handles only HTTP concerns (file receive, auth, response shaping). The import domain reuses `movies.services.get_movie_details` for movie caching — this function already handles the cache-or-fetch pattern and satisfies the FK constraint on `movies`.
+The iOS architecture mirrors the existing `AuthState` / `AuthAPI` / `APIClient` convention exactly. Four new files and three file modifications deliver the full feature. The component chain is strictly unidirectional: `ImportView` observes `ImportState`, `ImportState` calls `ImportAPI`, `ImportAPI` calls `APIClient.shared.upload()`. `ImportState` is separate from `AuthState` — import state is transient screen state; mixing it into `AuthState` would cause the auth gate (`ContentView`) to re-render on every upload progress tick. The rebuild logic belongs in `views.py` (not `workflows.py`) because `BackgroundTasks` and `openai_client` are FastAPI HTTP-layer constructs unavailable inside business logic.
 
 **Major components:**
-1. `views.py` — HTTP endpoint: receives `UploadFile`, injects dependencies, calls workflow, returns `ImportResultResponse`
-2. `workflows.py` — Orchestrator: sequences all six import steps, owns all import-specific logic
-3. ZIP extractor + CSV parser — In-memory extraction via stdlib; produces five lists of row dicts keyed by Letterboxd URI
-4. TMDB resolver — Two-step search (with year, then without as fallback); shared `tmdb_map` dict prevents duplicate API calls across CSVs
-5. DB inserters — `pg_insert().on_conflict_do_nothing()` for watched and watchlist; `UPDATE ... WHERE tmdb_id IN (...)` for likes
-6. `schemas.py` — `ImportResultResponse` Pydantic model for the summary response
 
-**Two new migrations required (must precede code):**
-- `ADD COLUMN liked boolean NOT NULL DEFAULT false` on `watched_movies`
-- `CREATE TABLE watchlist_movies (id, user_id, tmdb_id, added_date, created_at, UNIQUE(user_id, tmdb_id))`
+| Component | Status | Responsibility |
+|-----------|--------|----------------|
+| `ImportView` | NEW | `.fileImporter` modifier, phase-driven UI, results card, error + retry |
+| `ImportState` | NEW | `@Observable @MainActor` phase enum (`idle/uploading/done/failed`), owns `upload()` async method |
+| `ImportAPI` | NEW | Static enum, one function: `upload(fileData:fileName:) async throws -> ImportSummaryResponse` |
+| `ImportModels` | NEW | `ImportSummaryResponse: Decodable` with snake_case → camelCase `CodingKeys` |
+| `APIClient.upload<T>()` | MODIFIED | Multipart overload alongside existing `request<T>()`; reuses `handleResponse`, `KeychainManager` |
+| `ProfileView` | MODIFIED | Add "Import from Letterboxd" navigation row |
+| `blndApp.swift` | MODIFIED | Instantiate `ImportState()`, inject via `.environment(importState)` |
+| `import_data/views.py` | MODIFIED | Add `BackgroundTasks` param; schedule `rebuild_taste_profile` after workflow returns |
+| `import_data/workflows.py` | UNCHANGED | All import logic complete and correct from v1.0 |
+| `recommendations/services.py` | UNCHANGED | `rebuild_taste_profile` callable with existing signature |
+
+**iOS build order (strictly dependency-ordered):**
+`ImportModels` → `APIClient.upload<T>()` → `ImportAPI` → `ImportState` → `ImportView` → `ProfileView` → `blndApp`
+
+**Backend build (independent of iOS track):**
+One diff to `import_data/views.py` — add `BackgroundTasks` param, import `rebuild_taste_profile`, add `background_tasks.add_task(...)` after workflow call. Three lines total.
 
 ### Critical Pitfalls
 
-1. **CSV subset assumption (CRITICAL)** — `watched.csv`, `ratings.csv`, `reviews.csv`, and `likes/films.csv` are independent sources, not nested subsets. 69% of liked films and some reviewed films have no `watched.csv` entry. Use Letterboxd URI as the merge key and union all four sources before any TMDB resolution or DB writes. This is the single highest-risk implementation mistake.
+1. **Security-scoped resource released before upload** — Read `Data(contentsOf: url)` synchronously inside the `.fileImporter` `onCompletion` closure while the scope is open. Never store the URL and defer the read to an async Task. The scope expires before the Task starts on device (Simulator is more permissive — this failure is invisible until physical device testing).
 
-2. **TMDB popularity bias without year validation (CRITICAL)** — TMDB returns results sorted by popularity. For remakes, franchise entries, or ambiguous titles, `results[0]` is frequently the wrong film. Always validate `abs(result_year - lb_year) <= 1` before accepting a result; fall back to year-free search only when year-filtered search returns nothing.
+2. **URLSession 60-second request timeout kills large imports** — The default `timeoutIntervalForRequest = 60` is time-between-received-packets, not total request duration. A 1000-film library takes 25+ seconds of TMDB resolution on the backend before sending a single response byte. Create a dedicated `URLSessionConfiguration` with `timeoutIntervalForRequest = 300` for the import session. Do not route the upload through `APIClient`'s `URLSession.shared`.
 
-3. **SQLAlchemy session poisoned on exception (CRITICAL)** — If any exception fires during the import loop without a `db.rollback()`, every subsequent DB operation in the same session fails with `InvalidRequestError`. Wrap each movie's processing in `try/except` with explicit `db.rollback()` in the except branch. Never let a single TMDB failure abort the entire import.
+3. **Multipart boundary mismatch causes silent 422** — The boundary string in the `Content-Type` header (`multipart/form-data; boundary=<uuid>`) must exactly match the boundary used to construct the body. FastAPI returns `422 Unprocessable Entity` with no useful diagnostic on a mismatch. Use one UUID generated per request and pass it to both the header and the body builder.
 
-4. **TMDB year parameter is strict — off-by-one kills match (HIGH)** — Letterboxd uses festival/regional release years; TMDB uses wide release years. The difference can be one year. Implement two-step resolution: search with `year=` first, then retry without `year=` as a fallback. This is a 5-line change that prevents ~5-10% of films from silently failing.
+4. **BackgroundTask using the request's closed DB session** — FastAPI's `get_db()` dependency closes the session when the response is sent; `BackgroundTask` functions run after that. Passing the request `db` to the background task causes `InvalidRequestError: Session is already closed`. Always open a fresh `SessionLocal()` inside the task and close it in a `finally` block.
 
-5. **Liked films require new watched_movies rows, not just flag updates (HIGH)** — The architecture research suggests `UPDATE ... SET liked=true WHERE tmdb_id IN (...)`. This silently skips 69% of liked films that have no watched entry. When a liked film has no `watched_movies` row, create one with `liked=True` and null `rating`/`review`/`watched_date` (all columns are nullable per schema).
+5. **`@Observable` mutations from non-main-actor context** — `URLSessionTaskDelegate` callbacks arrive on an arbitrary background thread. Annotate `ImportState` with `@MainActor`; use `nonisolated` on the delegate method with an explicit `Task { @MainActor in self.uploadProgress = progress }` dispatch. Skipping this produces runtime warnings in debug and crashes on iOS 17+ in production.
 
-6. **N commits in per-movie loop (MODERATE)** — Do not reuse `track_movie()` (which calls `db.commit()` per record) for bulk imports. Use `db.flush()` per row and a single `db.commit()` after the full batch. Existing `get_movie_details` also calls `db.commit()` internally — avoid calling it inside the main import loop for movies already cached.
+6. **Synchronous SQLAlchemy inside `async def` import endpoint blocks the event loop** — The existing `import_letterboxd` is `async def` but calls blocking SQLAlchemy ORM methods. For a 2000-film import this monopolizes the event loop for 30–90 seconds, stalling all other API consumers. Convert to `def` (FastAPI threads it automatically) or wrap the blocking call with `run_in_threadpool`. Acceptable to treat as known tech debt for v1.1 at low concurrent user count.
+
+---
 
 ## Implications for Roadmap
 
-Based on research, the dependency graph drives a clear 3-phase build order with migrations as a hard prerequisite.
+The v1.1 work is narrow, well-bounded, and has no unresolved unknowns. Two independent implementation tracks converge at integration testing. Research is exhaustive — no phase requires `/gsd:research-phase`.
 
-### Phase 1: Migrations and Schema
-**Rationale:** Both DB migrations must exist before any import code can run. The `watched_movies.liked` column and `watchlist_movies` table are referenced by FK constraints that will error at runtime if absent. These are also reversible with zero code risk — do them first.
-**Delivers:** DB schema ready for all import data; no code changes needed in existing routes
-**Addresses:** `liked` boolean column (FEATURES.md), `watchlist_movies` table (FEATURES.md)
-**Avoids:** FK constraint errors on first import attempt; makes DB the source of truth before code is written
-**Research flag:** No research needed. SQL is deterministic. Follow existing migration naming convention.
+### Phase 1: Backend Hook
 
-### Phase 2: Core Import Workflow
-**Rationale:** This is the bulk of the implementation. All five CSV parsers, TMDB resolution with year fallback, movie caching, and the three DB write operations. Must be built as a unit because the architecture requires all TMDB resolution to complete before any DB writes begin (two-phase pattern). The CSV union merge logic must be central from the start — retrofitting it after a subset-assumption implementation means rewriting the merge layer entirely.
-**Delivers:** Functional `POST /import/letterboxd` endpoint that imports watched history, ratings, reviews, watchlist, and liked films; returns structured summary
-**Uses:** stdlib `zipfile`/`csv`, existing `httpx` client, `pg_insert().on_conflict_do_nothing()`, existing `get_movie_details`
-**Implements:** All components in `workflows.py` per PROJECT.md requirement
-**Avoids:** CSV subset assumption (Pitfall 1), session poisoning (Pitfall 3), TMDB year strictness (Pitfall 4), liked-only film rows (Pitfall 7), N commits in loop (Pitfall 6)
-**Research flag:** No additional research needed. All patterns are fully specified in STACK.md and ARCHITECTURE.md. TMDB year fallback pattern and SQLAlchemy bulk insert pattern are implementation-ready.
+**Rationale:** The backend change is three lines, independent of all iOS work, and can be deployed before iOS ships. Shipping it first gives the team a verified integration target and eliminates the risk of an iOS-correct client hitting a backend that still returns stale taste profiles.
 
-### Phase 3: Polish and Hardening
-**Rationale:** These items add correctness and UX quality but do not block the core feature. TMDB rate limiting matters only at scale (>40 films); the basic semaphore pattern is trivial to add. File size validation and zip bomb protection are security hygiene that can follow the working implementation.
-**Delivers:** Rate limiting for large libraries, input validation (file size, zip safety), detailed per-movie failure reporting in response
-**Addresses:** TMDB throttling (FEATURES.md P2), security mistakes (PITFALLS.md security section)
-**Avoids:** TMDB 429 errors on large imports; path traversal via malicious zip; memory exhaustion from oversized uploads
-**Research flag:** No additional research needed. Patterns fully specified: `asyncio.Semaphore(20)`, `Content-Length` check, sum of `file.file_size` across zip entries.
+**Delivers:** `POST /import/letterboxd` triggers `rebuild_taste_profile` via `BackgroundTasks` after every successful import. Taste profile is current after bulk import without any user action.
+
+**Implements:** `background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)` in `import_data/views.py`. Three lines (import, parameter, call).
+
+**Avoids:** Synchronous rebuild inside the endpoint (doubles response latency for large imports). Reusing the request's `db` session in the background task (session is closed by the time the task runs).
+
+**Research flag:** Standard pattern. Identical to `tracking/views.py`. No deeper research needed.
+
+---
+
+### Phase 2: iOS Data Layer
+
+**Rationale:** The model, networking, and state layers must exist before any UI can be written. Building bottom-up eliminates integration debt. Each layer can be verified independently before a single SwiftUI view exists.
+
+**Delivers:** `ImportModels.swift` (Decodable struct), `APIClient.upload<T>()` overload (multipart body builder + extended-timeout URLSession configuration), `ImportAPI.swift` (static enum calling the overload), `ImportState.swift` (`@Observable @MainActor` phase machine with `upload()` async method).
+
+**Avoids:** Routing upload through `APIClient.request<T>()` (JSON-only — causes 422). Using `URLSession.shared` without timeout override (60-second default kills large library imports). `@Observable` mutations from background thread (annotate class `@MainActor`, dispatch delegate callbacks explicitly).
+
+**Research flag:** All patterns confirmed against Apple docs and WWDC21. No ambiguity.
+
+---
+
+### Phase 3: iOS View Layer
+
+**Rationale:** Views are built last because they depend on the complete data layer. `ImportView` is a single screen with four discrete visual states; the phase enum makes transitions unambiguous.
+
+**Delivers:** `ImportView.swift` (`.fileImporter` modifier, phase-driven body, results card, error + retry). `ProfileView` modified with navigation row. `blndApp.swift` modified to inject `ImportState`.
+
+**Features:** All P1 table stakes and P2 items (failed titles collapsible, "Already up to date" copy, instructions copy) — P2 items are low-effort additions in the same pass, include them.
+
+**Avoids:** Reading the security-scoped URL in an async Task (scope expires before the Task starts on device).
+
+**Research flag:** Standard SwiftUI patterns. Physical device testing is mandatory for security-scoped resource access — Simulator behavior is more permissive and masks this failure entirely.
+
+---
+
+### Phase 4: Integration and Verification
+
+**Rationale:** The two tracks are independently testable but must be verified end-to-end together. Several pitfalls (timeout, boundary mismatch, background task session, taste rebuild correctness) are only detectable at integration time against a production-latency host.
+
+**Delivers:** Verified end-to-end flow: select Letterboxd ZIP on device → upload completes → `ImportSummaryResponse` displayed → taste profile rebuild fires → `GET /recommendations/me` returns updated results.
+
+**Verification checklist (from PITFALLS.md):**
+- Backend logs `len(file_bytes) > 0` before zip validation (confirms security scope was held through read)
+- Network inspector shows `Content-Type: multipart/form-data`, not `application/json`
+- 2000-film import does not time out (must test against production-latency host — localhost hides timeout issues)
+- Rebuild background task logs fire after response was sent; `taste_embedding` is non-null and updated
+- Zero Xcode runtime thread warnings during upload
+- Fourth import attempt within the hour returns 429, not a crash
+
+**Research flag:** No additional research needed. Checklist is complete and actionable.
+
+---
 
 ### Phase Ordering Rationale
 
-- Migrations first because every subsequent phase depends on the schema. Running migration after code exists risks confusion about which schema version code targets.
-- Core workflow as a single phase rather than "CSV parsing first, then TMDB, then DB" because the CSV union merge, TMDB resolution, and DB write are tightly coupled: the merge strategy determines what gets resolved; the resolution cache determines what gets written. Splitting them invites the subset-assumption pitfall creeping in at a seam between phases.
-- Polish last because rate limiting and security hardening are additive — they do not change the core data model or workflow logic.
+- Track A (backend) is independent and should be merged first — it is three lines and removes one integration variable before iOS ships.
+- Track B phases (2 and 3) are strictly sequential by dependency: Models → Networking → State → Views. Building out of order creates compilation failures.
+- Phase 4 verification cannot start until both tracks are complete and running against a shared environment.
+- P2 items belong in Phase 3 (not a separate phase) because they require no new code patterns and are low-effort additions on the same screen.
 
 ### Research Flags
 
-Phases with standard patterns (no additional research needed):
-- **Phase 1 (Migrations):** Raw SQL, follows existing Supabase migration convention documented in codebase
-- **Phase 2 (Core Workflow):** All implementation patterns are fully specified across STACK.md and ARCHITECTURE.md; patterns are verified against actual codebase and real export zip
-- **Phase 3 (Polish):** Semaphore pattern, file size validation, and zip safety patterns are fully specified in PITFALLS.md
+No phases require `/gsd:research-phase`. Research for this milestone is comprehensive.
 
-No phases require a `gsd:research-phase` invocation. The research is comprehensive and ground-truth verified.
+Phases with well-documented, standard patterns:
+- **Phase 1:** Identical `BackgroundTasks` pattern already verified in `tracking/views.py`
+- **Phase 2:** SwiftUI `.fileImporter`, `URLSessionTaskDelegate`, multipart form construction — all confirmed against Apple docs and WWDC21 session 10095
+- **Phase 3:** Phase-enum-driven SwiftUI view — standard `@Observable` pattern used throughout the existing app
+- **Phase 4:** Integration verification checklist is specific and complete
+
+---
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | Verified against installed packages via PyPI, existing codebase inspection, and Python 3.11 stdlib docs. Zero dependency installs needed — this is a particularly strong finding. |
-| Features | HIGH | Derived from direct inspection of the actual Letterboxd export zip in the project root, not documentation. CSV schemas are ground truth. |
-| Architecture | HIGH | Based on direct codebase inspection of all relevant files. Component boundaries and build order are derived from actual code, not inference. |
-| Pitfalls | HIGH | Pitfalls 1 and 7 are proven by data: 11/16 liked films and at least 1 reviewed film confirmed absent from watched.csv in the real export. Not theoretical. |
+| Stack | HIGH | All APIs verified against Apple developer docs and WWDC21. `BackgroundTasks` pattern verified against codebase (`tracking/views.py`). No third-party libraries involved — zero dependency risk. |
+| Features | HIGH | Feature set derived from direct codebase inspection of `ImportSummaryResponse` schema, `AppButton.isLoading`, `settingsItems` structure. No speculation. |
+| Architecture | HIGH | Component list, file locations, and modification diffs derived from direct codebase inspection. All 7 new/modified files are specified. |
+| Pitfalls | HIGH | Security-scope and background-task session pitfalls confirmed via Apple developer forums. Timeout behavior confirmed against URLSession documentation. Thread-safety pitfall confirmed against iOS 17 `@Observable` runtime. |
+| Export flow | HIGH | Letterboxd API access requirements confirmed from official beta access page. No programmatic path to export ZIP exists. `.fileImporter` is the correct and only viable iOS approach. |
 
 **Overall confidence:** HIGH
 
 ### Gaps to Address
 
-- **TMDB `year` vs. `primary_release_year` parameter semantics:** WebFetch was blocked during research; TMDB year parameter behavior is inferred from the existing codebase and known TMDB API v3 patterns. Implementation should verify via a test call that `year=` in `/search/movie` does in fact filter by primary release year, not just a broad year range. Low risk — the fallback handles it either way.
-- **`get_movie_details` commit behavior inside import loop:** The existing `get_movie_details` implementation calls `db.commit()` internally. If called for each movie during the movie-caching step (Step 3), this partially defeats the single-commit goal of Phase 2. Implementation should evaluate whether to batch-cache movies separately or accept N commits during the caching sub-step while using single commit for the watched_movies bulk insert.
-- **Zip bomb / file size validation thresholds:** PITFALLS.md flags this as a security concern but does not specify what the correct `max_upload_size` value should be for Letterboxd exports. A typical large Letterboxd user with 5000 films produces a zip well under 5MB. Set a conservative 10MB limit in FastAPI's `max_upload_size` or via explicit validation. Validate during Phase 3.
+- **Event loop blocking in `async def import_letterboxd`:** The existing endpoint calls blocking SQLAlchemy inside `async def`. Acceptable for v1.1 at low concurrent user count. Must be addressed before scaling — the mitigation (`def` conversion or `run_in_threadpool`) is known and documented. Flag as known technical debt in the phase plan.
+
+- **BackgroundTask DB session — verify against existing codebase pattern:** STACK.md describes passing the request `db` to `BackgroundTasks` as following the `tracking/views.py` precedent. PITFALLS.md flags the same pattern as a critical pitfall (session closed after response). During Phase 1 implementation, inspect `tracking/views.py` to confirm whether it passes `db` or opens a fresh `SessionLocal()`. If the existing pattern passes `db` and works, it is consistent; if it opens a fresh session, match that pattern.
+
+- **Physical device testing is non-negotiable for security-scoped access:** All security-scope behavior must be verified on a real device. Simulator does not enforce sandboxing constraints. This is a testing gate, not a research gap.
+
+---
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- Direct codebase inspection: `/Users/adamrose/Desktop/blnd/blnd_backend/` — all route files, models, services, migrations, CLAUDE.md
-- Letterboxd export zip: `/Users/adamrose/Desktop/blnd/letterboxd-arose3000-2026-03-04-03-09-utc.zip` — ground truth CSV schemas
-- Python 3.11 stdlib docs (WebFetch verified): `csv.DictReader`, `zipfile.ZipFile`, `io.TextIOWrapper`, `io.BytesIO`
-- PyPI live query: version numbers for sqlalchemy, httpx, fastapi, python-multipart, psycopg2-binary, pydantic, tenacity
-- PROJECT.md: `/Users/adamrose/Desktop/blnd/.planning/PROJECT.md` — requirements and constraints
+
+- Apple Developer Documentation: `UTType.zip` — `public.zip-archive` identifier
+- Apple Developer Documentation: `fileImporter(isPresented:allowedContentTypes:onCompletion:)` — iOS 14+
+- Apple Developer Documentation: `startAccessingSecurityScopedResource()` / `stopAccessingSecurityScopedResource()`
+- WWDC21 Session 10095: "Use async/await with URLSession" — task-specific delegate for upload progress with async/await
+- FastAPI Background Tasks docs — sync functions dispatched to thread pool automatically; runs after response
+- Letterboxd API beta access page — no export endpoint; invite-only; `.fileImporter` flow is the only viable path
+- Codebase: `blnd_backend/app/tracking/views.py` — `BackgroundTasks.add_task(rebuild_taste_profile, ...)` pattern confirmed
+- Codebase: `blnd_backend/app/import_data/views.py` — current endpoint signature; `BackgroundTasks` not yet wired
+- Codebase: `blnd_backend/app/import_data/schemas.py` — `ImportSummaryResponse` field list confirmed
+- Codebase: `blnd_backend/app/import_data/workflows.py` — `run_letterboxd_import` returns after `db.commit()`
+- Codebase: `blnd_backend/app/recommendations/services.py` — `rebuild_taste_profile(user_id, db, openai_client)` signature confirmed synchronous
+- Codebase: `blnd_frontend/blnd_frontend/Networking/APIClient.swift` — JSON-only; no multipart support confirmed
+- Codebase: `blnd_frontend/blnd_frontend/Views/Profile/SettingsView.swift` — `settingsItems` structure confirmed
+- Codebase: `blnd_frontend/blnd_frontend/Views/Shared/AppButton.swift` — `isLoading` prop confirmed
 
 ### Secondary (MEDIUM confidence)
-- TMDB API v3 `/search/movie` `year` parameter behavior — inferred from existing codebase usage and known TMDB API patterns; WebFetch blocked during research
-- SQLAlchemy `on_conflict_do_nothing()` behavior — confirmed against installed 2.0.46 and SQLAlchemy changelog for `bulk_insert_mappings` deprecation
+
+- Apple Developer Forums thread 698248 — upload progress with async/await URLSession confirmed as requiring task-specific delegate (community-verified, matches WWDC21)
+- Apple Developer Forums thread 741560 — `startAccessingSecurityScopedResource` with async operations
+- Apple Developer Forums thread 748039 — no permission to read file when chosen with `.fileImporter` on device
+- FastAPI GitHub Discussion 8502 — accessing dependencies in background tasks
+- FastAPI GitHub Issue 3205 — SQLAlchemy session lifecycle in background tasks
 
 ### Tertiary (LOW confidence)
-- Community Letterboxd importer patterns — used for competitor feature analysis only; all functional decisions are based on primary sources above
+
+- Use Your Loaf: SwiftUI Importing and Exporting Files — implementation patterns (used for confirmation only; decisions based on Apple docs)
+- AsyncLearn Medium: Multipart Request with URLSession and async/await — boundary construction pattern
+- Simkl Letterboxd import docs — confirmed manual ZIP export is the industry-standard approach
 
 ---
-*Research completed: 2026-03-03*
+
+*Research completed: 2026-03-09*
 *Ready for roadmap: yes*
