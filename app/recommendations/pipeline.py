@@ -124,8 +124,8 @@ def _run_main_algorithm(ctx: RecommendationContext, db: Session) -> list[dict]:
         movie = movie_map.get(tmdb_id)
         if not movie:
             continue
-        # Filter out movies with no community validation (vote_average < 1.0)
-        if (movie.vote_average or 0) < 1.0:
+        # Filter out movies with insufficient community validation
+        if (movie.vote_count or 0) < 50 or (movie.vote_average or 0) < 1.0:
             continue
         candidates.append(
             {

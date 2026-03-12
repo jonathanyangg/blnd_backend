@@ -95,6 +95,26 @@ async def sync_movies(
     return {"status": "started"}
 
 
+async def _run_backfill_vote_counts() -> None:
+    db = SessionLocal()
+    try:
+        await services.backfill_vote_counts(db, settings.tmdb_api_key)
+    except Exception:
+        logger.exception("Backfill vote_counts failed")
+    finally:
+        db.close()
+
+
+@router.post("/backfill-vote-counts", status_code=status.HTTP_202_ACCEPTED)
+async def backfill_vote_counts(
+    request: Request,
+    user_id: str = Depends(get_current_user),
+):
+    _require_admin(user_id)
+    asyncio.ensure_future(_run_backfill_vote_counts())
+    return {"status": "started"}
+
+
 @router.post("/letterboxd", response_model=ImportSummaryResponse)
 @limiter.limit(LIMIT_IMPORT)
 async def import_letterboxd(
