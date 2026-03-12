@@ -145,10 +145,10 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. ProfileView compiles and behaves identically after the refactor — no visible change to any existing screen
   2. PosterTile, StatsRow, and PosterGrid exist as standalone components in `Views/Shared/` and are importable by any view
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 08-01: Extract PosterTile, StatsRow, PosterGrid to Views/Shared/ and refactor ProfileView to use them
+- [ ] 08-01-PLAN.md — Extract PosterTile, StatsRow, PosterGrid to Views/Shared/ and refactor ProfileView to use them
 
 ### Phase 9: FriendProfileView Revamp
 **Goal**: FriendProfileView shows a friend's stats, watched poster grid, and tappable friends list with full navigation — matching the depth of the user's own profile
