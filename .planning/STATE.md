@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Revamp Other User Profile View
 status: planning
-stopped_at: Phase 9 context gathered
-last_updated: "2026-03-12T05:37:08.949Z"
+stopped_at: Completed 09-01-PLAN.md
+last_updated: "2026-03-12T05:59:53.667Z"
 last_activity: 2026-03-12 — Roadmap created, phases 7-9 defined
 progress:
   total_phases: 6
   completed_phases: 5
-  total_plans: 7
-  completed_plans: 7
+  total_plans: 9
+  completed_plans: 8
   percent: 0
 ---
 
@@ -51,6 +51,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 08 P01 | 4m | 2 tasks | 4 files |
 | Phase 07 P01 | 4 | 1 tasks | 6 files |
 | Phase 07 P02 | 6m | 2 tasks | 3 files |
+| Phase 09 P01 | 4m | 1 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -70,6 +71,8 @@ Key decisions for v1.2:
 - [Phase 07]: PublicProfileResponse excludes taste_bio/favorite_genres — privacy boundary, not reusing UserResponse
 - [Phase 07]: blnd_backend/ has own git repo — all backend commits must target it directly, not outer blnd/ repo
 - [Phase 07]: get_public_watched() uses scalar count + JOIN query following tracking/services.py pattern
+- [Phase 09]: PublicFriendResponse conforms to Hashable for navigationDestination(item:) binding in FriendProfileView
+- [Phase 09]: ProfileAPI follows static enum pattern matching all other API files (FriendsAPI, TrackingAPI, MoviesAPI)
 
 ### Pending Todos
 
@@ -82,6 +85,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-12T05:37:08.941Z
-Stopped at: Phase 9 context gathered
-Resume file: .planning/phases/09-friendprofileview-revamp/09-CONTEXT.md
+Last session: 2026-03-12T05:59:53.665Z
+Stopped at: Completed 09-01-PLAN.md
+Resume file: None

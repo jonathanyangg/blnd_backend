@@ -16,10 +16,10 @@ Requirements for the Revamp Other User Profile View milestone. Each maps to road
 
 ### iOS Frontend
 
-- [ ] **IOS-01**: User sees stats row on friend profile (watched count, friends count, blends count)
-- [ ] **IOS-02**: User sees 3-column poster grid of friend's watched movies with star ratings
+- [x] **IOS-01**: User sees stats row on friend profile (watched count, friends count, blends count)
+- [x] **IOS-02**: User sees 3-column poster grid of friend's watched movies with star ratings
 - [ ] **IOS-03**: User can tap a watched movie poster to navigate to MovieDetailView
-- [ ] **IOS-04**: User can tap friends count to see friend's friends list
+- [x] **IOS-04**: User can tap friends count to see friend's friends list
 - [ ] **IOS-05**: User can tap a friend-of-friend to open their profile (recursive navigation)
 - [x] **IOS-06**: PosterTile and StatsRow extracted as shared components used by both ProfileView and FriendProfileView
 - [ ] **IOS-07**: Loading and empty states displayed while data loads or when friend has no watched movies
@@ -97,10 +97,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | API-02 | Phase 7 | Complete |
 | API-03 | Phase 7 | Complete |
 | API-04 | Phase 7 | Complete |
-| IOS-01 | Phase 9 | Pending |
-| IOS-02 | Phase 9 | Pending |
+| IOS-01 | Phase 9 | Complete |
+| IOS-02 | Phase 9 | Complete |
 | IOS-03 | Phase 9 | Pending |
-| IOS-04 | Phase 9 | Pending |
+| IOS-04 | Phase 9 | Complete |
 | IOS-05 | Phase 9 | Pending |
 | IOS-06 | Phase 8 | Complete |
 | IOS-07 | Phase 9 | Pending |
