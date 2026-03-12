@@ -1,12 +1,14 @@
-# Letterboxd Import Feature
+# BLND
 
-## Current Milestone: v1.1 Letterboxd Integration Frontend
+## Current Milestone: v1.2 Revamp Other User Profile View
 
-**Goal:** Give users a native iOS experience to trigger the Letterboxd import and see results, while closing the taste profile rebuild gap on the backend.
+**Goal:** Give users a rich profile view when tapping into a friend's profile — showing their watched movies, stats, and social connections — matching the depth of the user's own profile (minus watchlist).
 
 **Target features:**
-- iOS import screen: file picker, upload flow, import results display
-- Backend: trigger taste profile rebuild after bulk import completes
+- Backend: public profile endpoint with stats (watched count, friends count, groups count)
+- Backend: endpoint to fetch another user's watched movies (paginated)
+- Backend: endpoint to fetch another user's friends list
+- iOS: revamped FriendProfileView with stats row, watched poster grid, tappable friends/movies
 
 ## What This Is
 
@@ -34,9 +36,10 @@ Users can import their complete Letterboxd history into BLND with a single zip u
 
 ### Active
 
-- [ ] iOS import screen with file picker for Letterboxd zip upload — v1.1
-- [ ] Upload progress and import results (imported/skipped/failed counts) in iOS — v1.1
-- [ ] Trigger taste profile rebuild after bulk import completes (backend) — v1.1
+- [ ] Backend public profile endpoint with stats (watched count, friends count, groups count) — v1.2
+- [ ] Backend endpoint to fetch another user's watched movies (paginated) — v1.2
+- [ ] Backend endpoint to fetch another user's friends list — v1.2
+- [ ] iOS revamped FriendProfileView with stats, watched grid, tappable navigation — v1.2
 
 ### Out of Scope
 
@@ -52,7 +55,8 @@ Backend stack: FastAPI, SQLAlchemy, Supabase Postgres, httpx async TMDB client.
 Frontend stack: SwiftUI iOS 17+, `@Observable`, `async/await`, `APIClient` singleton, zero third-party deps.
 Design: dark monochrome, Cal.com/X aesthetic — movie posters provide all color.
 Taste profile not rebuilt after import (v1.1 target). Liked/watchlist data write-only via import (deferred beyond v1.1).
-v1.1 adds iOS frontend features: file picker upload, results display, with backend taste profile rebuild hook.
+v1.1 added iOS frontend features: webview import flow, results display, backend taste profile rebuild hook.
+v1.2 adds public user profile endpoints and revamps the friend profile view to show watched movies, stats, and social connections.
 
 ## Constraints
 
@@ -78,4 +82,4 @@ v1.1 adds iOS frontend features: file picker upload, results display, with backe
 | db.rollback() before logging in exception handler | Resets session state before any further work to prevent cascading failures | Good — enables per-movie isolation |
 
 ---
-*Last updated: 2026-03-09 after v1.1 milestone start*
+*Last updated: 2026-03-11 after v1.2 milestone start*
