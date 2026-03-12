@@ -56,10 +56,10 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. ProfileView compiles and behaves identically after the refactor — no visible change to any existing screen
   2. PosterTile, StatsRow, and PosterGrid exist as standalone components in `Views/Shared/` and are importable by any view
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 08-01: Extract PosterTile, StatsRow, PosterGrid to Views/Shared/ and refactor ProfileView to use them
+- [ ] 08-01-PLAN.md — Extract PosterTile, StatsRow, PosterGrid to Views/Shared/ and refactor ProfileView to use them
 
 #### Phase 9: FriendProfileView Revamp
 
@@ -72,11 +72,11 @@ Plans:
   3. User can tap a watched movie poster and land on MovieDetailView for that film
   4. User can tap the friends count and see a list of the friend's friends; tapping any friend-of-friend opens their FriendProfileView (recursive navigation works)
   5. User sees a loading indicator while data is fetching and a contextual empty state if the friend has no watched movies
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 09-01: ProfileAPI.swift + ProfileModels.swift networking layer
-- [ ] 09-02: FriendProfileView revamp — stats row, poster grid, friends list, loading/empty states, recursive navigation
+- [ ] 09-01-PLAN.md — ProfileAPI.swift + ProfileModels.swift networking layer
+- [ ] 09-02-PLAN.md — FriendProfileView revamp — stats row, poster grid, friends list, loading/empty states, recursive navigation
 
 ## Phase Details
 
@@ -160,11 +160,11 @@ Plans:
   3. User can tap a watched movie poster and land on MovieDetailView for that film
   4. User can tap the friends count and see a list of the friend's friends; tapping any friend-of-friend opens their FriendProfileView (recursive navigation works)
   5. User sees a loading indicator while data is fetching and a contextual empty state if the friend has no watched movies
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 09-01: ProfileAPI.swift + ProfileModels.swift networking layer
-- [ ] 09-02: FriendProfileView revamp — stats row, poster grid, friends list, loading/empty states, recursive navigation
+- [ ] 09-01-PLAN.md — ProfileAPI.swift + ProfileModels.swift networking layer
+- [ ] 09-02-PLAN.md — FriendProfileView revamp — stats row, poster grid, friends list, loading/empty states, recursive navigation
 
 ## Progress
 
