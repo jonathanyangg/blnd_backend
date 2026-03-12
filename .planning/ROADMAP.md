@@ -4,7 +4,7 @@
 
 - ✅ **v1.0 Letterboxd Import** — Phases 1-3 (shipped 2026-03-09)
 - ✅ **v1.1 Letterboxd Integration Frontend** — Phases 4-6 (shipped 2026-03-12)
-- 📋 **v1.2 Revamp Other User Profile View** — Phases 7-9 (planned)
+- ✅ **v1.2 Revamp Other User Profile View** — Phases 7-9 (shipped 2026-03-12)
 
 ## Phases
 
@@ -28,7 +28,7 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details.
 
 </details>
 
-### 📋 v1.2 Revamp Other User Profile View (Planned)
+### ✅ v1.2 Revamp Other User Profile View (Shipped 2026-03-12)
 
 **Milestone Goal:** Give users a rich profile view when tapping into a friend's profile — showing their watched movies, stats, and social connections — matching the depth of the user's own profile (minus watchlist).
 
@@ -75,8 +75,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 09-01-PLAN.md — ProfileAPI.swift + ProfileModels.swift networking layer
-- [ ] 09-02-PLAN.md — FriendProfileView revamp — stats row, poster grid, friends list, loading/empty states, recursive navigation
+- [x] 09-01-PLAN.md — ProfileAPI.swift + ProfileModels.swift networking layer
+- [x] 09-02-PLAN.md — FriendProfileView revamp — stats row, poster grid, friends list, loading/empty states, recursive navigation
 
 ## Phase Details
 
@@ -135,8 +135,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 07-01-PLAN.md — PublicProfileResponse schema + friendship gate + stats endpoint + test scaffold
-- [ ] 07-02-PLAN.md — Paginated watched movies endpoint + friends list endpoint
+- [x] 07-01-PLAN.md — PublicProfileResponse schema + friendship gate + stats endpoint + test scaffold
+- [x] 07-02-PLAN.md — Paginated watched movies endpoint + friends list endpoint
 
 ### Phase 8: iOS Shared Component Extraction
 **Goal**: PosterTile and StatsRow extracted from ProfileView into shared components, leaving ProfileView behavior identical and FriendProfileView able to reuse them
@@ -148,7 +148,7 @@ Plans:
 **Plans**: 1 plan
 
 Plans:
-- [ ] 08-01-PLAN.md — Extract PosterTile, StatsRow, PosterGrid to Views/Shared/ and refactor ProfileView to use them
+- [x] 08-01-PLAN.md — Extract PosterTile, StatsRow, PosterGrid to Views/Shared/ and refactor ProfileView to use them
 
 ### Phase 9: FriendProfileView Revamp
 **Goal**: FriendProfileView shows a friend's stats, watched poster grid, and tappable friends list with full navigation — matching the depth of the user's own profile
@@ -163,8 +163,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 09-01-PLAN.md — ProfileAPI.swift + ProfileModels.swift networking layer
-- [ ] 09-02-PLAN.md — FriendProfileView revamp — stats row, poster grid, friends list, loading/empty states, recursive navigation
+- [x] 09-01-PLAN.md — ProfileAPI.swift + ProfileModels.swift networking layer
+- [x] 09-02-PLAN.md — FriendProfileView revamp — stats row, poster grid, friends list, loading/empty states, recursive navigation
 
 ## Progress
 
@@ -179,6 +179,6 @@ Phase 7 and Phase 8 are independent (parallel tracks). Phase 9 depends on both 7
 | 4. Backend Taste Rebuild Hook | v1.1 | 1/1 | Complete | 2026-03-10 |
 | 5. iOS Webview Import Flow | v1.1 | 2/2 | Complete | 2026-03-12 |
 | 6. iOS Upload and Results | v1.1 | 1/1 | Complete | 2026-03-12 |
-| 7. Backend Public Profile Endpoints | 2/2 | Complete    | 2026-03-12 | - |
-| 8. iOS Shared Component Extraction | 1/1 | Complete    | 2026-03-12 | - |
-| 9. FriendProfileView Revamp | 1/2 | In Progress|  | - |
+| 7. Backend Public Profile Endpoints | v1.2 | 2/2 | Complete | 2026-03-12 |
+| 8. iOS Shared Component Extraction | v1.2 | 1/1 | Complete | 2026-03-12 |
+| 9. FriendProfileView Revamp | v1.2 | 2/2 | Complete | 2026-03-12 |

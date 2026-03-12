@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Revamp Other User Profile View
-status: planning
-stopped_at: Completed 09-01-PLAN.md
-last_updated: "2026-03-12T05:59:53.667Z"
-last_activity: 2026-03-12 — Roadmap created, phases 7-9 defined
+status: complete
+stopped_at: Completed 09-02-PLAN.md
+last_updated: "2026-03-12T02:09:01Z"
+last_activity: 2026-03-12 — Phase 09 Plan 02 complete — FriendProfileView revamp delivered
 progress:
   total_phases: 6
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 9
-  completed_plans: 8
-  percent: 0
+  completed_plans: 9
+  percent: 100
 ---
 
 # Project State
@@ -25,33 +25,34 @@ See: .planning/PROJECT.md (updated 2026-03-11)
 
 ## Current Position
 
-Phase: 7 of 9 (Backend Public Profile Endpoints)
-Plan: — (not started)
-Status: Ready to plan
-Last activity: 2026-03-12 — Roadmap created, phases 7-9 defined
+Phase: 9 of 9 (iOS FriendProfileView Revamp)
+Plan: 02 (complete)
+Status: All plans complete — v1.2 milestone delivered
+Last activity: 2026-03-12 — Phase 09 Plan 02 complete — FriendProfileView fully revamped
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed (v1.2): 0
-- Average duration: —
-- Total execution time: —
+- Total plans completed (v1.2): 5
+- Average duration: ~5m
+- Total execution time: ~25m
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 7 | 0/2 | - | - |
-| 8 | 0/1 | - | - |
-| 9 | 0/2 | - | - |
+| 7 | 2/2 | 10m | 5m |
+| 8 | 1/1 | 4m | 4m |
+| 9 | 2/2 | 8m | 4m |
 
 *Updated after each plan completion*
 | Phase 08 P01 | 4m | 2 tasks | 4 files |
-| Phase 07 P01 | 4 | 1 tasks | 6 files |
+| Phase 07 P01 | 4m | 1 tasks | 6 files |
 | Phase 07 P02 | 6m | 2 tasks | 3 files |
 | Phase 09 P01 | 4m | 1 tasks | 2 files |
+| Phase 09 P02 | 4m | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -73,6 +74,8 @@ Key decisions for v1.2:
 - [Phase 07]: get_public_watched() uses scalar count + JOIN query following tracking/services.py pattern
 - [Phase 09]: PublicFriendResponse conforms to Hashable for navigationDestination(item:) binding in FriendProfileView
 - [Phase 09]: ProfileAPI follows static enum pattern matching all other API files (FriendsAPI, TrackingAPI, MoviesAPI)
+- [Phase 09 P02]: FriendsListSheet uses dismiss + asyncAfter(0.3s) before onSelectFriend to allow sheet animation before parent navigationDestination push
+- [Phase 09 P02]: Friends list loaded lazily (onChange of showFriendsList) not eagerly — avoids unnecessary API call when sheet never opened
 
 ### Pending Todos
 
@@ -85,6 +88,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-12T05:59:53.665Z
-Stopped at: Completed 09-01-PLAN.md
+Last session: 2026-03-12T02:09:01Z
+Stopped at: Completed 09-02-PLAN.md
 Resume file: None
