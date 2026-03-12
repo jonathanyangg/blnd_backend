@@ -93,23 +93,23 @@ Which phases cover which requirements. Updated during roadmap creation.
 | IMPT-08 | Phase 6 | Complete |
 | IMPT-09 | Phase 6 | Complete |
 | BKND-01 | Phase 4 | Complete |
-| API-01 | — | Pending |
-| API-02 | — | Pending |
-| API-03 | — | Pending |
-| API-04 | — | Pending |
-| IOS-01 | — | Pending |
-| IOS-02 | — | Pending |
-| IOS-03 | — | Pending |
-| IOS-04 | — | Pending |
-| IOS-05 | — | Pending |
-| IOS-06 | — | Pending |
-| IOS-07 | — | Pending |
+| API-01 | Phase 7 | Pending |
+| API-02 | Phase 7 | Pending |
+| API-03 | Phase 7 | Pending |
+| API-04 | Phase 7 | Pending |
+| IOS-01 | Phase 9 | Pending |
+| IOS-02 | Phase 9 | Pending |
+| IOS-03 | Phase 9 | Pending |
+| IOS-04 | Phase 9 | Pending |
+| IOS-05 | Phase 9 | Pending |
+| IOS-06 | Phase 8 | Pending |
+| IOS-07 | Phase 9 | Pending |
 
 **Coverage:**
 - v1.2 requirements: 11 total
-- Mapped to phases: 0
-- Unmapped: 11 ⚠️
+- Mapped to phases: 11
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-03-09*
-*Last updated: 2026-03-11 — v1.2 requirements added*
+*Last updated: 2026-03-12 — v1.2 traceability complete (Phases 7-9)*
