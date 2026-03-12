@@ -179,6 +179,6 @@ Phase 7 and Phase 8 are independent (parallel tracks). Phase 9 depends on both 7
 | 4. Backend Taste Rebuild Hook | v1.1 | 1/1 | Complete | 2026-03-10 |
 | 5. iOS Webview Import Flow | v1.1 | 2/2 | Complete | 2026-03-12 |
 | 6. iOS Upload and Results | v1.1 | 1/1 | Complete | 2026-03-12 |
-| 7. Backend Public Profile Endpoints | 2/2 | Complete   | 2026-03-12 | - |
-| 8. iOS Shared Component Extraction | 1/1 | Complete   | 2026-03-12 | - |
+| 7. Backend Public Profile Endpoints | 2/2 | Complete    | 2026-03-12 | - |
+| 8. iOS Shared Component Extraction | 1/1 | Complete    | 2026-03-12 | - |
 | 9. FriendProfileView Revamp | v1.2 | 0/2 | Not started | - |
