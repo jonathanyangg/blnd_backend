@@ -162,6 +162,7 @@ def _run_exploration(
     query = db.query(Movie).filter(
         Movie.vote_average.isnot(None),
         Movie.vote_average >= 6.0,
+        Movie.vote_count >= 50,
     )
     if all_exclude:
         query = query.filter(Movie.tmdb_id.notin_(list(all_exclude)))
