@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Revamp Other User Profile View
 status: planning
-stopped_at: Completed 08-01-PLAN.md
-last_updated: "2026-03-12T05:14:06.994Z"
+stopped_at: Completed 07-01-PLAN.md
+last_updated: "2026-03-12T05:14:26.168Z"
 last_activity: 2026-03-12 — Roadmap created, phases 7-9 defined
 progress:
   total_phases: 6
@@ -49,6 +49,7 @@ Progress: [░░░░░░░░░░] 0%
 
 *Updated after each plan completion*
 | Phase 08 P01 | 4m | 2 tasks | 4 files |
+| Phase 07 P01 | 4 | 1 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -65,6 +66,8 @@ Key decisions for v1.2:
 - iOS: use `async let` parallel loading in FriendProfileView (same pattern as ProfileView)
 - [Phase 08]: StatItem uses optional onTap callback to handle tappable/non-tappable cells without AnyView
 - [Phase 08]: PosterGrid uses generic <Content: View> with @ViewBuilder closure matching SwiftUI LazyVGrid API shape
+- [Phase 07]: PublicProfileResponse excludes taste_bio/favorite_genres — privacy boundary, not reusing UserResponse
+- [Phase 07]: blnd_backend/ has own git repo — all backend commits must target it directly, not outer blnd/ repo
 
 ### Pending Todos
 
@@ -77,6 +80,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-12T05:13:59.322Z
-Stopped at: Completed 08-01-PLAN.md
+Last session: 2026-03-12T05:14:26.166Z
+Stopped at: Completed 07-01-PLAN.md
 Resume file: None
