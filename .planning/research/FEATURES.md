@@ -1,113 +1,135 @@
-# Feature Research
+# Feature Landscape
 
-**Domain:** iOS file import UI + backend taste profile rebuild (v1.1 milestone)
-**Researched:** 2026-03-09
-**Confidence:** HIGH (codebase inspection) / MEDIUM (UX patterns from HIG + search)
+**Domain:** Public user profile view + friend profile revamp (v1.2 milestone)
+**Researched:** 2026-03-11
+**Confidence:** HIGH (codebase inspection) / MEDIUM (social app UX patterns from research)
 
 ---
 
 ## Scope Note
 
-This file covers ONLY net-new features for v1.1. The backend import pipeline (ZIP parse,
-TMDB resolve, DB write returning `{imported, skipped, failed, failed_titles}`) shipped in
-v1.0. The iOS app has 16 screens, APIClient, and auth flow fully built. Net-new surface
-area: import screen, multipart upload, in-progress state, results display, one backend hook.
+This file covers ONLY net-new features for v1.2. Already built and out of scope:
+- Own ProfileView: avatar, name/username, stats row (watched/watchlist/friends/blends), watched/watchlist poster grids, tappable friends/blends stats that switch tabs
+- FriendProfileView: avatar, name/username, remove friend button
+- Backend: GET /tracking/ (own watch history, paginated), GET /friends/ (own friends list), GET /groups/ (own groups)
+- FriendResponse model: friendship_id, id, username, display_name, avatar_url
+
+Net-new surface area for v1.2: three backend endpoints, one revamped iOS view, new iOS models, new API client methods.
 
 ---
 
-## Feature Landscape
+## Table Stakes
 
-### Table Stakes (Users Expect These)
-
-Features users assume exist. Missing these = product feels incomplete.
+Features users expect when viewing a friend's profile. Missing these = profile feels hollow.
 
 | Feature | Why Expected | Complexity | Notes |
 |---------|--------------|------------|-------|
-| File picker for .zip selection | iOS standard: tapping a button opens Files.app to pick a file | LOW | `.fileImporter(allowedContentTypes: [UTType(filenameExtension: "zip")!])` — standard SwiftUI modifier. Must call `startAccessingSecurityScopedResource()` on result URL before reading; `stopAccessingSecurityScopedResource()` after. |
-| In-progress state during upload | Users assume async ops show feedback; silent wait feels frozen | LOW | `AppButton` already supports `isLoading: true`. Import takes 5-30s (TMDB rate-limited at 25ms/call x N films). Spinner + disabled state is minimum viable feedback. |
-| Results summary (imported / skipped / failed counts) | Backend returns `{imported, skipped, failed, failed_titles}` — user expects to see what happened | LOW | New results state in `ImportView`. Backend schema already defined: `ImportSummaryResponse`. Show all four fields. |
-| Error handling for wrong file or network failure | User might pick a non-zip or have connectivity issues; backend returns 400 if zip is invalid | LOW | UTType filter prevents non-zip selection. Inline error state for backend rejections and `APIError` variants already used across other views. |
-| Entry point in existing navigation | Import needs to live somewhere discoverable | LOW | `SettingsView` already has a placeholder list ("Account", "Notifications", "Privacy", "About"). "Import from Letterboxd" row fits here as a new navigation destination. |
-| Authenticated upload | Backend `POST /import/letterboxd` requires Bearer token | LOW | `APIClient.shared` injects Bearer token. Import function follows existing `AuthAPI` / `MoviesAPI` domain API enum pattern. |
+| Stats row on friend profile | Own ProfileView already shows watched/watchlist/friends/blends. Opening a friend's profile and seeing only avatar + remove button is jarring. Users expect parity. | LOW | Watched count, friends count, blends count — three numbers. No watchlist count (explicitly out of scope per milestone). Blends count is display-only. Requires new backend endpoint returning these three counts for an arbitrary user_id. |
+| Watched poster grid on friend profile | Profile without a content grid feels unfinished. Letterboxd, Simkl, and Trakt all show a film grid on public profiles. It is the primary social signal for a movie app. | MEDIUM | Paginated endpoint needed: GET /users/{user_id}/watched. Returns same WatchedMovieResponse shape as own tracking endpoint. Poster grid reuses existing LazyVGrid + posterTile() pattern from ProfileView. |
+| Tappable poster → MovieDetailView | Own ProfileView already does this. Every poster in the app navigates to MovieDetailView — inconsistency when friend posters do nothing is noticed immediately. | LOW | NavigationLink wrapping each poster tile, identical to existing ProfileView.watchedGrid implementation. MovieDetailView already accepts tmdbId + title. No new view needed. |
+| Loading state while fetching | Every data-driven view in the app shows a spinner while loading. A blank-then-appearing grid without a loading indicator reads as broken. | LOW | ProgressView pattern already used in ProfileView. isLoading state variable, same as ProfileView.isLoadingWatched. |
+| Empty state for zero watched films | Some users may have no watch history. An empty grid with no explanation looks like an error. | LOW | "No watched movies yet" empty state, identical to own ProfileView pattern. |
 
-### Differentiators (Competitive Advantage)
+---
 
-Features that set the product apart. Not required, but valued.
+## Differentiators
+
+Features that raise the social utility of the profile beyond bare minimum.
 
 | Feature | Value Proposition | Complexity | Notes |
 |---------|-------------------|------------|-------|
-| Taste profile rebuild after import | Bulk import adds hundreds of ratings; without a rebuild the recommendation engine stays stale until user manually refreshes | MEDIUM | Backend only: add `background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)` in `import_data/views.py` after `run_letterboxd_import` returns. Mirrors the pattern already in `tracking/views.py`. iOS sees no change; this is transparent. |
-| Failed titles disclosure | Shows which specific films failed TMDB resolution so user knows exactly what didn't transfer | LOW | Backend already returns `failed_titles: list[str]`. Show as collapsible list below counts when `failed > 0`. Most import tools hide this; surfacing it builds trust. |
-| "Already imported" empty-state copy | Users who re-upload get `imported=0, failed=0` — without tailored copy it looks like a bug | LOW | If `imported == 0 && failed == 0`, show "Already up to date — no new films to import." Copy manages expectation without implying an error. |
-| Instructions on screen | Letterboxd's export flow is non-obvious for non-power-users | LOW | Static copy: "Go to letterboxd.com/settings/data, export your data, then select the downloaded .zip file." Eliminates support friction. |
+| Tappable friends count → FriendsListView for that user | Social apps (Instagram, Twitter/X) make follower/following counts tappable to see who those connections are. Lets users discover new people through mutual friends. | MEDIUM | Requires a new backend endpoint: GET /users/{user_id}/friends — returns FriendListResponse scoped to a different user. New FriendsFriendsView or reuse FriendsListView with a userId parameter. In-app navigation: friends count taps to a NavigationLink destination showing that user's friend list. |
+| Blends count shown (display-only) | Establishes that blends is a real social primitive, not just a solo feature. Seeing "3 blends" on a friend's profile creates curiosity about the social graph. | LOW | No extra endpoint needed — blends count returned in the same public profile stats endpoint. No tap destination needed per milestone scope. |
+| Pagination on watched grid | Own ProfileView loads 50 films with no load-more. A friend who imported 500+ Letterboxd films will break this pattern. Users who discover "only 50 films shown" lose trust. | MEDIUM | Backend endpoint must support limit + offset (consistent with existing GET /tracking/ pattern). iOS implementation: detect last item in LazyVGrid, trigger load-more, append to array. SwiftUI LazyVGrid supports onAppear on the last cell for this pattern. |
+| Remove friend button preserved | Users navigating to a friend's profile may want to manage the friendship from there. Removing the only current feature of FriendProfileView degrades utility. | LOW | Keep the existing remove friend button + alert. Position it below the stats row, consistent with its current placement. No logic change needed — friendshipId still available from FriendResponse. |
 
-### Anti-Features (Commonly Requested, Often Problematic)
+---
 
-| Feature | Why Requested | Why Problematic | Alternative |
-|---------|---------------|-----------------|-------------|
-| Upload progress percentage / progress bar | Users expect a progress bar for long operations | The backend processes synchronously in one HTTP response. `URLSession.uploadTask` delegate only reports the data-send phase — which completes in <1s. The 5-30s wait is server-side TMDB resolution, which has no progress signal. A progress bar that jumps to 100% in 0.5s then freezes is worse than an honest spinner. | Indeterminate spinner on button + explanatory copy: "Resolving films via TMDB — this takes 10-30 seconds." |
-| Re-import incremental merge | "Sync new Letterboxd entries" | Conflict resolution, deletion detection, and import-date tracking add significant complexity. Skip-on-duplicate behavior already makes re-import safe. | Show skipped count in results — re-upload is already idempotent. Incremental is a v2 concern. |
-| Import via iCloud link / URL | Avoids the file picker step | Backend expects `UploadFile` (multipart). URL-based import requires a different server-side fetch flow. Files.app natively shows iCloud Drive, so users can pick the downloaded zip from iCloud without any code change. | File picker covers iCloud Drive transparently. |
-| CSV-by-CSV selective import | "I only want to import ratings, not watchlist" | Backend workflow processes all five CSVs as a unit. Decomposing it adds a multi-step selection UI and significant workflow refactoring. | All-or-nothing import is correct for a migration use case. Letterboxd exports are small (typically < 500KB). |
-| Cancel button during upload | User changes mind mid-import | `URLSession` cancellation is doable, but the backend has no cancellation hook — partial DB writes may have already committed. Skip logic prevents corruption but leaves an ambiguous state with no summary. | Prevent accidental start with a confirmation dialog. No cancel needed if the action is deliberate. |
-| Streaming progress from server | Real-time per-film progress | Requires changing the backend endpoint from a synchronous response to a streaming response (SSE or chunked transfer). Significant backend complexity for marginal UX gain. | Defer; add if user testing shows the wait is a blocker for completion. |
+## Anti-Features
+
+Features that seem valuable but create disproportionate complexity or design problems.
+
+| Anti-Feature | Why Avoid | What to Do Instead |
+|--------------|-----------|-------------------|
+| Watchlist visible on friend profiles | Tempting since own ProfileView shows watchlist tab. But watchlist is a planning artifact (want-to-watch), not a social signal in the same way as watch history. Users may feel watchlist is more private — "intent" vs "history". Milestone spec explicitly excludes it. | Show watched grid only. No watchlist tab on FriendProfileView. If requested later, add as a separately considered feature with privacy controls. |
+| Ratings visible on friend's watched posters | Own ProfileView shows the star rating badge on each poster. Showing a friend's rating creates a potential social comparison / judgment dynamic not yet designed for. Also requires careful UI — "is this their rating or my rating?" ambiguity in shared views like MovieDetailView. | Show posters without rating badges on friend profiles for now. Rating data may be in the response payload but render without it. |
+| Block / report / privacy controls | Production social apps need these. But this is a friends-only social graph — you can only see someone if you're friends with them (implicit privacy model). Adding block/report is a separate moderation system. | The current "friends only" model is the privacy layer. Add block/report in a dedicated moderation milestone when the user base justifies it. |
+| "Follow" model vs "friends" model | Could add follow (asymmetric) to let users see profiles without mutual acceptance. Increases reach but removes the intentional social graph. | Keep mutual friends model. The current schema (friendships table with requester/addressee) enforces this. |
+| Profile editing from friend's profile | iOS pattern: a user might tap "Edit" expecting to edit their own profile from any view. | Use navigationBarTitle or header to clearly identify whose profile is shown. Never show edit affordances on FriendProfileView. |
+| Infinite scroll pagination visible count mismatch | If stats row shows "watched: 312" but grid only loads 20 at a time, users may be confused why they see fewer films than the count shows. | Display the count from the backend total field (same pattern as own ProfileView where watchedTotal is separate from watchedMovies.count). |
 
 ---
 
 ## Feature Dependencies
 
 ```
-[File picker]
-    └──required by──> [Upload trigger]
-                          └──required by──> [Multipart upload via ImportAPI]
-                                                └──required by──> [Results display]
+[Backend: GET /users/{user_id}/profile]
+    └──required by──> [Stats row (watched count, friends count, blends count)]
+    └──required by──> [Correct total counts in stats numbers]
 
-[Multipart upload via ImportAPI]
-    NOTE: APIClient.request<T>() is JSON-only.
-    A separate multipart upload method is the single implementation gap.
-    Options: (a) add uploadFile() to APIClient, (b) new ImportAPI with its own URLRequest.
+[Backend: GET /users/{user_id}/watched]
+    └──required by──> [Watched poster grid]
+                          └──required by──> [Tappable poster → MovieDetailView]
+                          └──requires──> [Pagination (load-more) if > first page]
 
-[Results display]
-    └──enhanced by──> [Failed titles collapsible list]
-    └──enhanced by──> ["Already up to date" copy variant]
+[Backend: GET /users/{user_id}/friends]
+    └──required by──> [Tappable friends count → friend's friends list]
+    └──optional for──> [Blends count display-only (covered by /profile endpoint)]
 
-[Backend taste rebuild hook]
-    └──depends on──> [import endpoint completing successfully]
-    └──independent of──> [iOS results display — fire-and-forget BackgroundTasks]
+[Existing FriendResponse (id, username, display_name, avatar_url, friendship_id)]
+    └──already satisfies──> [user_id for new endpoint calls]
+    └──already satisfies──> [Remove friend button (friendship_id)]
+
+[Existing ProfileView.posterTile()]
+    └──can be extracted to──> [Shared component or duplicated in FriendProfileView]
+    NOTE: posterTile() is private in ProfileView. Either make it internal/shared or duplicate it.
+
+[Existing LazyVGrid + posterColumns definition]
+    └──same 3-column layout──> [Reuse pattern in FriendProfileView]
+
+[Existing FriendsListView]
+    └──can be reused with userId param──> [Friend's friends list destination]
+    NOTE: FriendsListView currently loads own friends. Requires parameterization OR a new
+    view. New view is lower risk (avoids modifying working code).
 ```
 
 ### Dependency Notes
 
-- **File picker requires security-scoped resource access:** `startAccessingSecurityScopedResource()` / `stopAccessingSecurityScopedResource()` must wrap file data reading. Missing this causes silent permission failures on iOS 15+ when picking files from outside the app sandbox.
-- **APIClient needs a multipart upload path:** The current generic `request<T: Decodable>` only supports JSON bodies. A `uploadFile(endpoint:fileData:fileName:mimeType:)` method (or dedicated `ImportAPI` struct) must build a `multipart/form-data` request manually. This is the only net-new code pattern required in iOS.
-- **Taste rebuild is backend-only:** No new iOS feature needed. One `background_tasks.add_task(...)` call in `import_data/views.py`. iOS continues to receive `ImportSummaryResponse` unchanged.
-- **Import screen entry point depends on SettingsView:** The "Import from Letterboxd" row is added to `settingsItems` in `SettingsView.swift` and navigates to a new `ImportView`.
-- **ImportView state machine:** Three states needed — `.idle` (picker + start button), `.uploading` (spinner, disabled button), `.done(ImportSummaryResponse)` / `.error(String)`. No separate screen needed; inline state transitions work.
+- **New models needed on iOS:** `PublicProfileStatsResponse` (watched_count, friends_count, blends_count), `PublicWatchHistoryResponse` (mirrors WatchHistoryResponse but for another user), new `PublicFriendListResponse` (list of friends for another user). These may reuse existing `WatchedMovieResponse` and `FriendResponse` types as their item types.
+- **Backend authorization boundary:** All three new endpoints require auth (JWT). They scope their queries to the requested user_id, not the caller's user_id. Authorization check: caller must be friends with the requested user, OR the endpoint returns the requested user's public data to any authenticated user (simpler model). The "friends only" visibility model is the logical choice for a social app where you only have friends you accepted — but the milestone description does not specify the authorization check. Recommendation: scope to any authenticated user for simplicity, revisit when/if privacy controls are needed.
+- **Pagination offset tracking:** FriendProfileView needs state vars for: `watchedMovies: [WatchedMovieResponse]`, `watchedTotal: Int`, `isLoadingWatched: Bool`, `watchedOffset: Int`, `hasMoreWatched: Bool`. This is more state than the current FriendProfileView carries. Using a dedicated view model or keeping it as local @State is a design decision for the build phase.
+- **posterTile() sharing:** The private `posterTile(path:rating:)` function in ProfileView is needed in FriendProfileView too. Options: (a) extract to a shared `PosterTileView` component in Views/Shared/, (b) duplicate the function. Extraction is cleaner and aligns with existing pattern of shared components (MovieCard, AvatarView). Recommend extraction.
 
 ---
 
 ## MVP Definition
 
-### Launch With (v1.1)
+### Launch With (v1.2)
 
-- [ ] **Settings row entry point** — "Import from Letterboxd" added to `SettingsView` settings list; navigates to `ImportView`. No new navigation infrastructure needed.
-- [ ] **ImportView: idle state** — Instructions copy + "Select .zip File" button. Selected filename shown after picker completes. "Start Import" button enabled once file is selected.
-- [ ] **Multipart upload to `/import/letterboxd`** — `ImportAPI.uploadZip(fileData:) async throws -> ImportSummaryResponse`. Builds multipart/form-data request manually (boundary + file part). Bearer token via existing Keychain read.
-- [ ] **ImportView: uploading state** — Button enters `isLoading` state. Copy: "Resolving films via TMDB — this may take 30 seconds."
-- [ ] **ImportView: results state** — Counts displayed (imported / skipped / failed). If `failed > 0`, show collapsed list of `failed_titles`. If `imported == 0 && failed == 0`, show "Already up to date" variant. Dismiss / done button returns to Settings.
-- [ ] **ImportView: error state** — Inline error message surfacing `APIError` description. "Try Again" resets to idle state.
-- [ ] **Backend: taste rebuild hook** — `background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)` appended to `import_letterboxd` endpoint in `import_data/views.py` after successful import.
+Backend (three new endpoints):
+- [ ] GET /users/{user_id}/profile — returns `{watched_count, friends_count, blends_count}` for any authenticated caller looking up any user_id
+- [ ] GET /users/{user_id}/watched — paginated watch history for another user, same limit/offset params as GET /tracking/, returns `WatchHistoryResponse` shape
+- [ ] GET /users/{user_id}/friends — returns friends list for another user, same shape as GET /friends/ (`FriendListResponse`)
+
+iOS (FriendProfileView revamp):
+- [ ] Stats row: watched count / friends count / blends count (display-only). Reuses `statItem()` pattern from ProfileView. Loaded from GET /users/{user_id}/profile.
+- [ ] Watched poster grid: 3-column LazyVGrid, same posterTile layout as ProfileView (without rating badge), infinite scroll / load-more triggering GET /users/{user_id}/watched with pagination.
+- [ ] Each poster tappable → NavigationLink to MovieDetailView(tmdbId:title:). Already built.
+- [ ] Friends count tappable → NavigationLink to new FriendFriendsListView (shows that user's friends, read-only, no accept/reject). Calls GET /users/{user_id}/friends.
+- [ ] Remove friend button preserved, positioned below stats row.
+- [ ] Loading states and empty state per existing app patterns.
 
 ### Add After Validation (v1.x)
 
-- [ ] **Import prompt in onboarding** — After "You're In" screen, offer import for users migrating from Letterboxd. Add when retention data shows import correlates with activation. Requires onboarding flow change.
-- [ ] **Import timestamp in Settings** — "Last imported: March 4, 2026" line below the import row. Requires a DB field or user metadata endpoint.
+- [ ] Rating badges on friend posters — once the social comparison UX has been validated and "whose rating?" ambiguity is resolved
+- [ ] Blends count tappable — navigate to a list of mutual blends or that user's blends; requires a new endpoint and a new view
+- [ ] Privacy controls — "friends only" vs "public" profile setting on own profile affecting what gets returned from /users/{user_id}/* endpoints
 
 ### Future Consideration (v2+)
 
-- [ ] **Incremental re-import** — Detect new entries since last import. Requires per-user import timestamp + Letterboxd export date comparison.
-- [ ] **Import from other sources** — Trakt, IMDb, Plex. Separate backend workflows. Defer until Letterboxd import validates the pattern.
-- [ ] **Streaming progress** — SSE or chunked transfer for per-film progress. Only if the wait is a confirmed user-experience blocker.
+- [ ] Taste compatibility display on friend profile — show match % or taste overlap (cosine similarity between taste embeddings) as a social feature
+- [ ] Activity feed on friend profile — recent watches, ratings, reviews in chronological order
+- [ ] Mutual friends display — "3 mutual friends" shown on friend profile
 
 ---
 
@@ -115,58 +137,55 @@ Features that set the product apart. Not required, but valued.
 
 | Feature | User Value | Implementation Cost | Priority |
 |---------|------------|---------------------|----------|
-| File picker (.zip) | HIGH | LOW | P1 |
-| Multipart upload to `/import/letterboxd` | HIGH | MEDIUM (new code pattern) | P1 |
-| In-progress state (spinner + copy) | HIGH | LOW (AppButton.isLoading exists) | P1 |
-| Results display (counts grid) | HIGH | LOW (schema defined) | P1 |
-| Error handling + retry | HIGH | LOW (APIError pattern exists) | P1 |
-| Settings entry point | HIGH | LOW (row in existing list) | P1 |
-| Backend taste rebuild hook | HIGH | LOW (one add_task call) | P1 |
-| Failed titles disclosure | MEDIUM | LOW (data already returned) | P2 |
-| "Already up to date" copy variant | MEDIUM | LOW (conditional copy) | P2 |
-| Instructions copy on ImportView | MEDIUM | LOW (static text) | P2 |
-| Import prompt in onboarding | MEDIUM | HIGH (flow restructuring) | P3 |
-| Upload progress percentage | LOW | HIGH + misleading | DO NOT BUILD |
+| Backend GET /users/{user_id}/profile (stats) | HIGH | LOW (3 count queries) | P1 |
+| Backend GET /users/{user_id}/watched (paginated) | HIGH | LOW (mirrors existing get_watch_history) | P1 |
+| Stats row on FriendProfileView | HIGH | LOW (reuse statItem pattern) | P1 |
+| Watched poster grid on FriendProfileView | HIGH | MEDIUM (pagination state, posterTile extraction) | P1 |
+| Tappable poster → MovieDetailView | HIGH | LOW (NavigationLink, already built) | P1 |
+| Loading + empty states | HIGH | LOW (existing patterns) | P1 |
+| Backend GET /users/{user_id}/friends | MEDIUM | LOW (mirrors existing get_friends) | P2 |
+| Friends count tappable → FriendFriendsListView | MEDIUM | MEDIUM (new view, new API call) | P2 |
+| Blends count display-only | LOW | LOW (in stats endpoint already) | P1 (zero cost) |
+| Rating badges on friend posters | LOW | LOW (data available, design question) | P3 |
+| Pagination load-more on watched grid | MEDIUM | MEDIUM (offset state + onAppear trigger) | P2 |
 
 **Priority key:**
-- P1: Must have for v1.1 launch
+- P1: Must have for v1.2 launch
 - P2: Should have, add in same pass if time allows
 - P3: Nice to have, future milestone
 - DO NOT BUILD: Creates worse UX than the simpler alternative
 
 ---
 
-## Competitor Feature Analysis
+## Social App Pattern Analysis
 
-| Feature | Simkl (web only) | Trakt (web only) | Our Approach |
-|---------|-----------------|-----------------|--------------|
-| File selection | Web browse button | Upload link | iOS `.fileImporter` — native Files.app, iCloud Drive included |
-| Upload feedback | Page reload, silent | Basic spinner | Inline spinner + explicit timing copy |
-| Results display | Success/error message | Count summary | Counts grid + collapsible failed_titles list |
-| Post-import action | Lands on profile | Stays on import page | Results state in-place; explicit dismiss |
-| Taste rebuild | No recommendation engine | No recommendation engine | Background task, transparent to user |
-| Native iOS experience | Web only | Web only | Native SwiftUI — no web redirect needed |
+| Pattern | Letterboxd | Instagram | Our Approach |
+|---------|-----------|-----------|--------------|
+| Profile stats row | Films / This Year / Lists (counts, some tappable) | Posts / Followers / Following (all tappable) | Watched / Friends / Blends — watched and friends tappable, blends display-only |
+| Content grid | All films watched, paginated | Photo grid, paginated | 3-col poster grid, paginated, sorted by most recent |
+| Public vs private | Public by default, private option | Public by default, private option | Friends-only implied by mutual friendship model — no explicit toggle for v1.2 |
+| Rating visibility on public profile | Ratings shown on public film entries | N/A | Defer for v1.2 to avoid "whose rating?" confusion |
+| Watchlist on public profile | No (watchlist is private) | N/A | No — milestone spec explicitly excludes |
 
 ---
 
 ## Sources
 
-- Codebase: `/Users/adamrose/Desktop/blnd/blnd_backend/app/import_data/views.py` — endpoint signature, `ImportSummaryResponse` schema confirmed
-- Codebase: `/Users/adamrose/Desktop/blnd/blnd_backend/app/import_data/schemas.py` — `{imported, skipped, failed, failed_titles}` confirmed
-- Codebase: `/Users/adamrose/Desktop/blnd/blnd_frontend/blnd_frontend/Networking/APIClient.swift` — JSON-only request; multipart gap confirmed
-- Codebase: `/Users/adamrose/Desktop/blnd/blnd_frontend/blnd_frontend/Views/Profile/SettingsView.swift` — `settingsItems` list structure confirmed
-- Codebase: `/Users/adamrose/Desktop/blnd/blnd_frontend/blnd_frontend/Views/Shared/AppButton.swift` — `isLoading` prop confirmed
-- Codebase: `/Users/adamrose/Desktop/blnd/blnd_backend/app/tracking/views.py` — established `background_tasks.add_task(rebuild_taste_profile, ...)` pattern confirmed
-- Codebase: `/Users/adamrose/Desktop/blnd/blnd_backend/app/recommendations/views.py` — `rebuild_taste_profile` function signature confirmed
-- [SwiftUI Importing And Exporting Files — Use Your Loaf](https://useyourloaf.com/blog/swiftui-importing-and-exporting-files/)
-- [Accessing Security Scoped Files — Use Your Loaf](https://useyourloaf.com/blog/accessing-security-scoped-files/)
-- [Multipart Request with URLSession and async/await — AsyncLearn](https://asynclearn.medium.com/multipart-request-with-urlsession-and-async-await-in-swift-41b16a016cb2)
-- [Building a Modern File Picker in SwiftUI with Async/Await — Gaurav Tak, Jan 2026](https://gauravtakjaipur.medium.com/building-a-modern-file-picker-in-swiftui-with-async-await-from-basics-to-production-ready-94cb8c71754c)
-- [FastAPI Background Tasks](https://fastapi.tiangolo.com/tutorial/background-tasks/) — confirms `background_tasks.add_task` for fire-and-forget after response
-- [Designing Attractive and Usable Data Importers — Smashing Magazine](https://www.smashingmagazine.com/2020/12/designing-attractive-usable-data-importer-app/)
-- [Settings placement — Apple Developer Documentation](https://developer.apple.com/design/human-interface-guidelines/patterns/settings/)
+- Codebase: `/Users/adamrose/Desktop/blnd/blnd_ios/blnd_ios/Views/Profile/ProfileView.swift` — statsRow, watchedGrid, posterTile(), statItem() patterns confirmed
+- Codebase: `/Users/adamrose/Desktop/blnd/blnd_ios/blnd_ios/Views/Friends/FriendProfileView.swift` — current state: avatar, name, remove friend only
+- Codebase: `/Users/adamrose/Desktop/blnd/blnd_ios/blnd_ios/Models/FriendModels.swift` — FriendResponse fields (id, username, display_name, avatar_url, friendship_id)
+- Codebase: `/Users/adamrose/Desktop/blnd/blnd_ios/blnd_ios/Models/TrackingModels.swift` — WatchedMovieResponse, WatchHistoryResponse shapes confirmed
+- Codebase: `/Users/adamrose/Desktop/blnd/blnd_backend/app/tracking/views.py` — GET /tracking/ pagination pattern (limit/offset Query params)
+- Codebase: `/Users/adamrose/Desktop/blnd/blnd_backend/app/friends/views.py` — GET /friends/ pattern
+- Codebase: `/Users/adamrose/Desktop/blnd/blnd_backend/app/friends/schemas.py` — FriendListResponse shape
+- Codebase: `/Users/adamrose/Desktop/blnd/blnd_ios/CLAUDE.md` — app architecture, conventions, swiftlint rules
+- Codebase: `/Users/adamrose/Desktop/blnd/blnd_backend/CLAUDE.md` — backend domain structure, conventions
+- [Letterboxd profile features](https://letterboxd.com/about/faq/) — public profile shows films, followers, lists; watchlist is private by default
+- [SwiftUI LazyVGrid pagination — tanaschita.com](https://tanaschita.com/20230828-pagination-in-swiftui-list/) — onAppear on last item as load-more trigger
+- [Implementing Load More Pagination in LazyVGrid in SwiftUI — Medium](https://medium.com/@naylinn/implementing-load-more-pagination-in-lazyvgrid-in-swiftui-ed5d3e0c1486) — LazyVGrid pagination pattern
+- [GitHub REST API — GET /users/{username}](https://docs.github.com/en/rest/users/users) — public profile endpoint pattern, scoped to requested user not caller
 
 ---
 
-*Feature research for: iOS Letterboxd import UI + backend taste profile rebuild (v1.1)*
-*Researched: 2026-03-09*
+*Feature research for: Public user profile endpoints + FriendProfileView revamp (v1.2)*
+*Researched: 2026-03-11*

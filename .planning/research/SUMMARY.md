@@ -1,17 +1,17 @@
 # Project Research Summary
 
-**Project:** BLND — iOS Letterboxd Integration Frontend (v1.1)
-**Domain:** iOS file picker + multipart upload + backend taste profile rebuild
-**Researched:** 2026-03-09
+**Project:** BLND v1.2 — Public User Profile Endpoints + FriendProfileView Revamp
+**Domain:** Social mobile app — public friend profile surface (FastAPI + SwiftUI)
+**Researched:** 2026-03-11
 **Confidence:** HIGH
 
 ## Executive Summary
 
-The v1.1 milestone adds the iOS-side of the Letterboxd import flow. The backend pipeline already exists and ships complete from v1.0: `POST /import/letterboxd` accepts a multipart ZIP, parses five CSVs, resolves films via TMDB, writes to the database, and returns `{imported, skipped, failed, failed_titles}`. What v1.1 adds is the iOS surface (file picker, upload, progress state, results display) and a single backend hook that triggers a taste profile rebuild after a successful bulk import. No new dependencies are required on either platform. Everything needed is in Swift's standard library, Foundation, and the already-installed FastAPI stack.
+BLND v1.2 is a tightly scoped milestone adding a public friend profile surface to an existing social movie-tracking app. The work covers three new read-only backend endpoints (`GET /auth/users/{id}/profile`, `/watched`, `/friends`) and a full revamp of the iOS `FriendProfileView` to show a stats row, watched poster grid, and tappable friends list. Research across all four domains confirms that no new libraries, database migrations, or router registrations are required — every building block already exists in the codebase. This milestone is additive schema and service logic wired to established patterns.
 
-The recommended implementation pattern is: `.fileImporter` with `UTType.zip` for file selection, manual multipart body construction (15–20 lines of `Data` assembly — no Alamofire), `URLSession.upload(for:from:delegate:)` with a `URLSessionTaskDelegate` for upload progress, and an `@Observable @MainActor ImportState` class driving a phase enum (`idle → uploading → done/failed`). On the backend, a single `background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)` call is appended to `import_letterboxd` in `views.py` — the identical pattern already used in `tracking/views.py`. The new iOS components (4 new files, 3 modified files) slot cleanly into the existing architectural conventions: static API enum, `@Observable` state class, `APIClient` singleton extended with an `upload<T>()` overload.
+The recommended approach is backend-first, building incrementally within the existing `auth` domain rather than creating a new domain folder. On iOS, shared components (`PosterTile`, `StatsRow`) must be extracted from `ProfileView` before building `FriendProfileView` to avoid duplicating 38+ lines of UI logic. All three API calls from the revamped view should fire in parallel using `async let`, matching the pattern already in `ProfileView.swift`. The iOS and backend schemas map 1:1 with no translation surprises.
 
-The dominant risks are all implementation-time traps rather than architectural unknowns: security-scoped resource access must bracket the file read synchronously inside the `.fileImporter` completion closure (not in a later async Task), the URLSession must use a custom configuration with a 300-second timeout (the default 60 seconds kills large library imports while the backend is still processing), the background task on the backend must open a fresh `SessionLocal()` rather than reusing the request's `db` session (which closes when the response is sent), and all `@Observable` mutations must originate on the main actor. Every one of these is a well-documented pitfall with a clear, low-effort mitigation.
+The top risks are security-related, not technical: a missing friendship gate on the watched movies endpoint would allow any authenticated user to enumerate any user's full watch history, and reusing the existing `UserResponse` schema would leak `taste_bio` and `favorite_genres` to any caller. Both are trivially prevented with a dedicated `PublicProfileResponse` schema and an `assert_are_friends()` service helper — but both are also the kind of shortcut that feels reasonable under time pressure. The N+1 query trap (calling `get_friends()` to get a count) is the most likely performance mistake.
 
 ---
 
@@ -19,168 +19,138 @@ The dominant risks are all implementation-time traps rather than architectural u
 
 ### Recommended Stack
 
-No new libraries or packages are required. The iOS side uses SwiftUI `.fileImporter` (iOS 14+, stdlib), `UTType.zip` from `UniformTypeIdentifiers` (iOS 14+, system framework), and `URLSession.upload(for:from:delegate:)` with `URLSessionTaskDelegate` (iOS 15+, Foundation). The backend side uses FastAPI `BackgroundTasks` (already installed at 0.135.1) and the existing `rebuild_taste_profile` function (already callable from `app.recommendations.services`). The zero-third-party-dependency policy on iOS is preserved. The two-line backend diff passes the existing `pre-commit` hooks (ruff, pyright strict, codespell).
+No new stack decisions are required. The existing FastAPI 0.135.1 / SQLAlchemy 2.0.47 / Pydantic 2.12.5 / SwiftUI (iOS 17+) stack handles all v1.2 needs. All three new backend endpoints live on the existing `auth_router` — no `main.py` changes. All iOS networking goes through the existing `APIClient.shared.request()` singleton. The only additions are new Pydantic schemas in `auth/schemas.py`, new service functions in `auth/services.py`, and a new `ProfileAPI.swift` static enum following the identical pattern to `FriendsAPI.swift`.
 
-**Core technologies (new for v1.1):**
-- `.fileImporter` + `UTType.zip`: native system file picker, no UIKit wrapper, iCloud Drive and third-party storage included automatically
-- Manual multipart body (`Data` construction with UUID boundary): replaces Alamofire; exactly 15–20 lines of Swift; field name must be `"file"` to match FastAPI's `UploadFile = File(...)`
-- `URLSession.upload(for:from:delegate:)`: the only stdlib-native path to async upload with per-byte progress callbacks; requires `URLSessionTaskDelegate` conformance
-- `URLSessionConfiguration` with `timeoutIntervalForRequest = 300`: mandatory override of the 60-second default for large library imports
-- FastAPI `BackgroundTasks.add_task(rebuild_taste_profile, ...)`: established project pattern, correct lifecycle for post-response work
+**Core technologies:**
+- FastAPI 0.135.1: HTTP routing — add 3 routes to existing `auth_router` in `auth/views.py`
+- SQLAlchemy 2.0.47: ORM queries — `Profile`, `Friendship`, `WatchedMovie`, `GroupMember` models cover all needed joins with no new models or migrations
+- Pydantic 2.12.5: Schemas — 3 new `BaseModel` subclasses in `auth/schemas.py`; reuse `WatchedMovieResponse` and `FriendResponse` from existing domains
+- SwiftUI / `@Observable` / `async/await`: iOS UI and state — same local `@State` pattern as `ProfileView`; zero new SPM dependencies
+- slowapi 0.1.9: Rate limiting — `@limiter.limit(LIMIT_DEFAULT)` applied to all three new endpoints unchanged
 
-**What does NOT change:**
-- Backend import pipeline (`workflows.py`, `schemas.py`) — unchanged from v1.0
-- `APIClient.request<T>()` — untouched; a new `upload<T>()` overload is added alongside it
-- `AuthState` — separate from `ImportState`; no coupling
+See [STACK.md](.planning/research/STACK.md) for full version matrix and integration point inventory.
 
 ### Expected Features
 
-The feature surface is deliberately narrow. Every P1 item maps to an existing backend contract or existing iOS pattern. P2 items add polish with no new code patterns.
+The feature research draws on codebase inspection and social app pattern analysis (Letterboxd, Instagram). The existing `ProfileView` sets the user's expectation baseline — `FriendProfileView` must reach parity on all visible surface areas.
 
-**Must have (P1 — table stakes):**
-- Settings/Profile entry point — "Import from Letterboxd" row in `ProfileView` navigates to `ImportView`
-- `ImportView` idle state — instructions copy ("Go to letterboxd.com/settings/data, export your data, then select the downloaded ZIP"), "Select ZIP File" button, selected filename confirmation
-- Multipart upload to `POST /import/letterboxd` — via new `ImportAPI.upload(fileData:fileName:)` calling `APIClient.upload<T>()`
-- In-progress state — indeterminate `ProgressView`, copy: "Resolving films via TMDB — this may take 30 seconds"
-- Results state — imported / skipped / failed counts; failed_titles collapsible list when `failed > 0`
-- Error state — inline `APIError` message, "Try Again" resets to idle
-- Backend taste rebuild hook — `background_tasks.add_task(rebuild_taste_profile, ...)` in `views.py`, guarded by `result.imported > 0`
+**Must have (table stakes — v1.2):**
+- Stats row on friend profile (watched count, friends count, blends count) — own profile already shows this; its absence on a friend profile reads as broken
+- Watched poster grid (3-column `LazyVGrid`, paginated, sorted newest first) — the primary social signal in a movie app; Letterboxd and every comparable product show this
+- Tappable poster → `MovieDetailView` — every poster in the app navigates; inconsistency if friend posters do not
+- Loading states and empty states — existing app patterns; blank-then-appearing content reads as broken
+- Remove friend button preserved — the only current feature of `FriendProfileView`; its removal degrades utility
 
-**Should have (P2 — differentiators):**
-- "Already up to date" copy variant when `imported == 0 && failed == 0`
-- Failed titles collapsible list (data already returned by backend — display only)
+**Should have (differentiators — v1.2 if time allows):**
+- Tappable friends count → friend's friends list (new `FriendFriendsListView`) — makes counts interactive; enables social discovery
+- Blends count display-only (zero extra cost — returned in the same stats endpoint)
+- Pagination load-more on watched grid — users with 500+ Letterboxd imports need this
 
-**Defer (v2+):**
-- Import prompt in onboarding (requires onboarding restructuring; add when retention data confirms import correlates with activation)
-- Import timestamp in Settings ("Last imported: March 4, 2026") — requires DB field or user metadata endpoint
-- Incremental re-import — detect new entries since last import; needs per-user import timestamp
-- Streaming server-side progress — SSE or chunked transfer; only if confirmed UX blocker
+**Defer (v1.x / v2+):**
+- Rating badges on friend posters — "whose rating?" ambiguity not yet designed for
+- Blends count tappable (requires new endpoint and new view)
+- Privacy controls (friends-only vs public visibility toggle)
+- Taste compatibility display, activity feed, mutual friends indicator
 
-**Do not build:**
-- Upload progress percentage / progress bar — the upload completes in <1s; the 10–90 second wait is server-side TMDB resolution with no progress signal; a bar that jumps to 100% then freezes is worse UX than an honest spinner
-- Cancel button during upload — backend has no cancellation hook; partial DB writes may have committed; use a pre-confirmation prompt instead
-- In-app webview to Letterboxd export page — auth does not transfer across cookie jars; download stays in webview sandbox; fragile to Letterboxd UI changes
-- OAuth integration with Letterboxd — API is invite-only beta with no export endpoint; every comparable app uses the manual ZIP flow
+**Anti-features to avoid:**
+- Watchlist tab on friend profile — excluded by milestone spec; watchlist is intent, not social signal
+- `@Observable` state class for friend profile data — leaf view, local `@State` is correct
+- New FastAPI domain folder for public profile reads — three read-only endpoints do not justify a new domain
+
+See [FEATURES.md](.planning/research/FEATURES.md) for full prioritization matrix and social app pattern comparison.
 
 ### Architecture Approach
 
-The iOS architecture mirrors the existing `AuthState` / `AuthAPI` / `APIClient` convention exactly. Four new files and three file modifications deliver the full feature. The component chain is strictly unidirectional: `ImportView` observes `ImportState`, `ImportState` calls `ImportAPI`, `ImportAPI` calls `APIClient.shared.upload()`. `ImportState` is separate from `AuthState` — import state is transient screen state; mixing it into `AuthState` would cause the auth gate (`ContentView`) to re-render on every upload progress tick. The rebuild logic belongs in `views.py` (not `workflows.py`) because `BackgroundTasks` and `openai_client` are FastAPI HTTP-layer constructs unavailable inside business logic.
+The architecture is an additive integration into existing patterns, not a new design. Three files are modified on the backend (`auth/views.py`, `auth/services.py`, `auth/schemas.py`), two new files are created on iOS (`Networking/ProfileAPI.swift`, `Models/ProfileModels.swift`), and one view is revamped (`FriendProfileView.swift`). Database schema is unchanged — no migrations. The `auth_router` prefix already covers the `/auth/users/{id}/...` URL space; `main.py` requires no changes.
 
 **Major components:**
+1. `app/auth/` (backend, modified) — three new endpoints: stats counts via scalar `func.count()` queries, paginated watched list (mirrors `GET /tracking/`), friends list with JOIN query
+2. `Networking/ProfileAPI.swift` (iOS, new) — static enum with `getPublicProfile`, `getPublicWatched`, `getPublicFriends`; same pattern as `FriendsAPI.swift`
+3. `Models/ProfileModels.swift` (iOS, new) — `PublicProfileResponse`, `PublicWatchedResponse`, `PublicFriendsResponse`; reuses `WatchedMovieResponse` and `FriendResponse` from existing model files
+4. `FriendProfileView.swift` (iOS, revamped) — receives `FriendResponse`, fires three parallel `async let` loads on `.task`, renders stats row + poster grid + friends list
 
-| Component | Status | Responsibility |
-|-----------|--------|----------------|
-| `ImportView` | NEW | `.fileImporter` modifier, phase-driven UI, results card, error + retry |
-| `ImportState` | NEW | `@Observable @MainActor` phase enum (`idle/uploading/done/failed`), owns `upload()` async method |
-| `ImportAPI` | NEW | Static enum, one function: `upload(fileData:fileName:) async throws -> ImportSummaryResponse` |
-| `ImportModels` | NEW | `ImportSummaryResponse: Decodable` with snake_case → camelCase `CodingKeys` |
-| `APIClient.upload<T>()` | MODIFIED | Multipart overload alongside existing `request<T>()`; reuses `handleResponse`, `KeychainManager` |
-| `ProfileView` | MODIFIED | Add "Import from Letterboxd" navigation row |
-| `blndApp.swift` | MODIFIED | Instantiate `ImportState()`, inject via `.environment(importState)` |
-| `import_data/views.py` | MODIFIED | Add `BackgroundTasks` param; schedule `rebuild_taste_profile` after workflow returns |
-| `import_data/workflows.py` | UNCHANGED | All import logic complete and correct from v1.0 |
-| `recommendations/services.py` | UNCHANGED | `rebuild_taste_profile` callable with existing signature |
+**Key architectural constraint:** Do not call `get_friends()` or `get_watch_history()` from the new service functions — those functions enforce ownership semantics and will silently return the caller's own data, not the target's. Copy the query logic into new functions with correct `user_id` parameterization.
 
-**iOS build order (strictly dependency-ordered):**
-`ImportModels` → `APIClient.upload<T>()` → `ImportAPI` → `ImportState` → `ImportView` → `ProfileView` → `blndApp`
-
-**Backend build (independent of iOS track):**
-One diff to `import_data/views.py` — add `BackgroundTasks` param, import `rebuild_taste_profile`, add `background_tasks.add_task(...)` after workflow call. Three lines total.
+See [ARCHITECTURE.md](.planning/research/ARCHITECTURE.md) for full component diagram, data flow, and anti-pattern catalog.
 
 ### Critical Pitfalls
 
-1. **Security-scoped resource released before upload** — Read `Data(contentsOf: url)` synchronously inside the `.fileImporter` `onCompletion` closure while the scope is open. Never store the URL and defer the read to an async Task. The scope expires before the Task starts on device (Simulator is more permissive — this failure is invisible until physical device testing).
+Nine pitfalls identified; the five most likely to cause harm if ignored:
 
-2. **URLSession 60-second request timeout kills large imports** — The default `timeoutIntervalForRequest = 60` is time-between-received-packets, not total request duration. A 1000-film library takes 25+ seconds of TMDB resolution on the backend before sending a single response byte. Create a dedicated `URLSessionConfiguration` with `timeoutIntervalForRequest = 300` for the import session. Do not route the upload through `APIClient`'s `URLSession.shared`.
+1. **Schema leak via `UserResponse` reuse** — The existing `UserResponse` includes `taste_bio` and `favorite_genres`. Reusing it for the public profile endpoint exposes private data to any authenticated caller. Prevention: create a dedicated `PublicProfileResponse` schema before writing any service logic.
 
-3. **Multipart boundary mismatch causes silent 422** — The boundary string in the `Content-Type` header (`multipart/form-data; boundary=<uuid>`) must exactly match the boundary used to construct the body. FastAPI returns `422 Unprocessable Entity` with no useful diagnostic on a mismatch. Use one UUID generated per request and pass it to both the header and the body builder.
+2. **Missing friendship gate on watched movies endpoint** — JWT auth alone allows any authenticated user to read any user's full watch history. User IDs are UUIDs but are already leaked via `/auth/users/search`. Prevention: implement `assert_are_friends(viewer_id, target_id, db)` called at the top of every service function that accesses another user's data. Return 403, not 404.
 
-4. **BackgroundTask using the request's closed DB session** — FastAPI's `get_db()` dependency closes the session when the response is sent; `BackgroundTask` functions run after that. Passing the request `db` to the background task causes `InvalidRequestError: Session is already closed`. Always open a fresh `SessionLocal()` inside the task and close it in a `finally` block.
+3. **N+1 query via `get_friends()` for counts** — Calling the existing `get_friends(user_id, db)` helper for a count issues 1+N database queries. Prevention: use `db.query(func.count(Friendship.id)).filter(...).scalar()` directly. Same applies to the friends list endpoint — use a JOIN query, not `get_friends()`.
 
-5. **`@Observable` mutations from non-main-actor context** — `URLSessionTaskDelegate` callbacks arrive on an arbitrary background thread. Annotate `ImportState` with `@MainActor`; use `nonisolated` on the delegate method with an explicit `Task { @MainActor in self.uploadProgress = progress }` dispatch. Skipping this produces runtime warnings in debug and crashes on iOS 17+ in production.
+4. **Unpaginated watched movies endpoint** — Users who imported from Letterboxd may have 2,000+ entries. A `SELECT * FROM watched_movies WHERE user_id = ?` without `LIMIT` returns megabytes of JSON. Prevention: mirror `GET /tracking/` exactly — require `limit` (default 20, max 100) and `offset` params; include `total` in the response.
 
-6. **Synchronous SQLAlchemy inside `async def` import endpoint blocks the event loop** — The existing `import_letterboxd` is `async def` but calls blocking SQLAlchemy ORM methods. For a 2000-film import this monopolizes the event loop for 30–90 seconds, stalling all other API consumers. Convert to `def` (FastAPI threads it automatically) or wrap the blocking call with `run_in_threadpool`. Acceptable to treat as known tech debt for v1.1 at low concurrent user count.
+5. **UI code duplication across `ProfileView` and `FriendProfileView`** — `posterTile()` is 38 lines of private SwiftUI code. Duplicating it creates maintenance debt. Prevention: extract `PosterTile`, `StatsRow`, and `PosterGrid` to `Views/Shared/` before adding any new UI to `FriendProfileView`. This refactor is a prerequisite, not optional cleanup.
+
+See [PITFALLS.md](.planning/research/PITFALLS.md) for the complete nine-pitfall catalog including sequential iOS API calls, stale parent list after friend removal, self-access edge case, and the "looks done but isn't" verification checklist.
 
 ---
 
 ## Implications for Roadmap
 
-The v1.1 work is narrow, well-bounded, and has no unresolved unknowns. Two independent implementation tracks converge at integration testing. Research is exhaustive — no phase requires `/gsd:research-phase`.
+Based on research, the natural build order follows backend-then-iOS dependency flow with one prerequisite iOS refactor before the main view work. Four phases, no unknowns.
 
-### Phase 1: Backend Hook
+### Phase 1: Backend Public Profile Endpoints
 
-**Rationale:** The backend change is three lines, independent of all iOS work, and can be deployed before iOS ships. Shipping it first gives the team a verified integration target and eliminates the risk of an iOS-correct client hitting a backend that still returns stale taste profiles.
+**Rationale:** iOS cannot load data until backend endpoints exist. Building backend first also forces the security decisions (friendship gate, dedicated schema) before any iOS integration, when the blast radius of a mistake is smallest.
 
-**Delivers:** `POST /import/letterboxd` triggers `rebuild_taste_profile` via `BackgroundTasks` after every successful import. Taste profile is current after bulk import without any user action.
+**Delivers:** Three production-ready endpoints — `/auth/users/{id}/profile` (stats counts), `/auth/users/{id}/watched` (paginated), `/auth/users/{id}/friends` (friend list). Verified via `curl` against a running backend before any iOS work begins.
 
-**Implements:** `background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)` in `import_data/views.py`. Three lines (import, parameter, call).
+**Addresses:** Stats row data, watched poster grid data, friends list data (all table-stakes features from FEATURES.md).
 
-**Avoids:** Synchronous rebuild inside the endpoint (doubles response latency for large imports). Reusing the request's `db` session in the background task (session is closed by the time the task runs).
+**Avoids:** Schema leak (Pitfall 1), missing friendship gate (Pitfall 2), N+1 count query (Pitfall 3), unpaginated watched endpoint (Pitfall 4).
 
-**Research flag:** Standard pattern. Identical to `tracking/views.py`. No deeper research needed.
+**Build order within phase:** schemas first (prerequisite for compiler), then services, then views. Verify each service function with direct Python/SQLAlchemy calls before wiring to routes.
 
----
+### Phase 2: iOS Shared Component Extraction
 
-### Phase 2: iOS Data Layer
+**Rationale:** `FriendProfileView` cannot reuse `ProfileView`'s private helper functions. This phase is a hard prerequisite for Phase 4, not optional cleanup. Doing it after the revamp forces a second refactor pass through two views.
 
-**Rationale:** The model, networking, and state layers must exist before any UI can be written. Building bottom-up eliminates integration debt. Each layer can be verified independently before a single SwiftUI view exists.
+**Delivers:** `PosterTile`, `StatsRow`, and `PosterGrid` extracted from `ProfileView` to `Views/Shared/`. `ProfileView` refactored to use the shared components — all existing behavior preserved.
 
-**Delivers:** `ImportModels.swift` (Decodable struct), `APIClient.upload<T>()` overload (multipart body builder + extended-timeout URLSession configuration), `ImportAPI.swift` (static enum calling the overload), `ImportState.swift` (`@Observable @MainActor` phase machine with `upload()` async method).
+**Avoids:** UI duplication pitfall (Pitfall 5), maintenance debt on every future design change.
 
-**Avoids:** Routing upload through `APIClient.request<T>()` (JSON-only — causes 422). Using `URLSession.shared` without timeout override (60-second default kills large library imports). `@Observable` mutations from background thread (annotate class `@MainActor`, dispatch delegate callbacks explicitly).
+**Note for roadmapper:** This is a refactor phase with no visible user-facing change. Keep it small and focused — three components. Do not expand scope to other `ProfileView` cleanup.
 
-**Research flag:** All patterns confirmed against Apple docs and WWDC21. No ambiguity.
+### Phase 3: iOS ProfileAPI + Models
 
----
+**Rationale:** Can be developed in parallel with Phase 1 (no backend dependency for file creation) but must complete before Phase 4. Establishes the networking layer and Decodable models before the view needs them.
 
-### Phase 3: iOS View Layer
+**Delivers:** `Networking/ProfileAPI.swift` (static enum, 3 methods), `Models/ProfileModels.swift` (`PublicProfileResponse`, `PublicWatchedResponse`, `PublicFriendsResponse`). Can be verified via debug print against a running Phase 1 backend.
 
-**Rationale:** Views are built last because they depend on the complete data layer. `ImportView` is a single screen with four discrete visual states; the phase enum makes transitions unambiguous.
+**Uses:** Existing `APIClient.shared.request<T>()` — no changes to `APIClient`. Reuses `WatchedMovieResponse` from `TrackingModels.swift` and `FriendResponse` from `FriendModels.swift` as item types.
 
-**Delivers:** `ImportView.swift` (`.fileImporter` modifier, phase-driven body, results card, error + retry). `ProfileView` modified with navigation row. `blndApp.swift` modified to inject `ImportState`.
+### Phase 4: FriendProfileView Revamp
 
-**Features:** All P1 table stakes and P2 items (failed titles collapsible, "Already up to date" copy, instructions copy) — P2 items are low-effort additions in the same pass, include them.
+**Rationale:** All prerequisites (backend endpoints, shared components, iOS networking layer) are complete. The view revamp is the final integration step.
 
-**Avoids:** Reading the security-scoped URL in an async Task (scope expires before the Task starts on device).
+**Delivers:** Fully revamped `FriendProfileView.swift` with stats row, paginated watched poster grid, tappable friends list, and preserved remove-friend button. Loading states, empty states, and error states matching existing app patterns.
 
-**Research flag:** Standard SwiftUI patterns. Physical device testing is mandatory for security-scoped resource access — Simulator behavior is more permissive and masks this failure entirely.
+**Implements:** Parallel `async let` data loading on `.task`, stats row from shared `StatsRow` component, poster grid from shared `PosterGrid` + `PosterTile` components, `NavigationLink` to `MovieDetailView` on poster tap, `NavigationLink` to nested `FriendProfileView` on friends count tap.
 
----
-
-### Phase 4: Integration and Verification
-
-**Rationale:** The two tracks are independently testable but must be verified end-to-end together. Several pitfalls (timeout, boundary mismatch, background task session, taste rebuild correctness) are only detectable at integration time against a production-latency host.
-
-**Delivers:** Verified end-to-end flow: select Letterboxd ZIP on device → upload completes → `ImportSummaryResponse` displayed → taste profile rebuild fires → `GET /recommendations/me` returns updated results.
-
-**Verification checklist (from PITFALLS.md):**
-- Backend logs `len(file_bytes) > 0` before zip validation (confirms security scope was held through read)
-- Network inspector shows `Content-Type: multipart/form-data`, not `application/json`
-- 2000-film import does not time out (must test against production-latency host — localhost hides timeout issues)
-- Rebuild background task logs fire after response was sent; `taste_embedding` is non-null and updated
-- Zero Xcode runtime thread warnings during upload
-- Fourth import attempt within the hour returns 429, not a crash
-
-**Research flag:** No additional research needed. Checklist is complete and actionable.
-
----
+**Avoids:** Sequential API calls (Pitfall 6), stale parent list after removal (Pitfall 8), missing self-access guard (Pitfall 7).
 
 ### Phase Ordering Rationale
 
-- Track A (backend) is independent and should be merged first — it is three lines and removes one integration variable before iOS ships.
-- Track B phases (2 and 3) are strictly sequential by dependency: Models → Networking → State → Views. Building out of order creates compilation failures.
-- Phase 4 verification cannot start until both tracks are complete and running against a shared environment.
-- P2 items belong in Phase 3 (not a separate phase) because they require no new code patterns and are low-effort additions on the same screen.
+- Backend before iOS: iOS views cannot render without live endpoints. Building backend first also surfaces security decisions before any client code exists.
+- Shared component extraction before view revamp: `FriendProfileView` cannot call `ProfileView`'s private functions. This is a hard compile-time constraint.
+- Models and API layer can overlap Phase 1: Swift file creation has no runtime dependency on a running backend. Model structs and the API enum can be written and reviewed while the backend is being built.
+- Single phase for the full view revamp: stats row, poster grid, and friends list all depend on the same three API calls and the same `@State` loading pattern. Splitting them into sub-phases would require re-entering the same view file repeatedly for no benefit.
 
 ### Research Flags
 
-No phases require `/gsd:research-phase`. Research for this milestone is comprehensive.
+Phases with well-documented patterns (skip `/gsd:research-phase`):
+- **Phase 1 (Backend endpoints):** All query patterns exist in the codebase. Pydantic schema patterns are established. FastAPI route registration is standard. No unknowns.
+- **Phase 3 (iOS models + API):** Static enum pattern is identical to `FriendsAPI.swift`. `Decodable` structs with `CodingKeys` are the app's standard pattern. No research needed.
 
-Phases with well-documented, standard patterns:
-- **Phase 1:** Identical `BackgroundTasks` pattern already verified in `tracking/views.py`
-- **Phase 2:** SwiftUI `.fileImporter`, `URLSessionTaskDelegate`, multipart form construction — all confirmed against Apple docs and WWDC21 session 10095
-- **Phase 3:** Phase-enum-driven SwiftUI view — standard `@Observable` pattern used throughout the existing app
-- **Phase 4:** Integration verification checklist is specific and complete
+Phases that may benefit from brief implementation-time spikes:
+- **Phase 2 (Component extraction):** The `StatsRow` shared component needs a design decision on how to parameterize optional tap handlers (own profile's stats are tappable; friend profile's stats are not for all items). Options: optional `action: (() -> Void)?` parameter, or two separate components. 30-minute spike, not a full research phase.
+- **Phase 4 (LazyVGrid pagination):** `LazyVGrid` load-more via `.onAppear` on the last cell has edge cases with rapid scroll and task cancellation. Reference the SwiftUI pagination examples cited in FEATURES.md sources before implementing.
 
 ---
 
@@ -188,58 +158,45 @@ Phases with well-documented, standard patterns:
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | All APIs verified against Apple developer docs and WWDC21. `BackgroundTasks` pattern verified against codebase (`tracking/views.py`). No third-party libraries involved — zero dependency risk. |
-| Features | HIGH | Feature set derived from direct codebase inspection of `ImportSummaryResponse` schema, `AppButton.isLoading`, `settingsItems` structure. No speculation. |
-| Architecture | HIGH | Component list, file locations, and modification diffs derived from direct codebase inspection. All 7 new/modified files are specified. |
-| Pitfalls | HIGH | Security-scope and background-task session pitfalls confirmed via Apple developer forums. Timeout behavior confirmed against URLSession documentation. Thread-safety pitfall confirmed against iOS 17 `@Observable` runtime. |
-| Export flow | HIGH | Letterboxd API access requirements confirmed from official beta access page. No programmatic path to export ZIP exists. `.fileImporter` is the correct and only viable iOS approach. |
+| Stack | HIGH | Direct codebase inspection of pinned `requirements.txt` and both `CLAUDE.md` files. All technologies directly observed, no inference. |
+| Features | HIGH (codebase) / MEDIUM (UX patterns) | Must-have features confirmed via codebase inspection of existing `ProfileView`. UX pattern comparisons (Letterboxd, Instagram) are MEDIUM — reasonable consensus but not user-tested for this specific app. |
+| Architecture | HIGH | Based entirely on direct codebase inspection. Integration map is a direct read of existing file structures. Anti-patterns reference specific line numbers in existing services. |
+| Pitfalls | HIGH | Each pitfall is grounded in a specific existing code location (e.g., `get_friends()` N+1 at lines 132-137 of `friends/services.py`; `UserResponse` fields in `auth/schemas.py`). Not speculative. |
 
 **Overall confidence:** HIGH
 
 ### Gaps to Address
 
-- **Event loop blocking in `async def import_letterboxd`:** The existing endpoint calls blocking SQLAlchemy inside `async def`. Acceptable for v1.1 at low concurrent user count. Must be addressed before scaling — the mitigation (`def` conversion or `run_in_threadpool`) is known and documented. Flag as known technical debt in the phase plan.
+- **Blends count source:** The stats endpoint research assumes `groups_count` maps to "blends count" in the iOS display (the app calls groups "blends"). Confirm at implementation time that `GroupMember` is the correct model for blends — if groups and blends are modeled differently, the count query will be wrong.
 
-- **BackgroundTask DB session — verify against existing codebase pattern:** STACK.md describes passing the request `db` to `BackgroundTasks` as following the `tracking/views.py` precedent. PITFALLS.md flags the same pattern as a critical pitfall (session closed after response). During Phase 1 implementation, inspect `tracking/views.py` to confirm whether it passes `db` or opens a fresh `SessionLocal()`. If the existing pattern passes `db` and works, it is consistent; if it opens a fresh session, match that pattern.
+- **Friend-gating policy:** Research recommends gating all three endpoints on friendship. The milestone description does not specify this. If the team decides on "any authenticated user can see any profile" (open model), Pitfall 2 and the `assert_are_friends()` helper are not needed. This is a product decision that should be confirmed before Phase 1 backend work begins.
 
-- **Physical device testing is non-negotiable for security-scoped access:** All security-scope behavior must be verified on a real device. Simulator does not enforce sandboxing constraints. This is a testing gate, not a research gap.
+- **`StatsRow` component tap handler design:** Whether to use an optional `action` parameter or two separate components for tappable vs non-tappable stat items is deferred to implementation. Both options are valid. Not a blocker.
+
+- **Tiered authorization:** A tiered approach (open stats, gated watched/friends) is a viable alternative to applying the friendship gate to all three endpoints. Profile stats (counts only) are lower sensitivity than full watch history. Worth a brief team discussion before Phase 1.
 
 ---
 
 ## Sources
 
 ### Primary (HIGH confidence)
-
-- Apple Developer Documentation: `UTType.zip` — `public.zip-archive` identifier
-- Apple Developer Documentation: `fileImporter(isPresented:allowedContentTypes:onCompletion:)` — iOS 14+
-- Apple Developer Documentation: `startAccessingSecurityScopedResource()` / `stopAccessingSecurityScopedResource()`
-- WWDC21 Session 10095: "Use async/await with URLSession" — task-specific delegate for upload progress with async/await
-- FastAPI Background Tasks docs — sync functions dispatched to thread pool automatically; runs after response
-- Letterboxd API beta access page — no export endpoint; invite-only; `.fileImporter` flow is the only viable path
-- Codebase: `blnd_backend/app/tracking/views.py` — `BackgroundTasks.add_task(rebuild_taste_profile, ...)` pattern confirmed
-- Codebase: `blnd_backend/app/import_data/views.py` — current endpoint signature; `BackgroundTasks` not yet wired
-- Codebase: `blnd_backend/app/import_data/schemas.py` — `ImportSummaryResponse` field list confirmed
-- Codebase: `blnd_backend/app/import_data/workflows.py` — `run_letterboxd_import` returns after `db.commit()`
-- Codebase: `blnd_backend/app/recommendations/services.py` — `rebuild_taste_profile(user_id, db, openai_client)` signature confirmed synchronous
-- Codebase: `blnd_frontend/blnd_frontend/Networking/APIClient.swift` — JSON-only; no multipart support confirmed
-- Codebase: `blnd_frontend/blnd_frontend/Views/Profile/SettingsView.swift` — `settingsItems` structure confirmed
-- Codebase: `blnd_frontend/blnd_frontend/Views/Shared/AppButton.swift` — `isLoading` prop confirmed
+- `/Users/adamrose/Desktop/blnd/blnd_backend/app/` — direct inspection of `auth/`, `friends/`, `tracking/`, `groups/` services, schemas, models, and views
+- `/Users/adamrose/Desktop/blnd/blnd_ios/blnd_ios/` — direct inspection of `ProfileView.swift`, `FriendProfileView.swift`, `FriendModels.swift`, `FriendsAPI.swift`, `TrackingModels.swift`, `APIClient.swift`
+- `/Users/adamrose/Desktop/blnd/blnd_backend/requirements.txt` — pinned version verification
+- `/Users/adamrose/Desktop/blnd/blnd_backend/CLAUDE.md` — domain-driven structure, conventions
+- `/Users/adamrose/Desktop/blnd/blnd_ios/CLAUDE.md` — iOS architecture, zero third-party policy
 
 ### Secondary (MEDIUM confidence)
+- [Letterboxd public profile FAQ](https://letterboxd.com/about/faq/) — public profile shows films, followers, lists; watchlist is private by default
+- [SwiftUI LazyVGrid pagination — tanaschita.com](https://tanaschita.com/20230828-pagination-in-swiftui-list/) — `onAppear` on last item as load-more trigger
+- [Implementing Load More Pagination in LazyVGrid — Medium](https://medium.com/@naylinn/implementing-load-more-pagination-in-lazyvgrid-in-swiftui-ed5d3e0c1486) — LazyVGrid pagination pattern
 
-- Apple Developer Forums thread 698248 — upload progress with async/await URLSession confirmed as requiring task-specific delegate (community-verified, matches WWDC21)
-- Apple Developer Forums thread 741560 — `startAccessingSecurityScopedResource` with async operations
-- Apple Developer Forums thread 748039 — no permission to read file when chosen with `.fileImporter` on device
-- FastAPI GitHub Discussion 8502 — accessing dependencies in background tasks
-- FastAPI GitHub Issue 3205 — SQLAlchemy session lifecycle in background tasks
-
-### Tertiary (LOW confidence)
-
-- Use Your Loaf: SwiftUI Importing and Exporting Files — implementation patterns (used for confirmation only; decisions based on Apple docs)
-- AsyncLearn Medium: Multipart Request with URLSession and async/await — boundary construction pattern
-- Simkl Letterboxd import docs — confirmed manual ZIP export is the industry-standard approach
+### Tertiary (Reference / validation)
+- FastAPI docs: [Authorization](https://fastapi.tiangolo.com/tutorial/security/) — authorization is not automatic per endpoint
+- SQLAlchemy docs: [ORM Querying Guide](https://docs.sqlalchemy.org/en/20/orm/queryguide/) — `func.count()` aggregate pattern
+- SwiftUI docs: [Structured Concurrency async let](https://docs.swift.org/swift-book/documentation/the-swift-programming-language/concurrency/) — `async let` fires immediately without suspension
 
 ---
 
-*Research completed: 2026-03-09*
+*Research completed: 2026-03-11*
 *Ready for roadmap: yes*

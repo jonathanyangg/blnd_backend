@@ -1,551 +1,518 @@
 # Architecture Research
 
-**Domain:** iOS file import UI + backend taste profile rebuild (v1.1 milestone)
-**Researched:** 2026-03-09
-**Confidence:** HIGH (based on direct codebase inspection of all relevant files)
+**Domain:** Public user profile endpoints + FriendProfileView revamp (v1.2)
+**Researched:** 2026-03-11
+**Confidence:** HIGH — based entirely on direct codebase inspection, no inference required
 
-## Standard Architecture
+---
 
-### System Overview
+## Context: What Already Exists
 
-```
-┌──────────────────────────────── iOS App ────────────────────────────────────┐
-│                                                                               │
-│  Views/Profile/              Networking/               State/                 │
-│  ┌────────────────┐          ┌─────────────────┐       ┌─────────────────┐   │
-│  │ ProfileView    │          │ ImportAPI        │       │ ImportState     │   │
-│  │ (entry point)  │          │ (static enum,    │       │ (@Observable,   │   │
-│  └──────┬─────────┘          │  calls           │       │  phase enum +   │   │
-│         │ NavigationLink     │  APIClient.upload│       │  result counts) │   │
-│         v                   └────────┬──────────┘       └────────┬────────┘   │
-│  ┌────────────────┐                  │                            │            │
-│  │ ImportView     │ ─── async ──→    │                            │ @Observable│
-│  │ (.fileImporter │ ←── phase ──── ImportState ───────────────────┘            │
-│  │  + progress    │                  │ calls APIClient.shared.upload()          │
-│  │  + results)    │                  │                                          │
-│  └────────────────┘          ┌───────┴──────────┐                              │
-│                               │ APIClient        │                              │
-│                               │ (MODIFIED:       │                              │
-│                               │  + upload()      │                              │
-│                               │  + multipart     │                              │
-│                               │    body builder) │                              │
-│                               └───────┬──────────┘                              │
-└───────────────────────────────────────┼─────────────────────────────────────────┘
-                                        │ POST /import/letterboxd
-                                        │ multipart/form-data
-                                        │ Authorization: Bearer <token>
-                                        v
-┌─────────────────────────────── FastAPI Backend ─────────────────────────────────┐
-│                                                                                   │
-│  app/import_data/                                                                 │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
-│  │ views.py (MODIFIED)                                                          │ │
-│  │  import_letterboxd(file, user_id, db, tmdb_client, background_tasks)        │ │
-│  │    ├─ validate zip                                                            │ │
-│  │    ├─ await workflows.run_letterboxd_import(...)                              │ │
-│  │    └─ background_tasks.add_task(rebuild_taste_profile, user_id, db, oai)     │ │
-│  └──────────────────────────────┬──────────────────────────────────────────────┘ │
-│                                  │ returns ImportSummaryResponse (sync)           │
-│                                  │ triggers rebuild (async, post-response)        │
-│                                  │                                                │
-│  ┌────────────────────┐          │  ┌──────────────────────────────────────────┐ │
-│  │ workflows.py       │ ←────────┘  │ recommendations/services.py              │ │
-│  │ (unchanged logic)  │             │ rebuild_taste_profile(user_id, db, oai)  │ │
-│  │ run_letterboxd_    │             │   ├─ get_top_rated_movies (top 25)        │ │
-│  │ import → db.commit │  BackgroundTask  ├─ compute_average_embedding           │ │
-│  └────────────────────┘  ──────────────>│   (weighted avg of movie_embeddings)  │ │
-│                                         │ └─ profile.taste_embedding = vector    │ │
-│                                         │    db.commit()                          │ │
-│                                         └──────────────────────────────────────┘ │
-└───────────────────────────────────────────────────────────────────────────────────┘
-```
+This document focuses on how the NEW v1.2 features slot into the existing architecture. It is not a general system overview — it is a precise integration map.
 
-### Component Responsibilities
+Existing patterns that all new code must follow:
 
-| Component | Responsibility | Status |
-|-----------|----------------|--------|
-| `ImportView` | File picker (`.fileImporter`), upload spinner, results summary card, error + retry | NEW |
-| `ImportState` | `@Observable` class — `phase` enum: `idle/uploading/done/failed`, owns `upload()` async method | NEW |
-| `ImportAPI` | Static enum — one `upload(fileData:fileName:)` func, calls `APIClient.shared.upload()` | NEW |
-| `ImportModels` | `ImportSummaryResponse` — `Decodable` struct matching backend JSON | NEW |
-| `APIClient.upload()` | New `multipart/form-data` method on the existing singleton; reuses `handleResponse` | MODIFIED |
-| `ProfileView` | Add "Import from Letterboxd" entry point that navigates to `ImportView` | MODIFIED |
-| `blndApp.swift` | Instantiate `ImportState`, inject via `.environment()` alongside `AuthState` | MODIFIED |
-| `import_data/views.py` | Add `BackgroundTasks` param; after workflow returns, schedule taste rebuild | MODIFIED |
-| `import_data/workflows.py` | No changes to existing logic; rebuild is NOT called here | UNCHANGED |
-| `recommendations/services.py` | `rebuild_taste_profile` — already exists, no changes needed | UNCHANGED |
+- **Backend domain layout:** `app/{domain}/models.py`, `schemas.py`, `services.py`, `views.py`
+- **Auth guard:** `user_id: str = Depends(get_current_user)` on every authenticated endpoint
+- **Paginated response shape:** `{"results": [...], "total": int}` — matches existing `WatchHistoryResponse`
+- **Services return dicts** (not model instances) via a `_to_response()` helper — see `tracking/services.py`
+- **Router registration:** all routers added to `main.py` via `include_router()` with a prefix
+- **iOS API layer:** static enum per domain (`FriendsAPI`, `TrackingAPI`, etc.) calling `APIClient.shared.request()`
+- **iOS models:** `Codable` structs with `CodingKeys` for snake_case to camelCase mapping
+- **iOS views:** own local `@State` for remote data, no shared observable for view-local concerns
 
-## Recommended Project Structure
+---
 
-### iOS
+## System Overview
+
+### What is being added
+
+Three new read-only backend endpoints (under the existing `auth` domain), three new iOS API calls (new `ProfileAPI` enum), three new iOS model types, and a full revamp of `FriendProfileView.swift`.
 
 ```
-blnd_frontend/blnd_frontend/
-├── App/
-│   └── blndApp.swift               MODIFIED — instantiate + inject ImportState
-├── Models/
-│   ├── AuthModels.swift             (existing)
-│   └── ImportModels.swift           NEW — ImportSummaryResponse Decodable struct
-├── Networking/
-│   ├── APIClient.swift              MODIFIED — add upload() + makeMultipartBody()
-│   ├── AuthAPI.swift                (existing)
-│   └── ImportAPI.swift              NEW — static enum, upload(fileData:fileName:)
-├── State/
-│   ├── AuthState.swift              (existing)
-│   └── ImportState.swift            NEW — @Observable, phase enum, upload() method
-└── Views/
-    └── Profile/
-        ├── ProfileView.swift        MODIFIED — add import entry point row
-        ├── SettingsView.swift       (existing, no changes)
-        └── ImportView.swift         NEW — .fileImporter + progress + results
+┌──────────────────────────────────── iOS App ────────────────────────────────────────┐
+│                                                                                       │
+│  Views/Friends/                  Networking/              Models/                     │
+│  ┌─────────────────────┐         ┌─────────────┐          ┌─────────────────────┐    │
+│  │ FriendProfileView   │         │ ProfileAPI  │          │ ProfileModels       │    │
+│  │ (REVAMPED)          │─ async ─│ (NEW)       │          │ (NEW)               │    │
+│  │  @State profile     │         │ static enum │          │ PublicProfileResponse│    │
+│  │  @State watched[]   │         │ 3 endpoints │          │ PublicWatchedResponse│    │
+│  │  @State friends[]   │         └──────┬──────┘          │ PublicFriendsResponse│    │
+│  │  stats row          │                │                  └─────────────────────┘    │
+│  │  poster grid        │                │                                              │
+│  │  friends list       │         ┌──────┴──────┐                                      │
+│  └─────────────────────┘         │ APIClient   │                                      │
+│                                   │ (UNCHANGED) │                                      │
+│                                   └──────┬──────┘                                      │
+└──────────────────────────────────────────┼──────────────────────────────────────────┘
+                                           │ GET /auth/users/{id}/profile
+                                           │ GET /auth/users/{id}/watched
+                                           │ GET /auth/users/{id}/friends
+                                           │ Authorization: Bearer <token>
+                                           v
+┌─────────────────────────────── FastAPI Backend ──────────────────────────────────────┐
+│                                                                                        │
+│  app/auth/                                                                             │
+│  ┌────────────────────────────────────────────────────────────────────────────────┐   │
+│  │ views.py (MODIFIED — 3 new endpoints)                                           │   │
+│  │  GET /users/{user_id}/profile  →  services.get_public_profile(uid, db)         │   │
+│  │  GET /users/{user_id}/watched  →  services.get_public_watched(uid, lim, off, db)│  │
+│  │  GET /users/{user_id}/friends  →  services.get_public_friends(uid, lim, off, db)│  │
+│  └──────────────────────────────────────┬──────────────────────────────────────────┘  │
+│                                          │ SQLAlchemy queries                          │
+│                     ┌────────────────────┼────────────────────┐                       │
+│                     v                    v                      v                      │
+│              profiles table    watched_movies JOIN     friendships JOIN                │
+│              + COUNT queries   movies table            profiles table                  │
+│              (watched,         (paginated,             (paginated,                     │
+│               friends,          ORDER BY               status='accepted')              │
+│               groups)           watched_date DESC)                                     │
+│                                                                                        │
+│  app/auth/services.py (MODIFIED — 3 new functions)                                    │
+│  app/auth/schemas.py  (MODIFIED — 3 new response types)                               │
+│                                                                                        │
+│  All other domains: UNCHANGED                                                          │
+└────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Backend
+---
 
+## New Components Required
+
+### Backend: 3 new endpoints added to the existing `auth` domain
+
+No new domain folder. The three endpoints are pure reads against existing tables and belong in `app/auth/` alongside `GET /auth/me` — which is where all user/profile concerns already live. The existing precedent is `GET /auth/users/search`, which is also a user-lookup endpoint in `app/auth/views.py`.
+
+**Endpoint signatures:**
+
+| Method | Path | Auth | Service call |
+|---|---|---|---|
+| `GET` | `/auth/users/{user_id}/profile` | JWT required | `get_public_profile(user_id, db)` |
+| `GET` | `/auth/users/{user_id}/watched` | JWT required | `get_public_watched(user_id, limit, offset, db)` |
+| `GET` | `/auth/users/{user_id}/friends` | JWT required | `get_public_friends(user_id, limit, offset, db)` |
+
+All three require a valid JWT. The caller's identity is verified but not used for access control — any authenticated user can view any profile. If friend-gating is added later, the service layer is the correct place for the check: one `is_friends(caller_id, target_id, db)` guard, zero iOS changes.
+
+**New schemas to add to `app/auth/schemas.py`:**
+
+```python
+from app.tracking.schemas import WatchedMovieResponse   # reuse
+from app.friends.schemas import FriendResponse          # reuse
+
+class PublicProfileResponse(BaseModel):
+    id: str
+    username: str
+    display_name: str | None = None
+    avatar_url: str | None = None
+    taste_bio: str | None = None
+    watched_count: int
+    friends_count: int
+    groups_count: int
+
+class PublicWatchedResponse(BaseModel):
+    results: list[WatchedMovieResponse]
+    total: int
+
+class PublicFriendsResponse(BaseModel):
+    results: list[FriendResponse]
+    total: int
 ```
-app/import_data/
-├── views.py      MODIFIED — add BackgroundTasks, schedule rebuild after workflow
-├── workflows.py  UNCHANGED — run_letterboxd_import already complete
-└── schemas.py    UNCHANGED — ImportSummaryResponse already has all needed fields
-```
 
-### Structure Rationale
+`WatchedMovieResponse` and `FriendResponse` are already defined and match what the iOS views need — no duplication.
 
-- **`ImportState` is a separate `@Observable` class, not merged into `AuthState`:** Import is transient screen state (active for the duration of one user interaction). `AuthState` owns session identity and persists across the app lifetime. Mixing them couples unrelated concerns and forces `ContentView`'s auth gate — which observes `AuthState` — to re-render on import progress updates. Keep them separate; inject both via `.environment()`.
-- **`ImportAPI` as a static enum:** Matches `AuthAPI` exactly. One static function per backend endpoint. The enum itself has no state.
-- **`ImportView` under `Views/Profile/`:** Import is an account-management action. It belongs in the Profile tab navigation stack as a pushed view, not a new tab.
-- **Rebuild in `views.py`, not `workflows.py`:** `workflows.py` does not have access to `BackgroundTasks` (a FastAPI HTTP layer construct) or `openai_client` (injected at the view layer). Pushing rebuild into the workflow would require threading HTTP-layer concerns through pure business logic. The correct separation: workflow owns data transformation; view layer owns FastAPI dependencies.
+**New service functions to add to `app/auth/services.py`:**
 
-## Architectural Patterns
+```python
+def get_public_profile(user_id: str, db: Session) -> dict | None:
+    """Profile row + stat counts — three COUNT queries against existing tables."""
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if not profile:
+        return None
 
-### Pattern 1: Multipart Upload via APIClient Overload
+    from sqlalchemy import func, or_
+    from app.tracking.models import WatchedMovie
+    from app.friends.models import Friendship
+    from app.groups.models import GroupMember
 
-**What:** Add a second method `upload<T: Decodable>()` to `APIClient` for `multipart/form-data` uploads. Keep it alongside the existing `request<T>()` — do not replace or modify `request<T>()`.
-
-**When to use:** Any endpoint that accepts `UploadFile` in FastAPI. Currently only `POST /import/letterboxd`.
-
-**Trade-offs:** A small amount of duplication vs. a unified method. At one call site, a separate named method is cleaner and immediately clear at the call site.
-
-**Key constraint:** The FastAPI endpoint declares `file: UploadFile = File(...)`. The multipart field name must be `"file"` exactly — this is already the case in the existing `import_letterboxd` view.
-
-**Example:**
-```swift
-// APIClient.swift — add alongside existing request<T>()
-
-func upload<T: Decodable>(
-    endpoint: String,
-    fileData: Data,
-    fileName: String,
-    mimeType: String
-) async throws -> T {
-    guard let url = URL(string: APIConfig.baseURL + endpoint) else {
-        throw APIError.invalidURL
-    }
-    let boundary = UUID().uuidString
-    var req = URLRequest(url: url)
-    req.httpMethod = "POST"
-    req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-    if let token = KeychainManager.readString(key: "accessToken") {
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-    }
-    req.httpBody = makeMultipartBody(
-        fileData: fileData, fileName: fileName, mimeType: mimeType, boundary: boundary
+    watched_count = (
+        db.query(func.count(WatchedMovie.id))
+        .filter(WatchedMovie.user_id == user_id)
+        .scalar() or 0
     )
-    let (data, response): (Data, URLResponse)
-    do {
-        (data, response) = try await URLSession.shared.data(for: req)
-    } catch {
-        throw APIError.networkError(error)
-    }
-    guard let http = response as? HTTPURLResponse else { throw APIError.serverError(0) }
-    return try handleResponse(http: http, data: data)
-}
-
-private func makeMultipartBody(
-    fileData: Data, fileName: String, mimeType: String, boundary: String
-) -> Data {
-    var body = Data()
-    let crlf = "\r\n"
-    body.append("--\(boundary)\(crlf)".data(using: .utf8)!)
-    body.append(
-        "Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\(crlf)"
-            .data(using: .utf8)!
+    friends_count = (
+        db.query(func.count(Friendship.id))
+        .filter(
+            Friendship.status == "accepted",
+            or_(Friendship.requester_id == user_id, Friendship.addressee_id == user_id),
+        )
+        .scalar() or 0
     )
-    body.append("Content-Type: \(mimeType)\(crlf)\(crlf)".data(using: .utf8)!)
-    body.append(fileData)
-    body.append("\(crlf)--\(boundary)--\(crlf)".data(using: .utf8)!)
-    return body
-}
+    groups_count = (
+        db.query(func.count(GroupMember.group_id))
+        .filter(GroupMember.user_id == user_id)
+        .scalar() or 0
+    )
+
+    return {
+        "id": str(profile.id),
+        "username": profile.username,
+        "display_name": profile.display_name,
+        "avatar_url": profile.avatar_url,
+        "taste_bio": profile.taste_bio,
+        "watched_count": watched_count,
+        "friends_count": friends_count,
+        "groups_count": groups_count,
+    }
 ```
 
-### Pattern 2: ImportState as @Observable Phase Machine
+The cross-domain imports (`Friendship` from `app.friends.models`, `GroupMember` from `app.groups.models`, `WatchedMovie` from `app.tracking.models`) follow the existing pattern — `tracking/services.py` already imports `Friendship` and `Profile`, and `groups/services.py` already imports `WatchedMovie`.
 
-**What:** `ImportState` holds the current phase as an enum with associated values. `ImportView` switches on `importState.phase` to render the appropriate UI section. `ImportState.upload()` drives the phase transitions.
+`get_public_watched` is a direct copy of `tracking/services.get_watch_history` with the `user_id` as a parameter rather than the caller's identity. `get_public_friends` is a copy of `friends/services.get_friends` with pagination added. Do not call those service functions directly — they enforce ownership semantics via the `get_current_user` dependency at the view layer.
 
-**When to use:** Any multi-step async UI flow with discrete, mutually exclusive visual states. Import has exactly four: nothing shown, file picker active, uploading, and terminal (success or error).
+---
 
-**Trade-offs:** More explicit than flat booleans + optionals, but makes impossible states unrepresentable. You cannot be simultaneously `uploading` and `done`.
+### iOS: 1 new API file + 1 new models file + 1 modified view
 
-**Example:**
+**New file: `Networking/ProfileAPI.swift`**
+
+Follows the same static enum pattern as `FriendsAPI.swift`:
+
 ```swift
-// State/ImportState.swift
-
-@Observable
-final class ImportState {
-    enum Phase {
-        case idle
-        case uploading
-        case done(ImportSummaryResponse)
-        case failed(String)
+enum ProfileAPI {
+    /// GET /auth/users/{user_id}/profile
+    static func getPublicProfile(userId: String) async throws -> PublicProfileResponse {
+        try await APIClient.shared.request(
+            endpoint: "/auth/users/\(userId)/profile",
+            authenticated: true
+        )
     }
 
-    var phase: Phase = .idle
-
-    func upload(fileData: Data, fileName: String) async {
-        phase = .uploading
-        do {
-            let result: ImportSummaryResponse = try await ImportAPI.upload(
-                fileData: fileData, fileName: fileName
-            )
-            phase = .done(result)
-        } catch {
-            phase = .failed(error.localizedDescription)
-        }
+    /// GET /auth/users/{user_id}/watched
+    static func getPublicWatched(
+        userId: String,
+        limit: Int = 50,
+        offset: Int = 0
+    ) async throws -> PublicWatchedResponse {
+        try await APIClient.shared.request(
+            endpoint: "/auth/users/\(userId)/watched?limit=\(limit)&offset=\(offset)",
+            authenticated: true
+        )
     }
 
-    func reset() { phase = .idle }
-}
-
-// Networking/ImportAPI.swift
-
-enum ImportAPI {
-    /// Upload a Letterboxd export zip to POST /import/letterboxd.
-    static func upload(fileData: Data, fileName: String) async throws -> ImportSummaryResponse {
-        try await APIClient.shared.upload(
-            endpoint: "/import/letterboxd",
-            fileData: fileData,
-            fileName: fileName,
-            mimeType: "application/zip"
+    /// GET /auth/users/{user_id}/friends
+    static func getPublicFriends(
+        userId: String,
+        limit: Int = 20,
+        offset: Int = 0
+    ) async throws -> PublicFriendsResponse {
+        try await APIClient.shared.request(
+            endpoint: "/auth/users/\(userId)/friends?limit=\(limit)&offset=\(offset)",
+            authenticated: true
         )
     }
 }
+```
 
-// Models/ImportModels.swift
+**New file: `Models/ProfileModels.swift`**
 
-struct ImportSummaryResponse: Decodable {
-    let imported: Int
-    let skipped: Int
-    let failed: Int
-    let failedTitles: [String]
+```swift
+struct PublicProfileResponse: Decodable {
+    let id: String
+    let username: String
+    let displayName: String?
+    let avatarUrl: String?
+    let tasteBio: String?
+    let watchedCount: Int
+    let friendsCount: Int
+    let groupsCount: Int
 
     enum CodingKeys: String, CodingKey {
-        case imported, skipped, failed
-        case failedTitles = "failed_titles"
+        case id, username
+        case displayName = "display_name"
+        case avatarUrl = "avatar_url"
+        case tasteBio = "taste_bio"
+        case watchedCount = "watched_count"
+        case friendsCount = "friends_count"
+        case groupsCount = "groups_count"
     }
+}
+
+struct PublicWatchedResponse: Decodable {
+    let results: [WatchedMovieResponse]   // from TrackingModels.swift
+    let total: Int
+}
+
+struct PublicFriendsResponse: Decodable {
+    let results: [FriendResponse]          // from FriendModels.swift
+    let total: Int
 }
 ```
 
-### Pattern 3: Background Taste Rebuild in views.py (Post-Response)
+**Modified file: `Views/Friends/FriendProfileView.swift`** — full revamp
 
-**What:** After `workflows.run_letterboxd_import` returns, the view calls `background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)`. The iOS client receives `ImportSummaryResponse` immediately; the rebuild runs after FastAPI sends the response.
+Current state: takes `FriendResponse` (which carries `id`, `username`, `displayName`, `avatarUrl`, `friendshipId`), shows avatar + name + remove-friend button. Nothing else.
 
-**When to use:** Any time a bulk write makes the taste profile stale. The import writes many rated movies at once — always warrants a rebuild. No `would_affect_top_n` guard is needed (the tracking domain uses it for single-rating events; bulk import bypasses that optimization).
+After revamp, `FriendProfileView` mirrors the structure of `ProfileView.swift`:
 
-**This is identical to the pattern already in `tracking/views.py`** (lines 13-18). It is not a new pattern.
+- `@State private var profile: PublicProfileResponse?` — loaded via `ProfileAPI.getPublicProfile`
+- `@State private var watchedMovies: [WatchedMovieResponse] = []` — loaded via `ProfileAPI.getPublicWatched`
+- `@State private var friends: [FriendResponse] = []` — loaded via `ProfileAPI.getPublicFriends`
+- Stats row showing `profile.watchedCount`, `profile.friendsCount`, `profile.groupsCount`
+- Watched poster grid (copy `posterTile` and `LazyVGrid` from `ProfileView.swift` — identical implementation)
+- Tappable friends list that navigates to another `FriendProfileView` (SwiftUI `NavigationStack` handles recursive push depth natively)
+- Remove-friend button remains in place
 
-**Example:**
-```python
-# app/import_data/views.py — diff from current
+The `FriendResponse.id` field is already a `String` (UUID). It is used directly as the `userId` argument to all three `ProfileAPI` calls. No model changes to `FriendResponse` are needed.
 
-from fastapi import BackgroundTasks                    # ADD to imports
-from app.recommendations.services import rebuild_taste_profile  # ADD to imports
-from app.dependencies import openai_client             # already imported
-
-@router.post("/letterboxd", response_model=ImportSummaryResponse)
-@limiter.limit(LIMIT_IMPORT)
-async def import_letterboxd(
-    request: Request,
-    background_tasks: BackgroundTasks,                 # ADD parameter
-    file: UploadFile = File(...),
-    user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
-    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
-    content_length: int = Header(default=0, le=MAX_UPLOAD_SIZE),
-):
-    file_bytes = await file.read()
-    if len(file_bytes) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=413, detail="File too large (max 10 MB)")
-    _validate_zip(file_bytes)
-
-    result = await workflows.run_letterboxd_import(user_id, file_bytes, db, tmdb_client)
-
-    # Trigger taste profile rebuild after import — same pattern as tracking/views.py
-    background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)  # ADD
-
-    return result
-```
-
-### Pattern 4: Security-Scoped Resource Access for .fileImporter
-
-**What:** Files selected via SwiftUI's `.fileImporter` modifier are security-scoped resources. The URL is only valid while the app holds a security scope. Read the file data within the scope before dispatching the upload task.
-
-**When to use:** Always when reading files from `.fileImporter`. Skipping `startAccessingSecurityScopedResource()` causes a silent permissions failure on device.
-
-**Example:**
-```swift
-// In ImportView.swift — .fileImporter onCompletion handler
-
-.fileImporter(
-    isPresented: $showFilePicker,
-    allowedContentTypes: [.zip],
-    allowsMultipleSelection: false
-) { result in
-    switch result {
-    case let .success(urls):
-        guard let url = urls.first else { return }
-        guard url.startAccessingSecurityScopedResource() else { return }
-        defer { url.stopAccessingSecurityScopedResource() }
-        guard let data = try? Data(contentsOf: url) else { return }
-        let name = url.lastPathComponent
-        Task { await importState.upload(fileData: data, fileName: name) }
-    case .failure:
-        break
-    }
-}
-```
+---
 
 ## Data Flow
 
-### Full iOS Import Flow
+### Request Flow (Backend)
 
 ```
-User opens Profile tab
+iOS FriendProfileView.task fires 3 parallel requests
     ↓
-ProfileView shows "Import from Letterboxd" row
+ProfileAPI.getPublicProfile(userId: friend.id)
+ProfileAPI.getPublicWatched(userId: friend.id, limit: 50)
+ProfileAPI.getPublicFriends(userId: friend.id, limit: 20)
     ↓
-User taps row → NavigationLink pushes ImportView
+GET /auth/users/{user_id}/profile  [+2 more in parallel]
+    ↓  Depends(get_current_user) — validates caller JWT
+auth/views.py: get_public_profile_endpoint(user_id, current_user_id, db)
     ↓
-importState.phase == .idle → ImportView shows "Select Zip File" button
+auth/services.py: get_public_profile(user_id, db)
+    ├─ SELECT profiles WHERE id = user_id
+    ├─ COUNT watched_movies WHERE user_id = user_id
+    ├─ COUNT friendships WHERE (req=user_id OR add=user_id) AND status='accepted'
+    └─ COUNT group_members WHERE user_id = user_id
     ↓
-User taps "Select Zip File" → showFilePicker = true
+PublicProfileResponse JSON → APIClient.decoder → PublicProfileResponse struct
     ↓
-.fileImporter presents UIDocumentPickerViewController (system UI)
-    ↓
-User selects .zip → onCompletion fires
-    ↓
-Read file bytes within security scope
-    ↓
-Task { await importState.upload(fileData: data, fileName: name) }
-    ↓
-importState.phase = .uploading
-    ↓
-ImportView shows ProgressView + "Importing your history…"
-    ↓
-ImportAPI.upload() → APIClient.shared.upload(endpoint: "/import/letterboxd", ...)
-    ↓
-URLSession sends multipart/form-data POST with Bearer token
-    ↓
-[Backend processes import — see backend flow below]
-    ↓
-Returns ImportSummaryResponse JSON
-    ↓
-importState.phase = .done(result)
-    ↓
-ImportView shows results card:
-    "Imported: 423 films"
-    "Skipped: 12 (already in library)"
-    "Failed: 3" [with failed_titles list if any]
+@State vars updated → SwiftUI re-render
 ```
 
-### Backend Import + Rebuild Flow
+### Parallel iOS Data Loading
 
-```
-POST /import/letterboxd received
-    ↓
-import_data/views.py: validate size + zip integrity
-    ↓
-await workflows.run_letterboxd_import(user_id, file_bytes, db, tmdb_client)
-    ├─ _parse_csvs() — extract 5 CSVs, merge by Letterboxd URI into FilmRecord dict
-    ├─ Per-film loop:
-    │   ├─ _resolve_tmdb_id(name, year, tmdb_client)
-    │   ├─ asyncio.sleep(0.025)  [rate limit]
-    │   ├─ get_movie_details(tmdb_id, db, tmdb_client)  [cache movie]
-    │   ├─ INSERT WatchedMovie if in_watched or liked and not existing
-    │   └─ INSERT WatchlistMovie if in_watchlist and not existing
-    └─ db.commit()  ← single commit after full batch
-    ↓
-Returns ImportSummaryResponse to view layer
-    ↓
-background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)
-    ↓
-HTTP 200 sent to iOS client with ImportSummaryResponse
-    ↓ (concurrently, in background)
-rebuild_taste_profile(user_id, db, openai_client)
-    ├─ get_top_rated_movies(user_id, db)  — top 25 by rating, joined with movies
-    ├─ compute_average_embedding(user_id, db)  — weighted avg of movie_embeddings
-    ├─ profile.taste_embedding = weighted_avg
-    └─ db.commit()
-    ↓
-Next GET /recommendations/me uses the updated taste_embedding
-```
-
-### State Management — iOS
-
-```
-blndApp.swift creates:
-    let authState = AuthState()       (existing)
-    let importState = ImportState()   (NEW)
-
-WindowGroup {
-    ContentView()
-        .environment(authState)
-        .environment(importState)   ← add alongside existing .environment(authState)
+```swift
+// In FriendProfileView.task — matches ProfileView.swift pattern exactly
+.task {
+    async let profileLoad  = ProfileAPI.getPublicProfile(userId: friend.id)
+    async let watchedLoad  = ProfileAPI.getPublicWatched(userId: friend.id, limit: 50)
+    async let friendsLoad  = ProfileAPI.getPublicFriends(userId: friend.id, limit: 20)
+    do {
+        let (p, w, f) = try await (profileLoad, watchedLoad, friendsLoad)
+        profile = p
+        watchedMovies = w.results
+        friends = f.results
+    } catch is CancellationError {
+        return
+    } catch {
+        print("[FriendProfileView] load error: \(error)")
+    }
 }
-
-ProfileView
-    └─ NavigationLink → ImportView
-        @Environment(ImportState.self) var importState
-
-ImportView switches on importState.phase:
-    .idle      → "Select Zip File" AppButton
-    .uploading → ProgressView (indeterminate) + "Importing your history…"
-    .done(r)   → Results card: r.imported / r.skipped / r.failed + failedTitles
-    .failed(e) → error message + "Try Again" button calling importState.reset()
 ```
 
-## Scaling Considerations
+This is the same concurrent `async let` pattern used in `ProfileView.swift` lines 58-63.
 
-The import is user-scoped and synchronous for v1.1. The rebuild is already async (BackgroundTask).
+---
 
-| Scale | Architecture Adjustments |
-|-------|--------------------------|
-| 0-500 watched films | Current approach is fine. Import takes 5-20s. Synchronous response acceptable. |
-| 500-2000 films | TMDB resolution at 25ms/call becomes the timeout risk. If needed: fire import as `asyncio.ensure_future` (202 pattern like seed-movies), poll for result. Not needed yet. |
-| 100k+ users | Background worker queue (Celery/Redis). Out of scope. |
+## New vs Modified — Explicit Inventory
 
-### Scaling Priorities
+### NEW (create from scratch)
 
-1. **First bottleneck:** TMDB resolution latency. A 1000-film library at 25ms/call = ~25s minimum for TMDB alone. The existing `asyncio.sleep(TMDB_RATE_LIMIT_DELAY)` in `workflows.py` is serial. If timeouts become a problem, the fix is a 202-with-polling pattern, not parallelism (TMDB rate limit makes parallelism counterproductive).
-2. **Second bottleneck:** OpenAI embedding call in `rebuild_taste_profile` adds ~500ms-1s. Already handled by BackgroundTask — no client-side impact.
+| File | Type | What it contains |
+|---|---|---|
+| `blnd_ios/blnd_ios/Networking/ProfileAPI.swift` | Swift enum | `getPublicProfile`, `getPublicWatched`, `getPublicFriends` |
+| `blnd_ios/blnd_ios/Models/ProfileModels.swift` | Swift structs | `PublicProfileResponse`, `PublicWatchedResponse`, `PublicFriendsResponse` |
 
-## Anti-Patterns
+### MODIFIED (add to existing files)
 
-### Anti-Pattern 1: Merging ImportState into AuthState
+| File | What changes |
+|---|---|
+| `blnd_backend/app/auth/views.py` | Add 3 new `@router.get` endpoints: `/users/{user_id}/profile`, `/users/{user_id}/watched`, `/users/{user_id}/friends` |
+| `blnd_backend/app/auth/services.py` | Add 3 new functions: `get_public_profile`, `get_public_watched`, `get_public_friends` |
+| `blnd_backend/app/auth/schemas.py` | Add 3 new response schemas: `PublicProfileResponse`, `PublicWatchedResponse`, `PublicFriendsResponse` |
+| `blnd_ios/blnd_ios/Views/Friends/FriendProfileView.swift` | Full revamp — add loading state, `@State` vars, stats row, poster grid, friends list |
 
-**What people do:** Add `isImporting`, `importResult`, `importError` properties directly to `AuthState`.
+### UNCHANGED (zero modification needed)
 
-**Why it's wrong:** `AuthState` is observed by `ContentView` (the auth gate) and every view that reads user identity. Adding import progress properties to it causes the entire view tree to re-render on upload progress changes. More importantly, import state is transient — it dies when the user leaves `ImportView`. Session state lives for the entire app lifetime.
+| File | Why |
+|---|---|
+| `blnd_backend/main.py` | `auth_router` already registered at `/auth` prefix; new endpoints live there automatically |
+| `blnd_backend/app/auth/models.py` | No schema changes — reads existing `profiles` table only |
+| `blnd_backend/app/friends/schemas.py` | `FriendResponse` reused as-is in `PublicFriendsResponse` |
+| `blnd_backend/app/tracking/schemas.py` | `WatchedMovieResponse` reused as-is in `PublicWatchedResponse` |
+| `blnd_backend/app/friends/services.py` | Logic is copied, not called |
+| `blnd_backend/app/tracking/services.py` | Logic is copied, not called |
+| `blnd_ios/blnd_ios/Networking/FriendsAPI.swift` | No new friends endpoints needed |
+| `blnd_ios/blnd_ios/Networking/APIClient.swift` | No changes — `request<T>()` already handles all three new calls |
+| `blnd_ios/blnd_ios/Models/FriendModels.swift` | `FriendResponse.id` already present and is a `String` (UUID) |
+| `blnd_ios/blnd_ios/Models/TrackingModels.swift` | `WatchedMovieResponse` already Decodable, reused in `PublicWatchedResponse` |
+| `blnd_ios/blnd_ios/Views/Friends/FriendsListView.swift` | Navigation push to `FriendProfileView` already wired |
+| Database schema | No migrations — reads existing tables: `profiles`, `watched_movies`, `friendships`, `group_members` |
 
-**Do this instead:** A separate `ImportState` `@Observable` class injected alongside `AuthState`. Same pattern, separate concern.
+---
 
-### Anti-Pattern 2: Calling rebuild_taste_profile synchronously before returning the response
+## URL Design Decision
 
-**What people do:** Call `services.rebuild_taste_profile(user_id, db, openai_client)` directly inside `import_letterboxd` before `return result`.
+**Option A: Under `/auth/` prefix (chosen)**
+```
+GET /auth/users/{user_id}/profile
+GET /auth/users/{user_id}/watched
+GET /auth/users/{user_id}/friends
+```
+- Requires zero changes to `main.py`
+- Consistent with existing `/auth/users/search`
+- Auth domain owns all user/profile concerns
 
-**Why it's wrong:** `rebuild_taste_profile` makes OpenAI API calls (embedding generation) that add 1-3 seconds to an already slow import response. For a 500-film library that already takes 20+ seconds, adding 3 more seconds of synchronous OpenAI calls degrades UX with no benefit to the user.
+**Option B: New `/users/` prefix**
+```
+GET /users/{user_id}/profile
+GET /users/{user_id}/watched
+GET /users/{user_id}/friends
+```
+- Cleaner REST semantics
+- Requires a new router and `include_router()` call in `main.py` (or a new domain folder)
+- More work for no functional benefit at this scale
 
-**Do this instead:** `background_tasks.add_task(rebuild_taste_profile, user_id, db, openai_client)` — the exact pattern from `tracking/views.py`. The rebuild runs after the response is sent.
+**Decision: Option A.** The existing `/auth/users/search` precedent makes `/auth/users/{user_id}/...` the consistent choice. No `main.py` changes required.
 
-### Anti-Pattern 3: Triggering rebuild_taste_profile inside workflows.py
+---
 
-**What people do:** Add a `rebuild_taste_profile` call at the end of `run_letterboxd_import()`.
+## Suggested Build Order
 
-**Why it's wrong:** `workflows.py` has no access to `BackgroundTasks` (a FastAPI HTTP construct) or `openai_client` (a module-level singleton in `dependencies.py`). Putting it there requires threading HTTP-layer concerns through business logic and makes the rebuild synchronous with the response. It also violates the single-responsibility of the workflow: parse, resolve, persist. The rebuild is a side effect of the HTTP action, not of the data transformation.
+Dependencies flow backend-first: the iOS view cannot load data until the endpoints exist. Within each tier, steps can be parallelized.
 
-**Do this instead:** The view layer handles it. `views.py` already owns all FastAPI dependencies.
+### Step 1 — Backend schemas (prerequisite for steps 2 and 3)
 
-### Anti-Pattern 4: Using URLSession without security-scoped resource access
+Add `PublicProfileResponse`, `PublicWatchedResponse`, `PublicFriendsResponse` to `app/auth/schemas.py`.
+Import `WatchedMovieResponse` from `app.tracking.schemas` and `FriendResponse` from `app.friends.schemas`.
+No moving parts — pure Pydantic class additions.
 
-**What people do:** Pass the `URL` from `.fileImporter` directly to `URLSession.shared.data(for:)` or `Data(contentsOf:)` without `startAccessingSecurityScopedResource()`.
+### Step 2 — Backend services
 
-**Why it's wrong:** Files from the document picker are in a sandboxed security scope. Attempting to read without the scope results in a permissions error that is easy to mistake for a network error.
+Add `get_public_profile`, `get_public_watched`, `get_public_friends` to `app/auth/services.py`.
+Start with `get_public_profile` (highest value — gates whether the stats row renders).
+Verify each with a direct Python/SQLAlchemy call before wiring to views.
 
-**Do this instead:** Call `url.startAccessingSecurityScopedResource()` before reading, and `url.stopAccessingSecurityScopedResource()` in a `defer` block after.
+### Step 3 — Backend views
+
+Add the three `@router.get` endpoints to `app/auth/views.py`.
+Verify via `curl -H "Authorization: Bearer <token>" localhost:8000/auth/users/<uid>/profile`.
+
+### Step 4 — iOS models (no backend dependency)
+
+Create `Models/ProfileModels.swift` with the three `Decodable` structs.
+Can be done in parallel with steps 1-3.
+
+### Step 5 — iOS API layer
+
+Create `Networking/ProfileAPI.swift`. Can be tested via Swift REPL or debug print against a running backend.
+
+### Step 6 — iOS FriendProfileView revamp
+
+Replace the current minimal view. Build incrementally:
+
+1. Add `.task` loading block with the three parallel `ProfileAPI` calls
+2. Wire stats row from `profile.watchedCount / friendsCount / groupsCount`
+3. Add watched poster grid (copy `posterTile` and `LazyVGrid` from `ProfileView.swift`)
+4. Add friends list section with `NavigationLink` to nested `FriendProfileView`
+
+The remove-friend button already works and should not be touched until the end.
+
+---
+
+## Architecture Constraints
+
+**No pagination UI in v1.2.** Load 50 watched and 20 friends in a single `.task` call. This matches `ProfileView.swift`'s approach (`TrackingAPI.getWatchHistory(limit: 50)`). Infinite scroll is out of scope.
+
+**Stat counts are computed at read time, not stored.** The `profiles` table has no `watched_count` column. Three COUNT queries run on every `GET /auth/users/{id}/profile` call. This is consistent with how `ProfileView.swift` currently loads stats (it calls `FriendsAPI.listFriends()` and counts `.friends.count` client-side). The new endpoint consolidates all three counts server-side to reduce iOS round-trips from 3 to 1.
+
+**`FriendResponse.id` is already a `String` (UUID).** No model changes needed — this field is passed directly to `ProfileAPI` calls.
+
+**No friend-of-friend access control.** Endpoints return data for any valid `user_id`. If privacy gating is needed later, add one `is_friends(caller_id, target_id, db)` check to the service and raise `HTTPException(403)`. Zero iOS changes required.
+
+**`FriendProfileView` passes `FriendResponse` as its init argument — this stays.** The view receives a `FriendResponse` (containing `id`) from the friends list. The `PublicProfileResponse` is loaded on demand inside the view. Do not change the init signature; it would break `FriendsListView` navigation.
+
+---
+
+## Anti-Patterns to Avoid
+
+### Anti-Pattern 1: New domain folder for public profile reads
+
+**What people do:** Create `app/profile/` with `models.py`, `schemas.py`, `services.py`, `views.py` for three read-only endpoints.
+
+**Why it's wrong:** The data lives in tables already owned by `auth`, `tracking`, `friends`, `groups`. A new domain adds a layer with no new model or distinct business concern. The existing `/auth/users/search` already establishes that user-lookup endpoints belong in `auth`.
+
+**Do this instead:** Add the three endpoints, services, and schemas directly to the existing `auth` domain.
+
+### Anti-Pattern 2: Calling existing service functions directly from the new services
+
+**What people do:** Call `tracking.services.get_watch_history(user_id, limit, offset, db)` or `friends.services.get_friends(user_id, db)` from the new auth services to avoid code duplication.
+
+**Why it's wrong:** `get_watch_history` returns data scoped to the calling user — the function has no concept of "target user" vs "caller". `get_friends` returns an unpaginated list. Calling them from `get_public_watched`/`get_public_friends` would silently return wrong data (the caller's history instead of the target's) or miss pagination support.
+
+**Do this instead:** Copy the query logic into new service functions (`get_public_watched`, `get_public_friends`) with the correct `user_id` parameterization and pagination.
+
+### Anti-Pattern 3: Separate `@Observable` state for friend profile data
+
+**What people do:** Create `FriendProfileState: Observable` to hold watched movies and profile data, inject via `.environment()`.
+
+**Why it's wrong:** `FriendProfileView` is a leaf view pushed onto the nav stack. Its data does not survive outside that view's lifetime. The entire iOS app uses local `@State` for view-local data; `@Observable` state is only used for cross-view concerns (`AuthState`, `TabState`). Creating an observable for leaf-view data would either require instantiating and injecting it for every friend that could be tapped, or sharing mutable state across concurrent friend profile views.
+
+**Do this instead:** `@State private var` properties inside `FriendProfileView`, loaded in `.task` — exactly as `ProfileView.swift` does.
+
+### Anti-Pattern 4: Duplicating `WatchedMovieResponse` or `FriendResponse`
+
+**What people do:** Define new `PublicWatchedMovieResponse` or `PublicFriendEntryResponse` structs that are near-identical copies of the existing ones, "to keep domains separate."
+
+**Why it's wrong:** The iOS models use a flat `Models/` folder — they are not domain-namespaced. The backend already imports schemas cross-domain (`tracking/services.py` imports `Profile`, `groups/services.py` imports `WatchedMovie`). Duplication creates maintenance burden for no isolation benefit.
+
+**Do this instead:** Import and reuse `WatchedMovieResponse` from `app.tracking.schemas` and `FriendResponse` from `app.friends.schemas`.
+
+### Anti-Pattern 5: Changing `FriendProfileView`'s init signature
+
+**What people do:** Refactor `FriendProfileView` to accept a `userId: String` instead of `FriendResponse`, since the view now loads its own data.
+
+**Why it's wrong:** `FriendsListView` passes a `FriendResponse` to `FriendProfileView` via `NavigationLink`. The `FriendResponse` carries `friendshipId` which is needed for the remove-friend action. Changing the init to `userId: String` would require either a second API call to get the `friendshipId`, or passing both separately. Neither is simpler than the current shape.
+
+**Do this instead:** Keep `let friend: FriendResponse` as the init argument. Use `friend.id` for `ProfileAPI` calls and `friend.friendshipId` for the remove action.
+
+---
 
 ## Integration Points
 
-### New iOS Components
+| Boundary | Communication | Notes |
+|---|---|---|
+| `auth/views.py` new endpoints → `auth/services.py` new functions | Direct function call | Standard FastAPI service-view split |
+| `auth/services.py` → `tracking.models.WatchedMovie` | SQLAlchemy query on shared DB | Cross-domain model import — established pattern in codebase |
+| `auth/services.py` → `friends.models.Friendship` | SQLAlchemy query on shared DB | Same pattern |
+| `auth/services.py` → `groups.models.GroupMember` | SQLAlchemy query on shared DB | Same pattern |
+| `auth/schemas.py` → `tracking.schemas.WatchedMovieResponse` | Python import | Reuse existing type |
+| `auth/schemas.py` → `friends.schemas.FriendResponse` | Python import | Reuse existing type |
+| iOS `ProfileAPI` → `APIClient.shared` | Same `request<T>()` call as every other iOS API enum | No changes to `APIClient` |
+| iOS `FriendProfileView` → `FriendProfileView` (recursive) | `NavigationLink` inside the friends list section | SwiftUI `NavigationStack` handles arbitrary push depth |
+| iOS `ProfileModels.PublicWatchedResponse.results` → `WatchedMovieResponse` | Type reuse across model files | Swift module visibility — both in `Models/` folder, no import needed |
 
-| Component | File | Integrates With |
-|-----------|------|-----------------|
-| `ImportState` | `State/ImportState.swift` | Injected via `.environment()` in `blndApp.swift`. Read by `ImportView`. Calls `ImportAPI`. |
-| `ImportAPI` | `Networking/ImportAPI.swift` | Calls `APIClient.shared.upload()`. No other callers. |
-| `ImportSummaryResponse` | `Models/ImportModels.swift` | Decoded by `APIClient.upload()`. Stored in `ImportState.phase`. Displayed by `ImportView`. |
-| `APIClient.upload()` | `Networking/APIClient.swift` | New method. Reuses existing `handleResponse(http:data:)` and `KeychainManager`. |
-| `ImportView` | `Views/Profile/ImportView.swift` | Pushed from `ProfileView`. Reads `importState.phase`. Fires `importState.upload()`. |
-
-### Modified iOS Components
-
-| Component | File | Change |
-|-----------|------|--------|
-| `ProfileView` | `Views/Profile/ProfileView.swift` | Add "Import from Letterboxd" navigation row. |
-| `blndApp.swift` | `App/blndApp.swift` | Instantiate `ImportState()`, add `.environment(importState)`. |
-
-### Modified Backend Components
-
-| Component | File | Change |
-|-----------|------|--------|
-| `import_letterboxd` | `app/import_data/views.py` | Add `background_tasks: BackgroundTasks` parameter. Add `rebuild_taste_profile` import at top. Add `background_tasks.add_task(...)` after workflow call. Three lines total. |
-
-### Unchanged Backend Components
-
-| Component | File | Why Unchanged |
-|-----------|------|---------------|
-| `workflows.py` | `app/import_data/workflows.py` | All import logic is complete and correct. Rebuild belongs in the view layer. |
-| `recommendations/services.py` | `rebuild_taste_profile` | Already exists with the exact signature needed. No changes required. |
-| `schemas.py` | `app/import_data/schemas.py` | `ImportSummaryResponse` already has `imported`, `skipped`, `failed`, `failed_titles` — all fields needed by iOS. |
-
-## Build Order
-
-Two independent tracks converge at integration testing:
-
-```
-Track A — Backend (1 file, ~30 min)
-  1. app/import_data/views.py
-     - Add BackgroundTasks import and parameter
-     - Add rebuild_taste_profile import
-     - Add background_tasks.add_task() call after workflow returns
-     Test: curl POST /import/letterboxd with a zip, confirm 200 + summary JSON,
-           then wait 5s and GET /recommendations/me — taste_embedding should be fresh
-
-Track B — iOS (dependency order matters)
-  1. Models/ImportModels.swift              [NEW]
-     - ImportSummaryResponse: Decodable struct (imported, skipped, failed, failedTitles)
-  2. Networking/APIClient.swift             [MODIFIED]
-     - Add upload<T: Decodable>() method
-     - Add private makeMultipartBody() helper
-  3. Networking/ImportAPI.swift             [NEW]
-     - ImportAPI enum with static upload(fileData:fileName:) calling APIClient.shared.upload()
-  4. State/ImportState.swift               [NEW]
-     - @Observable ImportState with Phase enum and upload() async method
-  5. Views/Profile/ImportView.swift        [NEW]
-     - .fileImporter modifier, progress view, results card, error + retry
-  6. Views/Profile/ProfileView.swift       [MODIFIED]
-     - Add "Import from Letterboxd" navigation row that pushes ImportView
-  7. App/blndApp.swift                     [MODIFIED]
-     - Instantiate ImportState(), add .environment(importState)
-
-Integration (after both tracks)
-  8. End-to-end: select Letterboxd zip in simulator → confirm upload progress shown →
-     confirm ImportSummaryResponse displayed → confirm recommendations refresh on
-     next GET /recommendations/me
-```
-
-Items B1-B4 can be built and independently verified (unit tested or REPL-tested) before any UI exists. The dependency chain is strictly: Models → APIClient → ImportAPI → ImportState → ImportView. Do not build ImportView before ImportState exists.
+---
 
 ## Sources
 
-- Direct codebase inspection — `blnd_frontend/blnd_frontend/Networking/APIClient.swift`: confirmed `request<T>()` signature, `handleResponse(http:data:)`, `KeychainManager` usage, `APIError` enum — all reusable for the new `upload()` method
-- Direct codebase inspection — `blnd_frontend/blnd_frontend/State/AuthState.swift`: confirmed `@Observable` class pattern, error string, loading state conventions
-- Direct codebase inspection — `blnd_frontend/blnd_frontend/Networking/AuthAPI.swift`: confirmed static enum pattern with `async throws` functions
-- Direct codebase inspection — `blnd_backend/app/tracking/views.py` lines 13-27: `_trigger_taste_rebuild()` + `BackgroundTasks.add_task()` pattern — exact precedent for the import rebuild trigger
-- Direct codebase inspection — `blnd_backend/app/import_data/views.py`: confirmed current `import_letterboxd` signature; `BackgroundTasks` not yet present; the three-line diff is precisely specified
-- Direct codebase inspection — `blnd_backend/app/import_data/workflows.py`: confirmed `run_letterboxd_import` returns `ImportSummaryResponse` after `db.commit()`; no rebuild call exists
-- Direct codebase inspection — `blnd_backend/app/recommendations/services.py`: confirmed `rebuild_taste_profile(user_id, db, openai_client)` signature and behavior
-- Direct codebase inspection — `blnd_backend/app/import_data/schemas.py`: confirmed `ImportSummaryResponse` has `imported`, `skipped`, `failed`, `failed_titles` — exact fields needed by `ImportModels.swift`
-- Apple Developer Documentation (training data, HIGH confidence for stable APIs): `.fileImporter` SwiftUI modifier, `startAccessingSecurityScopedResource()` / `stopAccessingSecurityScopedResource()`, `UTType.zip`
-- Apple Developer Documentation (training data, HIGH confidence): `URLSession` multipart/form-data RFC 2046 boundary format
+- Direct codebase inspection — `app/auth/views.py`: confirmed existing `GET /users/search` at `/auth` prefix, `Depends(get_current_user)` pattern, `@limiter.limit(LIMIT_DEFAULT)` decorator
+- Direct codebase inspection — `app/auth/services.py`: confirmed `get_profile(user_id, db)` pattern — same structure as the new `get_public_profile`
+- Direct codebase inspection — `app/auth/schemas.py`: confirmed `UserResponse` — `PublicProfileResponse` follows same structure
+- Direct codebase inspection — `app/tracking/services.py`: confirmed `get_watch_history` paginated query pattern and `_to_response()` convention
+- Direct codebase inspection — `app/friends/services.py`: confirmed `get_friends(user_id, db)` accepts-both-directions friendship query
+- Direct codebase inspection — `app/groups/services.py`: confirmed `GroupMember` cross-domain import from `tracking.models` (established precedent)
+- Direct codebase inspection — `blnd_ios/blnd_ios/Views/Profile/ProfileView.swift`: confirmed `async let` parallel loading pattern (lines 58-63), `statItem()`, `posterTile()`, `LazyVGrid` — all directly reusable
+- Direct codebase inspection — `blnd_ios/blnd_ios/Views/Friends/FriendProfileView.swift`: confirmed current minimal state, `FriendResponse` init argument, `friend.friendshipId` usage
+- Direct codebase inspection — `blnd_ios/blnd_ios/Models/FriendModels.swift`: confirmed `FriendResponse.id: String` field present
+- Direct codebase inspection — `blnd_ios/blnd_ios/Networking/FriendsAPI.swift`: confirmed static enum pattern — `ProfileAPI` follows same structure
+- Direct codebase inspection — `main.py`: confirmed `auth_router` registered at `/auth` prefix — no changes needed
 
 ---
-*Architecture research for: iOS Letterboxd import UI + backend taste profile rebuild (v1.1)*
-*Researched: 2026-03-09*
+
+*Architecture research for: BLND v1.2 public profile endpoints + FriendProfileView revamp*
+*Researched: 2026-03-11*
