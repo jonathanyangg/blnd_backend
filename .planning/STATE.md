@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Revamp Other User Profile View
-status: roadmap-ready
-stopped_at: null
-last_updated: "2026-03-12"
-last_activity: 2026-03-12 — v1.2 roadmap created (Phases 7-9)
+status: planning
+stopped_at: Completed 08-01-PLAN.md
+last_updated: "2026-03-12T05:14:06.994Z"
+last_activity: 2026-03-12 — Roadmap created, phases 7-9 defined
 progress:
-  total_phases: 3
-  completed_phases: 0
-  total_plans: 5
-  completed_plans: 0
+  total_phases: 6
+  completed_phases: 4
+  total_plans: 7
+  completed_plans: 6
   percent: 0
 ---
 
@@ -48,6 +48,7 @@ Progress: [░░░░░░░░░░] 0%
 | 9 | 0/2 | - | - |
 
 *Updated after each plan completion*
+| Phase 08 P01 | 4m | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -62,6 +63,8 @@ Key decisions for v1.2:
 - Use `func.count()` scalar queries for stats — do not call `get_friends()` (N+1 trap)
 - iOS: extract PosterTile/StatsRow/PosterGrid before touching FriendProfileView (hard prerequisite)
 - iOS: use `async let` parallel loading in FriendProfileView (same pattern as ProfileView)
+- [Phase 08]: StatItem uses optional onTap callback to handle tappable/non-tappable cells without AnyView
+- [Phase 08]: PosterGrid uses generic <Content: View> with @ViewBuilder closure matching SwiftUI LazyVGrid API shape
 
 ### Pending Todos
 
@@ -74,6 +77,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-12
-Stopped at: Roadmap created — ready to plan Phase 7
+Last session: 2026-03-12T05:13:59.322Z
+Stopped at: Completed 08-01-PLAN.md
 Resume file: None

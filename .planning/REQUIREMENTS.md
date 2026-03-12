@@ -21,7 +21,7 @@ Requirements for the Revamp Other User Profile View milestone. Each maps to road
 - [ ] **IOS-03**: User can tap a watched movie poster to navigate to MovieDetailView
 - [ ] **IOS-04**: User can tap friends count to see friend's friends list
 - [ ] **IOS-05**: User can tap a friend-of-friend to open their profile (recursive navigation)
-- [ ] **IOS-06**: PosterTile and StatsRow extracted as shared components used by both ProfileView and FriendProfileView
+- [x] **IOS-06**: PosterTile and StatsRow extracted as shared components used by both ProfileView and FriendProfileView
 - [ ] **IOS-07**: Loading and empty states displayed while data loads or when friend has no watched movies
 
 ## v1.1 Requirements (Complete)
@@ -102,7 +102,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | IOS-03 | Phase 9 | Pending |
 | IOS-04 | Phase 9 | Pending |
 | IOS-05 | Phase 9 | Pending |
-| IOS-06 | Phase 8 | Pending |
+| IOS-06 | Phase 8 | Complete |
 | IOS-07 | Phase 9 | Pending |
 
 **Coverage:**
