@@ -10,8 +10,8 @@ Requirements for the Revamp Other User Profile View milestone. Each maps to road
 ### Backend API
 
 - [x] **API-01**: Authenticated user can fetch another user's public profile (username, display name, avatar, watched count, friends count, blends count)
-- [ ] **API-02**: Authenticated user can fetch another user's watched movies (paginated, with tmdb_id, title, poster, rating)
-- [ ] **API-03**: Authenticated user can fetch another user's friends list (id, username, display name, avatar)
+- [x] **API-02**: Authenticated user can fetch another user's watched movies (paginated, with tmdb_id, title, poster, rating)
+- [x] **API-03**: Authenticated user can fetch another user's friends list (id, username, display name, avatar)
 - [x] **API-04**: All three public profile endpoints return 403 if the caller is not friends with the target user
 
 ### iOS Frontend
@@ -94,8 +94,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | IMPT-09 | Phase 6 | Complete |
 | BKND-01 | Phase 4 | Complete |
 | API-01 | Phase 7 | Complete |
-| API-02 | Phase 7 | Pending |
-| API-03 | Phase 7 | Pending |
+| API-02 | Phase 7 | Complete |
+| API-03 | Phase 7 | Complete |
 | API-04 | Phase 7 | Complete |
 | IOS-01 | Phase 9 | Pending |
 | IOS-02 | Phase 9 | Pending |

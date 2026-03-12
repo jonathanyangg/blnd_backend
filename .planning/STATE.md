@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Revamp Other User Profile View
 status: planning
-stopped_at: Completed 07-01-PLAN.md
-last_updated: "2026-03-12T05:14:26.168Z"
+stopped_at: Completed 07-02-PLAN.md
+last_updated: "2026-03-12T05:17:55.743Z"
 last_activity: 2026-03-12 — Roadmap created, phases 7-9 defined
 progress:
   total_phases: 6
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 7
-  completed_plans: 6
+  completed_plans: 7
   percent: 0
 ---
 
@@ -50,6 +50,7 @@ Progress: [░░░░░░░░░░] 0%
 *Updated after each plan completion*
 | Phase 08 P01 | 4m | 2 tasks | 4 files |
 | Phase 07 P01 | 4 | 1 tasks | 6 files |
+| Phase 07 P02 | 6m | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -68,6 +69,7 @@ Key decisions for v1.2:
 - [Phase 08]: PosterGrid uses generic <Content: View> with @ViewBuilder closure matching SwiftUI LazyVGrid API shape
 - [Phase 07]: PublicProfileResponse excludes taste_bio/favorite_genres — privacy boundary, not reusing UserResponse
 - [Phase 07]: blnd_backend/ has own git repo — all backend commits must target it directly, not outer blnd/ repo
+- [Phase 07]: get_public_watched() uses scalar count + JOIN query following tracking/services.py pattern
 
 ### Pending Todos
 
@@ -80,6 +82,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-12T05:14:26.166Z
-Stopped at: Completed 07-01-PLAN.md
+Last session: 2026-03-12T05:17:51.959Z
+Stopped at: Completed 07-02-PLAN.md
 Resume file: None
