@@ -125,4 +125,4 @@ Phases 4 and 5 are independent (parallel tracks). Phase 6 depends on Phase 5. Re
 | 3. Polish and Hardening | v1.0 | 1/1 | Complete | 2026-03-05 |
 | 4. Backend Taste Rebuild Hook | v1.1 | 1/1 | Complete | 2026-03-10 |
 | 5. iOS Webview Import Flow | v1.1 | 1/2 | In Progress | - |
-| 6. iOS Upload and Results | v1.1 | 0/1 | Not started | - |
+| 6. iOS Upload and Results | 1/1 | Complete   | 2026-03-12 | - |
