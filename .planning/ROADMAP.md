@@ -42,11 +42,11 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details.
   2. An authenticated user can fetch another user's watched movies paginated via `GET /auth/users/{id}/watched`, including tmdb_id, title, poster, and rating
   3. An authenticated user can fetch another user's friends list via `GET /auth/users/{id}/friends`
   4. All three endpoints return HTTP 403 when the caller is not friends with the target user
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 07-01: PublicProfileResponse schema + friendship gate service helper + stats endpoint
-- [ ] 07-02: Paginated watched movies endpoint + friends list endpoint
+- [ ] 07-01-PLAN.md — PublicProfileResponse schema + friendship gate + stats endpoint + test scaffold
+- [ ] 07-02-PLAN.md — Paginated watched movies endpoint + friends list endpoint
 
 #### Phase 8: iOS Shared Component Extraction
 
@@ -132,11 +132,11 @@ Plans:
   2. An authenticated user can fetch another user's watched movies paginated via `GET /auth/users/{id}/watched`, including tmdb_id, title, poster, and rating
   3. An authenticated user can fetch another user's friends list via `GET /auth/users/{id}/friends`
   4. All three endpoints return HTTP 403 when the caller is not friends with the target user
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 07-01: PublicProfileResponse schema + friendship gate service helper + stats endpoint
-- [ ] 07-02: Paginated watched movies endpoint + friends list endpoint
+- [ ] 07-01-PLAN.md — PublicProfileResponse schema + friendship gate + stats endpoint + test scaffold
+- [ ] 07-02-PLAN.md — Paginated watched movies endpoint + friends list endpoint
 
 ### Phase 8: iOS Shared Component Extraction
 **Goal**: PosterTile and StatsRow extracted from ProfileView into shared components, leaving ProfileView behavior identical and FriendProfileView able to reuse them
