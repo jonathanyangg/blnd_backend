@@ -51,7 +51,7 @@ def get_recommendations(
     request: Request,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
-    limit: int = Query(default=20, ge=1, le=50),
+    limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ):
     profile = db.query(Profile).filter(Profile.id == user_id).first()
@@ -75,7 +75,7 @@ def refresh_recommendations(
     request: Request,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
-    limit: int = Query(default=20, ge=1, le=50),
+    limit: int = Query(default=20, ge=1, le=100),
 ):
     # Force rebuild taste profile synchronously, then return fresh recs
     profile = services.rebuild_taste_profile(user_id, db, openai_client)
