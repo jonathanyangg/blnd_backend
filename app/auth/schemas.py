@@ -104,3 +104,36 @@ class UpdateProfileRequest(BaseModel):
             if len(g) > 50:
                 raise ValueError("Genre name too long")
         return v
+
+
+class PublicProfileResponse(BaseModel):
+    id: str
+    username: str
+    display_name: str | None = None
+    avatar_url: str | None = None
+    watched_count: int
+    friends_count: int
+    blends_count: int
+
+
+class PublicWatchedMovieResponse(BaseModel):
+    tmdb_id: int
+    title: str
+    poster_path: str | None = None
+    rating: float | None = None
+
+
+class PublicWatchedListResponse(BaseModel):
+    results: list[PublicWatchedMovieResponse]
+    total: int
+
+
+class PublicFriendResponse(BaseModel):
+    id: str
+    username: str
+    display_name: str | None = None
+    avatar_url: str | None = None
+
+
+class PublicFriendsListResponse(BaseModel):
+    friends: list[PublicFriendResponse]

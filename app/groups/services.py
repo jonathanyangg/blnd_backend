@@ -14,8 +14,6 @@ from app.recommendations.pipeline import (
     RecommendationContext,
     run_recommendation_pipeline,
 )
-from app.movies.services import _compute_score
-from app.recommendations.ranking import _cosine_sim, to_match_percentage
 from app.recommendations.services import compute_genre_watch_counts
 from app.tracking.models import Watchlist, WatchedMovie
 
@@ -91,18 +89,14 @@ def get_group(group_id: int, user_id: str, db: Session) -> dict:
 
 
 def update_group(group_id: int, user_id: str, updates: dict, db: Session) -> dict:
-    """Update group fields. Only the creator can update."""
+    """Update group fields. Any member can update."""
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Group not found"
         )
 
-    if str(group.created_by) != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the group creator can update the group",
-        )
+    _verify_membership(group_id, user_id, db)
 
     if "name" in updates:
         group.name = updates["name"]
@@ -387,10 +381,8 @@ def compute_group_match_scores(
 ) -> dict[int, float]:
     """Compute group match scores for a list of tmdb_ids.
 
-    Uses the same reranking formula as personal match scores for consistency.
-    Averages member taste/negative embeddings, then scores each movie using
-    cosine similarity + genre/consensus/director/cast signals + negative penalty.
-    Returns {tmdb_id: score} where score is 0-1 (via to_match_percentage).
+    Averages member taste embeddings and computes cosine similarity per movie.
+    Returns {tmdb_id: score} where score is 0-1.
     """
     if not tmdb_ids:
         return {}
@@ -401,69 +393,53 @@ def compute_group_match_scores(
     if not member_ids:
         return {}
 
-    # Build group positive + negative embeddings from member profiles
-    pos_embeddings = []
-    neg_embeddings = []
+    # Build group embedding from members' rated movies
+    per_member_limit = max(5, 50 // len(member_ids))
+    member_embeddings = []
+
     for mid in member_ids:
-        profile = db.query(Profile).filter(Profile.id == mid).first()
-        if profile and profile.taste_embedding is not None:
-            pos_embeddings.append(np.array(list(profile.taste_embedding)))
-            if profile.negative_embedding is not None:
-                neg_embeddings.append(np.array(list(profile.negative_embedding)))
-
-    if not pos_embeddings:
-        return {}
-
-    group_positive = np.mean(pos_embeddings, axis=0).tolist()
-    group_negative = (
-        np.mean(neg_embeddings, axis=0).tolist() if neg_embeddings else None
-    )
-
-    # Merge signal context across all members
-    all_genres: list[str] = []
-    all_directors: set[str] = set()
-    all_cast: set[str] = set()
-    for mid in member_ids:
-        profile = db.query(Profile).filter(Profile.id == mid).first()
-        if profile and profile.favorite_genres:
-            all_genres.extend(profile.favorite_genres)
-        top_movies = (
-            db.query(Movie)
-            .join(WatchedMovie, WatchedMovie.tmdb_id == Movie.tmdb_id)
+        rows = (
+            db.query(WatchedMovie.rating, MovieEmbedding.embedding)
+            .join(MovieEmbedding, WatchedMovie.tmdb_id == MovieEmbedding.tmdb_id)
             .filter(WatchedMovie.user_id == mid, WatchedMovie.rating.isnot(None))
             .order_by(WatchedMovie.rating.desc())
-            .limit(10)
+            .limit(per_member_limit)
             .all()
         )
-        for m in top_movies:
-            if m.director:
-                all_directors.add(m.director.lower())
-            for c in (m.cast or [])[:5]:
-                name = c.get("name", "")
-                if name:
-                    all_cast.add(name.lower())
-    unique_genres = list(set(all_genres))
+        if not rows:
+            continue
 
-    # Batch-fetch movie embeddings and records
-    emb_rows = (
+        ratings = np.array([float(r) for r, _ in rows])
+        embeddings = np.array([e for _, e in rows])
+        if ratings.sum() == 0:
+            continue
+
+        weighted_avg = np.average(embeddings, axis=0, weights=ratings)
+        member_embeddings.append(weighted_avg)
+
+    if not member_embeddings:
+        return {}
+
+    group_embedding = np.mean(member_embeddings, axis=0)
+    group_norm = np.linalg.norm(group_embedding)
+    if group_norm == 0:
+        return {}
+    group_embedding = group_embedding / group_norm
+
+    # Get embeddings for requested movies
+    movie_embeds = (
         db.query(MovieEmbedding).filter(MovieEmbedding.tmdb_id.in_(tmdb_ids)).all()
     )
-    emb_map = {e.tmdb_id: list(e.embedding) for e in emb_rows}
-    movies = db.query(Movie).filter(Movie.tmdb_id.in_(tmdb_ids)).all()
-    movie_map = {m.tmdb_id: m for m in movies}
 
-    scores: dict[int, float] = {}
-    for tid in tmdb_ids:
-        movie_emb = emb_map.get(tid)
-        movie = movie_map.get(tid)
-        if not movie_emb or not movie:
+    scores = {}
+    for me in movie_embeds:
+        emb = np.array(me.embedding)
+        norm = np.linalg.norm(emb)
+        if norm == 0:
             continue
-        similarity = _cosine_sim(group_positive, movie_emb)
-        neg_sim = _cosine_sim(movie_emb, group_negative) if group_negative else 0.0
-        raw = _compute_score(
-            movie, similarity, unique_genres, all_directors, all_cast, neg_sim
-        )
-        scores[tid] = to_match_percentage(raw)
+        similarity = float(np.dot(group_embedding, emb / norm))
+        # Clamp to [0, 1] and convert to match percentage
+        scores[me.tmdb_id] = max(0.0, min(1.0, (similarity + 1) / 2))
 
     return scores
 

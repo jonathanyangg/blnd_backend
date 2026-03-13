@@ -17,6 +17,7 @@ FETCH_CONCURRENCY = 20  # max concurrent TMDB requests
 MAX_RETRIES = 3
 FETCH_BATCH_SIZE = 100
 EMBED_BATCH_SIZE = 2000
+MIN_VOTE_COUNT = 5  # skip movies with fewer than 5 votes at ingestion
 
 
 async def download_tmdb_export(min_popularity: float = 0.0) -> list[int]:
@@ -67,6 +68,7 @@ async def fetch_and_cache_movies(
 
     fetched = 0
     errors = 0
+    skipped_votes = 0
     semaphore = asyncio.Semaphore(FETCH_CONCURRENCY)
 
     async def _fetch_one(client: httpx.AsyncClient, tmdb_id: int) -> dict | None:
@@ -113,8 +115,11 @@ async def fetch_and_cache_movies(
 
             for tmdb_data in results:
                 if tmdb_data is not None:
+                    if tmdb_data.get("vote_count", 0) < MIN_VOTE_COUNT:
+                        skipped_votes += 1
+                        continue
                     try:
-                        _cache_movie(tmdb_data, db, commit=False)
+                        _cache_movie(tmdb_data, db, commit=False)  # ignore tuple[1]
                         fetched += 1
                     except Exception:
                         errors += 1
@@ -130,8 +135,18 @@ async def fetch_and_cache_movies(
                 errors,
             )
 
-    logger.info("Fetched %d movies (%d errors)", fetched, errors)
-    return {"fetched": fetched, "errors": errors, "skipped": len(existing_ids)}
+    logger.info(
+        "Fetched %d movies (%d errors, %d skipped for low vote count)",
+        fetched,
+        errors,
+        skipped_votes,
+    )
+    return {
+        "fetched": fetched,
+        "errors": errors,
+        "skipped": len(existing_ids),
+        "skipped_votes": skipped_votes,
+    }
 
 
 EMBED_CONCURRENCY = 5
@@ -211,67 +226,6 @@ async def run_seed_pipeline(
     logger.info("Seed pipeline complete")
 
 
-async def backfill_vote_counts(db: Session, tmdb_api_key: str) -> None:
-    """Fetch vote_count for all movies missing it."""
-    rows = (
-        db.query(Movie.tmdb_id)
-        .filter(Movie.vote_count.is_(None) | (Movie.vote_count == 0))
-        .all()
-    )
-    tmdb_ids = [r[0] for r in rows]
-    logger.info("Backfilling vote_count for %d movies", len(tmdb_ids))
-
-    semaphore = asyncio.Semaphore(FETCH_CONCURRENCY)
-    updated = 0
-    errors = 0
-
-    async def _fetch_one(
-        client: httpx.AsyncClient, tmdb_id: int
-    ) -> tuple[int, int | None]:
-        async with semaphore:
-            try:
-                resp = await client.get(f"/movie/{tmdb_id}")
-                if resp.status_code == 429:
-                    await asyncio.sleep(float(resp.headers.get("Retry-After", "2")))
-                    resp = await client.get(f"/movie/{tmdb_id}")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return tmdb_id, data.get("vote_count", 0)
-            except Exception:
-                pass
-            return tmdb_id, None
-
-    chunk_size = 500
-    async with httpx.AsyncClient(
-        base_url="https://api.themoviedb.org/3",
-        headers={"Authorization": f"Bearer {tmdb_api_key}"},
-        timeout=30,
-    ) as client:
-        for i in range(0, len(tmdb_ids), chunk_size):
-            chunk = tmdb_ids[i : i + chunk_size]
-            results = await asyncio.gather(*[_fetch_one(client, tid) for tid in chunk])
-
-            for tmdb_id, vc in results:
-                if vc is not None:
-                    movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
-                    if movie:
-                        movie.vote_count = vc
-                        updated += 1
-                else:
-                    errors += 1
-
-            db.commit()
-            logger.info(
-                "Backfill progress: %d / %d (updated=%d, errors=%d)",
-                min(i + chunk_size, len(tmdb_ids)),
-                len(tmdb_ids),
-                updated,
-                errors,
-            )
-
-    logger.info("Backfill complete: %d updated, %d errors", updated, errors)
-
-
 def _cache_movie(
     tmdb_data: dict,
     db: Session,
@@ -329,7 +283,7 @@ def _cache_movie(
         existing_movie.genres = genres
         existing_movie.runtime = tmdb_data.get("runtime")
         existing_movie.vote_average = tmdb_data.get("vote_average")
-        existing_movie.vote_count = tmdb_data.get("vote_count", 0)
+        existing_movie.vote_count = tmdb_data.get("vote_count")
         existing_movie.trailer_url = trailer_url
         existing_movie.director = director
         existing_movie.cast = cast_list
@@ -353,7 +307,7 @@ def _cache_movie(
         genres=genres,
         runtime=tmdb_data.get("runtime"),
         vote_average=tmdb_data.get("vote_average"),
-        vote_count=tmdb_data.get("vote_count", 0),
+        vote_count=tmdb_data.get("vote_count"),
         trailer_url=trailer_url,
         director=director,
         cast=cast_list,

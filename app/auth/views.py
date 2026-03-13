@@ -115,3 +115,38 @@ def update_profile(
         taste_bio=profile.taste_bio,
         favorite_genres=profile.favorite_genres or [],
     )
+
+
+@router.get("/users/{id}/profile", response_model=schemas.PublicProfileResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def get_user_profile(
+    request: Request,
+    id: str,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return services.get_public_profile(user_id, id, db)
+
+
+@router.get("/users/{id}/watched", response_model=schemas.PublicWatchedListResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def get_user_watched(
+    request: Request,
+    id: str,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return services.get_public_watched(user_id, id, limit, offset, db)
+
+
+@router.get("/users/{id}/friends", response_model=schemas.PublicFriendsListResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def get_user_friends(
+    request: Request,
+    id: str,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return services.get_public_friends(user_id, id, db)

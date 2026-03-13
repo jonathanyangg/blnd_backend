@@ -18,7 +18,7 @@ class Movie(Base):
     genres: Mapped[list | None] = mapped_column(JSONB, default=list)
     runtime: Mapped[int | None] = mapped_column(Integer, nullable=True)
     vote_average: Mapped[float | None] = mapped_column(Float, nullable=True)
-    vote_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    vote_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     trailer_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     director: Mapped[str | None] = mapped_column(Text, nullable=True)
     cast: Mapped[list | None] = mapped_column(JSONB, default=list)

@@ -11,7 +11,6 @@ class Settings(BaseSettings):
     admin_user_id: str = ""
     cors_origins: str = ""
     test_database_url: str = ""
-    blnd_disable_rate_limits: str = ""
 
     model_config = {"env_file": ".env"}
 

@@ -303,7 +303,6 @@ def _cache_movie_from_tmdb(tmdb_data: dict, db: Session) -> Movie:
         genres=genres,
         runtime=tmdb_data.get("runtime"),
         vote_average=tmdb_data.get("vote_average"),
-        vote_count=tmdb_data.get("vote_count", 0),
         trailer_url=trailer_url,
         director=director,
         cast=cast_list,
