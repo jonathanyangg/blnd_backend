@@ -17,7 +17,6 @@ from fastapi import (
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
-from app.config import settings
 from app.core.rate_limit import LIMIT_HEAVY, LIMIT_IMPORT, limiter
 from app.database import SessionLocal
 from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
@@ -27,11 +26,12 @@ from app.import_data.schemas import ImportSummaryResponse
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-ADMIN_IDS: set[str] = {settings.admin_user_id} if settings.admin_user_id else set()
-
 
 def _require_admin(user_id: str) -> None:
-    if not ADMIN_IDS or user_id not in ADMIN_IDS:
+    from app.config import settings
+
+    admin_ids: set[str] = {settings.admin_user_id} if settings.admin_user_id else set()
+    if not admin_ids or user_id not in admin_ids:
         raise HTTPException(status_code=403, detail="Admin only")
 
 
@@ -50,12 +50,12 @@ def _validate_zip(file_bytes: bytes) -> None:
             raise HTTPException(status_code=400, detail="Zip archive failed validation")
 
 
-async def _run_seed_pipeline_async(min_popularity: float) -> None:
+async def _run_seed_pipeline_async(
+    tmdb_client: httpx.AsyncClient, min_popularity: float
+) -> None:
     db = SessionLocal()
     try:
-        await services.run_seed_pipeline(
-            db, settings.tmdb_api_key, openai_client, min_popularity
-        )
+        await services.run_seed_pipeline(db, tmdb_client, openai_client, min_popularity)
     except Exception:
         logger.exception("Seed pipeline failed")
     finally:
@@ -68,16 +68,17 @@ async def seed_movies(
     request: Request,
     min_popularity: float = Query(default=5.0, ge=1.0),
     user_id: str = Depends(get_current_user),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
     _require_admin(user_id)
-    asyncio.ensure_future(_run_seed_pipeline_async(min_popularity))
+    asyncio.ensure_future(_run_seed_pipeline_async(tmdb_client, min_popularity))
     return {"status": "started", "min_popularity": min_popularity}
 
 
-async def _run_sync_pipeline_async() -> None:
+async def _run_sync_pipeline_async(tmdb_client: httpx.AsyncClient) -> None:
     db = SessionLocal()
     try:
-        await services.run_sync_pipeline(db, settings.tmdb_api_key, openai_client)
+        await services.run_sync_pipeline(db, tmdb_client, openai_client)
     except Exception:
         logger.exception("Sync pipeline failed")
     finally:
@@ -89,9 +90,10 @@ async def _run_sync_pipeline_async() -> None:
 async def sync_movies(
     request: Request,
     user_id: str = Depends(get_current_user),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
     _require_admin(user_id)
-    asyncio.ensure_future(_run_sync_pipeline_async())
+    asyncio.ensure_future(_run_sync_pipeline_async(tmdb_client))
     return {"status": "started"}
 
 

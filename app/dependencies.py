@@ -1,4 +1,4 @@
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import Generator
 
 import httpx
 from fastapi import Depends, HTTPException, Request, status
@@ -25,12 +25,8 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-async def get_tmdb_client() -> AsyncGenerator[httpx.AsyncClient, None]:
-    async with httpx.AsyncClient(
-        base_url="https://api.themoviedb.org/3",
-        headers={"Authorization": f"Bearer {settings.tmdb_api_key}"},
-    ) as client:
-        yield client
+def get_tmdb_client(request: Request) -> httpx.AsyncClient:
+    return request.app.state.tmdb_client
 
 
 async def get_current_user(

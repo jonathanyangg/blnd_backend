@@ -57,7 +57,7 @@ async def download_tmdb_export(min_popularity: float = 0.0) -> list[int]:
 
 
 async def fetch_and_cache_movies(
-    tmdb_ids: list[int], db: Session, tmdb_api_key: str
+    tmdb_ids: list[int], db: Session, tmdb_client: httpx.AsyncClient
 ) -> dict:
     """Fetch movie details from TMDB and cache in DB. Skips existing."""
     existing_ids = {row[0] for row in db.query(Movie.tmdb_id).all()}
@@ -71,11 +71,11 @@ async def fetch_and_cache_movies(
     skipped_votes = 0
     semaphore = asyncio.Semaphore(FETCH_CONCURRENCY)
 
-    async def _fetch_one(client: httpx.AsyncClient, tmdb_id: int) -> dict | None:
+    async def _fetch_one(tmdb_id: int) -> dict | None:
         async with semaphore:
             for attempt in range(MAX_RETRIES):
                 try:
-                    response = await client.get(
+                    response = await tmdb_client.get(
                         f"/movie/{tmdb_id}",
                         params={"append_to_response": "credits,videos"},
                     )
@@ -104,36 +104,31 @@ async def fetch_and_cache_movies(
 
     # Process in chunks to batch-commit and log progress
     chunk_size = 500
-    async with httpx.AsyncClient(
-        base_url="https://api.themoviedb.org/3",
-        headers={"Authorization": f"Bearer {tmdb_api_key}"},
-        timeout=30,
-    ) as client:
-        for chunk_start in range(0, len(new_ids), chunk_size):
-            chunk = new_ids[chunk_start : chunk_start + chunk_size]
-            results = await asyncio.gather(*[_fetch_one(client, tid) for tid in chunk])
+    for chunk_start in range(0, len(new_ids), chunk_size):
+        chunk = new_ids[chunk_start : chunk_start + chunk_size]
+        results = await asyncio.gather(*[_fetch_one(tid) for tid in chunk])
 
-            for tmdb_data in results:
-                if tmdb_data is not None:
-                    if tmdb_data.get("vote_count", 0) < MIN_VOTE_COUNT:
-                        skipped_votes += 1
-                        continue
-                    try:
-                        _cache_movie(tmdb_data, db, commit=False)  # ignore tuple[1]
-                        fetched += 1
-                    except Exception:
-                        errors += 1
-                else:
+        for tmdb_data in results:
+            if tmdb_data is not None:
+                if tmdb_data.get("vote_count", 0) < MIN_VOTE_COUNT:
+                    skipped_votes += 1
+                    continue
+                try:
+                    _cache_movie(tmdb_data, db, commit=False)  # ignore tuple[1]
+                    fetched += 1
+                except Exception:
                     errors += 1
+            else:
+                errors += 1
 
-            db.commit()
-            logger.info(
-                "Fetch progress: %d / %d (fetched=%d, errors=%d)",
-                min(chunk_start + chunk_size, len(new_ids)),
-                len(new_ids),
-                fetched,
-                errors,
-            )
+        db.commit()
+        logger.info(
+            "Fetch progress: %d / %d (fetched=%d, errors=%d)",
+            min(chunk_start + chunk_size, len(new_ids)),
+            len(new_ids),
+            fetched,
+            errors,
+        )
 
     logger.info(
         "Fetched %d movies (%d errors, %d skipped for low vote count)",
@@ -212,7 +207,7 @@ async def embed_movies(db: Session, openai_client: OpenAI) -> dict:
 
 async def run_seed_pipeline(
     db: Session,
-    tmdb_api_key: str,
+    tmdb_client: httpx.AsyncClient,
     openai_client: OpenAI,
     min_popularity: float = 0.0,
 ) -> None:
@@ -220,7 +215,7 @@ async def run_seed_pipeline(
     logger.info("Starting movie seed pipeline (min_popularity=%.1f)", min_popularity)
 
     tmdb_ids = await download_tmdb_export(min_popularity)
-    await fetch_and_cache_movies(tmdb_ids, db, tmdb_api_key)
+    await fetch_and_cache_movies(tmdb_ids, db, tmdb_client)
     await embed_movies(db, openai_client)
 
     logger.info("Seed pipeline complete")
@@ -323,37 +318,32 @@ def _cache_movie(
 
 
 async def fetch_tmdb_changes(
-    start_date: str, end_date: str, tmdb_api_key: str
+    start_date: str, end_date: str, tmdb_client: httpx.AsyncClient
 ) -> list[int]:
     """Fetch IDs of movies changed in a TMDB date range. Paginates all pages."""
     changed_ids: set[int] = set()
     page = 1
 
-    async with httpx.AsyncClient(
-        base_url="https://api.themoviedb.org/3",
-        headers={"Authorization": f"Bearer {tmdb_api_key}"},
-        timeout=30,
-    ) as client:
-        while True:
-            response = await client.get(
-                "/movie/changes",
-                params={
-                    "start_date": start_date,
-                    "end_date": end_date,
-                    "page": page,
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
+    while True:
+        response = await tmdb_client.get(
+            "/movie/changes",
+            params={
+                "start_date": start_date,
+                "end_date": end_date,
+                "page": page,
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
 
-            for item in data.get("results", []):
-                if not item.get("adult", False):
-                    changed_ids.add(item["id"])
+        for item in data.get("results", []):
+            if not item.get("adult", False):
+                changed_ids.add(item["id"])
 
-            total_pages = data.get("total_pages", 1)
-            if page >= total_pages:
-                break
-            page += 1
+        total_pages = data.get("total_pages", 1)
+        if page >= total_pages:
+            break
+        page += 1
 
     result = list(changed_ids)
     logger.info(
@@ -370,7 +360,7 @@ TMDB_MAX_CHANGE_DAYS = 14
 
 
 async def run_sync_pipeline(
-    db: Session, tmdb_api_key: str, openai_client: OpenAI
+    db: Session, tmdb_client: httpx.AsyncClient, openai_client: OpenAI
 ) -> dict:
     """Sync cached movies with TMDB changes since last sync."""
     logger.info("Starting TMDB sync pipeline")
@@ -399,7 +389,7 @@ async def run_sync_pipeline(
     end_str = today_str
 
     # 3. Fetch changed IDs from TMDB
-    changed_ids = await fetch_tmdb_changes(start_str, end_str, tmdb_api_key)
+    changed_ids = await fetch_tmdb_changes(start_str, end_str, tmdb_client)
     if not changed_ids:
         logger.info("No changed movies found")
         # Still update sync state
@@ -428,11 +418,11 @@ async def run_sync_pipeline(
     overview_changed_ids: list[int] = []
     semaphore = asyncio.Semaphore(FETCH_CONCURRENCY)
 
-    async def _fetch_one(client: httpx.AsyncClient, tmdb_id: int) -> dict | None:
+    async def _fetch_one(tmdb_id: int) -> dict | None:
         async with semaphore:
             for attempt in range(MAX_RETRIES):
                 try:
-                    response = await client.get(
+                    response = await tmdb_client.get(
                         f"/movie/{tmdb_id}",
                         params={"append_to_response": "credits,videos"},
                     )
@@ -463,45 +453,40 @@ async def run_sync_pipeline(
 
     # 6. Process in chunks
     chunk_size = 500
-    async with httpx.AsyncClient(
-        base_url="https://api.themoviedb.org/3",
-        headers={"Authorization": f"Bearer {tmdb_api_key}"},
-        timeout=30,
-    ) as client:
-        for chunk_start in range(0, len(ids_to_update), chunk_size):
-            chunk = ids_to_update[chunk_start : chunk_start + chunk_size]
-            results = await asyncio.gather(*[_fetch_one(client, tid) for tid in chunk])
+    for chunk_start in range(0, len(ids_to_update), chunk_size):
+        chunk = ids_to_update[chunk_start : chunk_start + chunk_size]
+        results = await asyncio.gather(*[_fetch_one(tid) for tid in chunk])
 
-            for tmdb_data in results:
-                if tmdb_data is not None:
-                    tmdb_id = tmdb_data["id"]
-                    existing = movie_map.get(tmdb_id)
-                    if existing is None:
-                        errors += 1
-                        continue
-                    try:
-                        _, overview_changed = _cache_movie(
-                            tmdb_data, db, commit=False, existing_movie=existing
-                        )
-                        updated += 1
-                        if overview_changed:
-                            overview_changed_ids.append(tmdb_id)
-                    except Exception:
-                        logger.warning(
-                            "Sync: failed to update tmdb_id=%d", tmdb_id, exc_info=True
-                        )
-                        errors += 1
-                else:
+        for tmdb_data in results:
+            if tmdb_data is not None:
+                tmdb_id = tmdb_data["id"]
+                existing = movie_map.get(tmdb_id)
+                if existing is None:
                     errors += 1
+                    continue
+                try:
+                    _, overview_changed = _cache_movie(
+                        tmdb_data, db, commit=False, existing_movie=existing
+                    )
+                    updated += 1
+                    if overview_changed:
+                        overview_changed_ids.append(tmdb_id)
+                except Exception:
+                    logger.warning(
+                        "Sync: failed to update tmdb_id=%d", tmdb_id, exc_info=True
+                    )
+                    errors += 1
+            else:
+                errors += 1
 
-            db.commit()
-            logger.info(
-                "Sync progress: %d / %d (updated=%d, errors=%d)",
-                min(chunk_start + chunk_size, len(ids_to_update)),
-                len(ids_to_update),
-                updated,
-                errors,
-            )
+        db.commit()
+        logger.info(
+            "Sync progress: %d / %d (updated=%d, errors=%d)",
+            min(chunk_start + chunk_size, len(ids_to_update)),
+            len(ids_to_update),
+            updated,
+            errors,
+        )
 
     # 9. Re-embed movies whose overviews changed
     re_embedded = 0

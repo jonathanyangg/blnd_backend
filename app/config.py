@@ -9,7 +9,6 @@ class Settings(BaseSettings):
     tmdb_api_key: str = ""
     openai_api_key: str = ""
     admin_user_id: str = ""
-    cors_origins: str = ""
     test_database_url: str = ""
     blnd_disable_rate_limits: str = ""
 
