@@ -1,45 +1,35 @@
 # BLND
 
-## Current Milestone: v1.2 Revamp Other User Profile View
-
-**Goal:** Give users a rich profile view when tapping into a friend's profile — showing their watched movies, stats, and social connections — matching the depth of the user's own profile (minus watchlist).
-
-**Target features:**
-- Backend: public profile endpoint with stats (watched count, friends count, groups count)
-- Backend: endpoint to fetch another user's watched movies (paginated)
-- Backend: endpoint to fetch another user's friends list
-- iOS: revamped FriendProfileView with stats row, watched poster grid, tappable friends/movies
-
 ## What This Is
 
-A Letterboxd integration spanning backend and iOS frontend. The backend accepts a Letterboxd export zip, parses CSVs, resolves movies via TMDB, and persists the data. The iOS app provides a native UI to trigger the import, show progress and results, and surfaces the imported data (watched, ratings, reviews).
+BLND is a social movie app — iOS frontend + FastAPI backend. Users track watched movies, rate them, get AI-powered recommendations, manage friends/groups, and import their Letterboxd history. Friend profiles show rich data (stats, watched movies, social connections).
 
 ## Core Value
 
-Users can import their complete Letterboxd history into BLND with a single zip upload — watched movies, ratings, reviews, watchlist, and likes all transfer accurately.
+Personalized movie recommendations powered by taste embeddings, with deep social features that let friends share and discover movies together.
 
 ## Requirements
 
 ### Validated
 
-- Parse Letterboxd zip file and extract ratings.csv, reviews.csv, watched.csv, watchlist.csv, likes/films.csv — v1.0
-- Resolve movie names + years to TMDB IDs via TMDB search API — v1.0
-- Import watched movies into watched_movies table (skip existing entries) — v1.0
-- Import ratings (0.5-5.0 scale) attached to watched movie entries — v1.0
-- Import reviews (text + watched date) attached to watched movie entries — v1.0
-- Add `liked` boolean field to watched_movies table via Supabase migration — v1.0
-- Import liked films by setting liked=true on corresponding watched_movies entries — v1.0
-- Create watchlist_movies table via Supabase migration — v1.0
-- Import watchlist entries into watchlist_movies table — v1.0
-- All logic lives in `app/import_data/workflows.py` — v1.0
-- All changes made on a feature branch — v1.0
+- ✓ Parse Letterboxd zip file and extract ratings.csv, reviews.csv, watched.csv, watchlist.csv, likes/films.csv — v1.0
+- ✓ Resolve movie names + years to TMDB IDs via TMDB search API — v1.0
+- ✓ Import watched movies into watched_movies table (skip existing entries) — v1.0
+- ✓ Import ratings (0.5-5.0 scale) attached to watched movie entries — v1.0
+- ✓ Import reviews (text + watched date) attached to watched movie entries — v1.0
+- ✓ Add `liked` boolean field to watched_movies table via Supabase migration — v1.0
+- ✓ Import liked films by setting liked=true on corresponding watched_movies entries — v1.0
+- ✓ Create watchlist_movies table via Supabase migration — v1.0
+- ✓ Import watchlist entries into watchlist_movies table — v1.0
+- ✓ iOS in-app Letterboxd import flow with webview + download interception — v1.1
+- ✓ Backend taste profile auto-rebuild after bulk import — v1.1
+- ✓ Backend public profile endpoints (stats, watched, friends) with friendship gate — v1.2
+- ✓ iOS FriendProfileView with stats, poster grid, friends list, recursive navigation — v1.2
+- ✓ Shared SwiftUI components (PosterTile, StatsRow, PosterGrid) — v1.2
 
 ### Active
 
-- [ ] Backend public profile endpoint with stats (watched count, friends count, groups count) — v1.2
-- [ ] Backend endpoint to fetch another user's watched movies (paginated) — v1.2
-- [ ] Backend endpoint to fetch another user's friends list — v1.2
-- [ ] iOS revamped FriendProfileView with stats, watched grid, tappable navigation — v1.2
+(No active milestone — ready for next milestone planning)
 
 ### Out of Scope
 
@@ -50,13 +40,11 @@ Users can import their complete Letterboxd history into BLND with a single zip u
 
 ## Context
 
-v1.0 shipped backend pipeline: ~2,062 LOC Python + 179 LOC SQL. Endpoint: `POST /import/letterboxd`.
-Backend stack: FastAPI, SQLAlchemy, Supabase Postgres, httpx async TMDB client.
+Shipped through v1.2. Codebase: ~8,250 LOC Swift (iOS), ~1,100 LOC Python (backend app code).
+Backend stack: FastAPI, SQLAlchemy, Supabase Postgres, pgvector, httpx async TMDB client, OpenAI embeddings.
 Frontend stack: SwiftUI iOS 17+, `@Observable`, `async/await`, `APIClient` singleton, zero third-party deps.
 Design: dark monochrome, Cal.com/X aesthetic — movie posters provide all color.
-Taste profile not rebuilt after import (v1.1 target). Liked/watchlist data write-only via import (deferred beyond v1.1).
-v1.1 added iOS frontend features: webview import flow, results display, backend taste profile rebuild hook.
-v1.2 adds public user profile endpoints and revamps the friend profile view to show watched movies, stats, and social connections.
+v1.0: Letterboxd backend import pipeline. v1.1: iOS import flow + taste rebuild. v1.2: Public profile endpoints + FriendProfileView revamp.
 
 ## Constraints
 
@@ -80,6 +68,10 @@ v1.2 adds public user profile endpoints and revamps the friend profile view to s
 | 25ms rate limit delay (unconditional) | Applied after every TMDB call, even cache hits — simple and safe | Good — ~40 req/s stays under TMDB limit |
 | 10MB upload limit + decompression ratio 100 | Conservative defaults for production safety | Good — prevents abuse |
 | db.rollback() before logging in exception handler | Resets session state before any further work to prevent cascading failures | Good — enables per-movie isolation |
+| Public profile endpoints in auth/ domain | 3 read-only endpoints don't justify a new domain folder | ✓ Good — clean, minimal |
+| Dedicated PublicProfileResponse schema | Don't reuse UserResponse — leaks taste_bio/favorite_genres | ✓ Good — privacy boundary |
+| Friendship gate (403, not 404) | Explicit authorization check, not obscuring existence | ✓ Good — clear security |
+| Extract shared components before FriendProfileView | PosterTile/StatsRow/PosterGrid reusable by both ProfileView and FriendProfileView | ✓ Good — clean refactor |
 
 ---
-*Last updated: 2026-03-11 after v1.2 milestone start*
+*Last updated: 2026-03-13 after v1.2 milestone*
