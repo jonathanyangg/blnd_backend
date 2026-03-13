@@ -1,5 +1,5 @@
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
@@ -87,7 +87,7 @@ async def get_friends_who_watched(
     return services.get_friends_who_watched(user_id, tmdb_id, db, limit, offset)
 
 
-@router.get("/{tmdb_id}", response_model=schemas.WatchedMovieResponse)
+@router.get("/{tmdb_id}", response_model=schemas.WatchedMovieResponse | None)
 @limiter.limit(LIMIT_DEFAULT)
 async def get_watched_movie(
     request: Request,
@@ -95,10 +95,7 @@ async def get_watched_movie(
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    result = services.get_watched_movie(user_id, tmdb_id, db)
-    if not result:
-        return Response(status_code=status.HTTP_404_NOT_FOUND)
-    return result
+    return services.get_watched_movie(user_id, tmdb_id, db)
 
 
 @router.patch("/{tmdb_id}", response_model=schemas.WatchedMovieResponse)

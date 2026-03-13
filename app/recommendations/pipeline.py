@@ -124,8 +124,8 @@ def _run_main_algorithm(ctx: RecommendationContext, db: Session) -> list[dict]:
         movie = movie_map.get(tmdb_id)
         if not movie:
             continue
-        # Filter out movies with no community validation (vote_average < 1.0)
-        if (movie.vote_average or 0) < 1.0:
+        # Filter out short films and movies with no community validation
+        if (movie.runtime or 0) < 45 or (movie.vote_average or 0) < 1.0:
             continue
         candidates.append(
             {
@@ -162,6 +162,8 @@ def _run_exploration(
     query = db.query(Movie).filter(
         Movie.vote_average.isnot(None),
         Movie.vote_average >= 6.0,
+        Movie.vote_count >= 50,
+        Movie.runtime >= 45,
     )
     if all_exclude:
         query = query.filter(Movie.tmdb_id.notin_(list(all_exclude)))
