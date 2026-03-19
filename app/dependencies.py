@@ -12,6 +12,7 @@ from app.database import SessionLocal
 
 # Clients
 supabase = create_client(settings.supabase_url, settings.supabase_key)
+supabase_admin = create_client(settings.supabase_url, settings.supabase_service_key)
 openai_client = OpenAI(api_key=settings.openai_api_key)
 
 security = HTTPBearer()

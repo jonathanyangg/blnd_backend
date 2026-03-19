@@ -1,13 +1,17 @@
+import logging
+
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
-from app.dependencies import supabase
+from app.dependencies import supabase, supabase_admin
 from app.friends.models import Friendship
-from app.groups.models import GroupMember
+from app.groups.models import Group, GroupMember
 from app.movies.models import Movie
-from app.tracking.models import WatchedMovie, Watchlist
+from app.tracking.models import WatchedMovie, Watchlist, WatchlistMovie
+
+logger = logging.getLogger(__name__)
 
 
 def signup(
@@ -273,3 +277,78 @@ def get_public_friends(caller_id: str, target_id: str, db: Session) -> dict:
             )
 
     return {"friends": friends}
+
+
+def delete_account(user_id: str, db: Session) -> None:
+    """Permanently delete user account and all associated data."""
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    personal_watchlist_id = profile.watchlist_id
+    avatar_url = profile.avatar_url
+
+    # 1. Handle owned groups
+    owned_groups = db.query(Group).filter(Group.created_by == user_id).all()
+    for group in owned_groups:
+        # Remove user's membership
+        db.query(GroupMember).filter(
+            GroupMember.group_id == group.id, GroupMember.user_id == user_id
+        ).delete()
+        db.flush()
+
+        # Check for remaining members
+        earliest = (
+            db.query(GroupMember)
+            .filter(GroupMember.group_id == group.id)
+            .order_by(GroupMember.joined_at.asc())
+            .first()
+        )
+        if earliest:
+            # Transfer ownership
+            group.created_by = earliest.user_id
+            db.flush()
+        else:
+            # No members left — delete group and its watchlist
+            group_watchlist_id = group.watchlist_id
+            if group_watchlist_id:
+                db.query(WatchlistMovie).filter(
+                    WatchlistMovie.watchlist_id == group_watchlist_id
+                ).delete()
+            db.delete(group)
+            db.flush()
+            if group_watchlist_id:
+                db.query(Watchlist).filter(Watchlist.id == group_watchlist_id).delete()
+                db.flush()
+
+    # 2. Null out watchlist_movies.added_by for group watchlists user contributed to
+    db.query(WatchlistMovie).filter(WatchlistMovie.added_by == user_id).update(
+        {"added_by": None}
+    )
+    db.flush()
+
+    # 3. Delete profile — CASCADE handles watched_movies, friendships, group_members, hidden_movies
+    db.delete(profile)
+    db.flush()
+
+    # 4. Delete personal watchlist (CASCADE handles its watchlist_movies)
+    if personal_watchlist_id:
+        db.query(WatchlistMovie).filter(
+            WatchlistMovie.watchlist_id == personal_watchlist_id
+        ).delete()
+        db.query(Watchlist).filter(Watchlist.id == personal_watchlist_id).delete()
+
+    db.commit()
+
+    # 5. Delete Supabase Auth user (best-effort)
+    try:
+        supabase_admin.auth.admin.delete_user(user_id)
+    except Exception:
+        logger.warning("Failed to delete Supabase Auth user %s", user_id)
+
+    # 6. Delete avatar from storage (best-effort)
+    if avatar_url:
+        try:
+            supabase_admin.storage.from_("avatars").remove([f"{user_id}/avatar.png"])
+        except Exception:
+            logger.warning("Failed to delete avatar for user %s", user_id)

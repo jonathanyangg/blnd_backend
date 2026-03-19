@@ -13,6 +13,9 @@ from app.tracking.models import WatchedMovie
 logger = logging.getLogger(__name__)
 
 AUTO_REBUILD_THRESHOLD = 50
+NEGATIVE_RATING_MIN_MOVIES = 10
+NEGATIVE_RATING_PERCENTILE = 20
+MAX_RATING = 5.0
 
 
 def should_auto_rebuild(user_id: str, db: Session) -> bool:
@@ -161,13 +164,15 @@ def compute_taste_embeddings(
 ) -> tuple[list[float] | None, list[float] | None]:
     """Compute taste embeddings using rating-weighted average.
 
-    Positive embedding: weighted average of all rated movies, weight = rating.
-    Higher-rated movies pull the taste vector more strongly. Low-rated movies
-    have minimal influence without needing an arbitrary positive/negative split.
+    Positive embedding: weighted average of movies at or above the user's 20th
+    percentile rating, weight = rating value (0.5–5.0).
 
-    Negative embedding: only from explicitly hidden movies (user said "don't
-    show me this"). We don't infer negativity from ratings — a 3.5/5 is not
-    a dislike signal.
+    Negative embedding from ratings: if user has 10+ rated movies, movies below
+    the 20th percentile contribute to the negative embedding, weighted by
+    (MAX_RATING - rating) so lower ratings push harder. Merged with hidden
+    movie embeddings (unweighted mean).
+
+    If user has <10 rated movies, no rating-derived negatives (sample too small).
 
     Returns (positive_embedding, negative_embedding).
     """
@@ -183,12 +188,31 @@ def compute_taste_embeddings(
     ratings = np.array([float(r) for _, r, _ in rows])
     embeddings = np.array([e for _, _, e in rows])
 
-    # Weight = rating value directly (0.5–5.0). A 5-star movie has 10x the
-    # pull of a 0.5-star movie. Simple, interpretable, no threshold needed.
-    positive_emb = np.average(embeddings, axis=0, weights=ratings).tolist()
+    # Split positive/negative based on 20th percentile (only with enough data)
+    if len(rows) >= NEGATIVE_RATING_MIN_MOVIES:
+        threshold = float(np.percentile(ratings, NEGATIVE_RATING_PERCENTILE))
+        pos_mask = ratings >= threshold
+        neg_mask = ~pos_mask
+    else:
+        pos_mask = np.ones(len(ratings), dtype=bool)
+        neg_mask = np.zeros(len(ratings), dtype=bool)
 
-    # Negative embedding: only from hidden movies (explicit signal)
-    negative_emb = None
+    # Positive: rating-weighted average of movies at/above threshold
+    pos_embeddings = embeddings[pos_mask]
+    pos_ratings = ratings[pos_mask]
+    positive_emb = np.average(pos_embeddings, axis=0, weights=pos_ratings).tolist()
+
+    # Negative: weighted by (MAX_RATING - rating) so 0.5-star → weight 4.5
+    neg_parts: list[np.ndarray] = []
+    neg_weights: list[np.ndarray] = []
+
+    if neg_mask.any():
+        neg_embeddings = embeddings[neg_mask]
+        neg_ratings = ratings[neg_mask]
+        neg_parts.append(neg_embeddings)
+        neg_weights.append(MAX_RATING - neg_ratings)
+
+    # Hidden movies: unweighted (uniform weight of 1.0)
     hidden_rows = (
         db.query(MovieEmbedding.embedding)
         .join(HiddenMovie, HiddenMovie.tmdb_id == MovieEmbedding.tmdb_id)
@@ -197,7 +221,14 @@ def compute_taste_embeddings(
     )
     if hidden_rows:
         hidden_embeddings = np.array([e for (e,) in hidden_rows])
-        negative_emb = np.mean(hidden_embeddings, axis=0).tolist()
+        neg_parts.append(hidden_embeddings)
+        neg_weights.append(np.ones(len(hidden_rows)))
+
+    negative_emb = None
+    if neg_parts:
+        all_neg_emb = np.concatenate(neg_parts, axis=0)
+        all_neg_w = np.concatenate(neg_weights)
+        negative_emb = np.average(all_neg_emb, axis=0, weights=all_neg_w).tolist()
 
     return positive_emb, negative_emb
 

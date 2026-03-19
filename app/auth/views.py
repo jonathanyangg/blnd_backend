@@ -117,6 +117,16 @@ def update_profile(
     )
 
 
+@router.delete("/account", status_code=204)
+@limiter.limit(LIMIT_DEFAULT)
+def delete_account(
+    request: Request,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    services.delete_account(user_id, db)
+
+
 @router.get("/users/{id}/profile", response_model=schemas.PublicProfileResponse)
 @limiter.limit(LIMIT_DEFAULT)
 def get_user_profile(
