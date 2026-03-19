@@ -5,7 +5,7 @@
 - **ORM**: SQLAlchemy (models + queries)
 - **Migrations**: Supabase CLI (`supabase migration new`, `supabase db push`)
 - **Database**: Supabase Postgres + pgvector
-- **Auth**: Supabase Auth via supabase-py (JWT) — only use of supabase-py
+- **Auth**: Supabase Auth via supabase-py (JWT + admin delete) — two clients: `supabase` (public) and `supabase_admin` (service role)
 - **APIs**: TMDB (movie data), OpenAI (embeddings)
 - **Linting**: pre-commit hooks with ruff, codespell, pyright
 
@@ -27,7 +27,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 ## Conventions
 - Env vars loaded from `.env` via pydantic-settings (defaults to `""` for pyright compatibility)
 - DB queries go through SQLAlchemy ORM (connected to Supabase Postgres via `DATABASE_URL`)
-- supabase-py is used ONLY for Auth (signup, login, verify JWT)
+- supabase-py is used ONLY for Auth (signup, login, verify JWT, admin delete user)
 - Async HTTP calls use httpx
 - Movie embeddings: OpenAI text-embedding-3-small (1536 dims) stored in pgvector
 - Supabase SDK returns optional types — always null-check `.user` and `.session` before access
@@ -54,6 +54,12 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Username updatable via PATCH /auth/profile (same validation + uniqueness)
   - GET /auth/users/search?q= — prefix search (ILIKE) for friend autocomplete, excludes current user, returns up to 10 results
   - Avatar upload: Supabase Storage `avatars` bucket (public), RLS policies (SELECT: public, INSERT/UPDATE/DELETE: owner only via folder path), frontend uploads to `avatars/{user_id}/avatar.png`, sends public URL via PATCH /auth/profile `avatar_url` field
+  - Password validation: min 8 chars, at least 1 uppercase letter
+  - Public profile endpoints (friendship-gated via `assert_are_friends`):
+    - GET /auth/users/{id}/profile — stats (watched_count, friends_count, blends_count)
+    - GET /auth/users/{id}/watched — paginated watched movies (tmdb_id, title, poster, rating)
+    - GET /auth/users/{id}/friends — friends list
+  - Account deletion: DELETE /auth/account — permanently deletes user and all associated data (transfers group ownership to earliest member or deletes empty groups, nulls watchlist_movies.added_by, cascade deletes profile/watched/friendships/hidden, deletes personal watchlist, best-effort Supabase Auth + avatar cleanup via `supabase_admin`)
 - Movies domain: fully implemented
   - Model: Movie (SQLAlchemy, includes director, cast, tagline, backdrop_path, imdb_id)
   - Schemas: MovieResponse (all fields including credits, vote_average scaled from TMDB 0-10 to 0-5 via Pydantic validator), MovieSearchResult
@@ -61,8 +67,10 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Views: GET /movies/trending (TMDB weekly trending, includes match_score per movie), GET /movies/top-rated (TMDB top rated, includes match_score), GET /movies/search (TMDB search, no score — computed on detail view instead), GET /movies/{tmdb_id} (cached detail + trailer + credits + match_score)
   - `match_score` = same ranking formula as recommendations (0.50*cosine + 0.20*genre + 0.20*consensus + 0.05*director + 0.05*cast), null if user has no taste profile
   - All endpoints require JWT auth
-- TMDB client lifecycle: async generator dependency in dependencies.py (properly closes httpx client)
+- TMDB client lifecycle: FastAPI lifespan context manager in main.py (httpx.AsyncClient with connection pooling: max_connections=100, max_keepalive=20, timeout=30s). Stored on `app.state.tmdb_client`, accessed via `get_tmdb_client` dependency.
 - All domain routers registered in main.py with stub endpoints
+- DB connection pooling: `pool_recycle=1800`, `pool_pre_ping=True` on SQLAlchemy engine
+- JSON structured logging via python-json-logger (stdout, with timestamp/level/name/message fields)
 - FastAPI server runs clean on `uvicorn main:app --reload`
 - Tracking domain: fully implemented
   - Model: WatchedMovie (SQLAlchemy, matches watched_movies table with unique(user_id, tmdb_id))
@@ -108,16 +116,17 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Recommendations domain: fully implemented
   - Schemas: RecommendedMovieResponse, RecommendationsResponse, HiddenMovieResponse, HiddenMoviesListResponse
   - Services: dual embedding strategy (switchable via `EMBEDDING_STRATEGY` in services.py):
-    - `"average"` (current default): `compute_taste_embeddings()` uses rating-weighted average of ALL rated movies (5-star = 10x pull of 0.5-star). Negative embedding only from hidden movies.
+    - `"average"` (current default): `compute_taste_embeddings()` uses 20th percentile split — positive embedding from movies at/above threshold (rating-weighted), negative from movies below threshold (weighted by MAX_RATING - rating) merged with hidden movie embeddings. Requires 10+ rated movies for rating-derived negatives.
     - `"llm"`: gpt-4o-mini generates ideal movie synopsis → embedded with text-embedding-3-small
   - Shared 4-step pipeline (`app/recommendations/pipeline.py`): used by both user and group recs
     - Step 1: pgvector candidate generation (500 items) + quality filter (vote_average >= 1.0) + re-ranking with negative penalty
     - Step 2: Softmax probabilistic sampling (500→200) + tier shuffle
     - Step 3: Exploration scoring (genre novelty + consensus + trending) on high-rated DB movies
-    - Step 4: Exploration sampling + blending (92% algo / 8% exploration per page)
+    - Step 4: Exploration sampling + blending (85% algo / 15% exploration per page)
   - Re-ranking formula: `0.50*cosine + 0.20*genre + 0.20*consensus + 0.05*director + 0.05*cast - 0.15*negative_cosine`, clamped ≥ 0
   - Views: GET /recommendations/me, POST /recommendations/me/refresh, POST /recommendations/{tmdb_id}/hide, DELETE /recommendations/{tmdb_id}/hide, GET /recommendations/hidden
-  - Hidden movies: HiddenMovie model, excluded from recs. Negative embedding only from hidden movies (not inferred from ratings).
+  - Hidden movies: HiddenMovie model, excluded from recs. Hidden movies contribute to negative embedding (merged with low-rated movie negatives).
+  - Recommendation page limit: max 100 movies per request (was 50)
   - Taste profile auto-rebuilds in background when: user has <50 rated movies and rates/updates/deletes a movie, or updates favorite_genres via PATCH /auth/profile. Users with 50+ ratings use manual refresh only.
   - Exploration picks: movies from underrepresented genres with high vote_average, scored by `0.50*novelty + 0.40*consensus + 0.10*trending`, rescaled to P25-P75 of main scores
 - Ninth migration: added `source` column to watched_movies and watchlist_movies (tracks origin: 'manual', 'recommendation', 'letterboxd_import')
@@ -133,16 +142,27 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Seed pipeline uses `asyncio.ensure_future()` instead of `BackgroundTasks` (avoids `asyncio.run()` inside existing event loop)
 - OpenAPI spec auto-export: `openapi.json` written to project root on first `/health` hit (for frontend context)
 - Match scores on trending + top-rated + detail: `MovieResponse.match_score` computed via `compute_match_scores()` in `movies/services.py` — reuses ranking weights from `recommendations/ranking.py`
-- Match score scaling: `to_match_percentage()` in `ranking.py` adds flat MATCH_BOOST (0.12) to raw score, capped at 1.0 via `min(score + MATCH_BOOST, 1.0)`. Applied to all score outputs (trending, top-rated, detail, recommendations, group recommendations). Frontend multiplies by 100 for display.
+- Match score scaling: `to_match_percentage()` in `ranking.py` adds flat MATCH_BOOST (0.33) to raw score, capped at 1.0 via `min(score + MATCH_BOOST, 1.0)`. Applied to all score outputs (trending, top-rated, detail, recommendations, group recommendations). Frontend multiplies by 100 for display.
 - Rate limiting: slowapi with per-user keying (JWT sub claim, fallback to IP). Tiered limits: LIMIT_HEAVY (1/day) for seed/sync, LIMIT_IMPORT (3/hour) for letterboxd, LIMIT_REFRESH (5/hour) for rec refresh, LIMIT_SEARCH (30/min) for search/discover, LIMIT_DEFAULT (60/min) for everything else. Disabled in tests via TESTING=true. Config in `app/core/rate_limit.py`.
 - TMDB Changes API sync: `POST /import/sync-movies` polls TMDB Changes API for movies modified since last sync, updates cached movies in-place, re-embeds movies whose overviews changed. Uses `sync_state` table (key-value) to track `last_movie_sync_date`. `_cache_movie()` now supports upsert via `existing_movie` param and returns `(movie, overview_changed)` tuple. Migration: `sync_state` table. Rate-limited to 1/day (LIMIT_HEAVY).
 - Eleventh migration: added `negative_embedding` vector(1536) to profiles, created `hidden_movies` table (user_id, tmdb_id, unique constraint)
 - Auth refresh: POST /auth/refresh (accepts refresh_token, returns new access_token + refresh_token, no JWT required)
-- Taste embedding overhaul: `compute_taste_embeddings()` now uses rating-weighted average of ALL rated movies (no percentile split). Negative embedding only from hidden movies. Quality filter (vote_average >= 1.0) on pgvector candidates removes junk results.
+- Taste embedding overhaul: `compute_taste_embeddings()` uses 20th percentile split — positive from at/above threshold (rating-weighted), negative from below threshold (weighted by MAX_RATING - rating) merged with hidden movies. Requires 10+ rated movies for rating-derived negatives. Quality filter (vote_average >= 1.0) on pgvector candidates removes junk results.
 - Hidden movies: HiddenMovie model in `app/recommendations/models.py`, CRUD in services.py, endpoints in views.py (POST/DELETE /recommendations/{tmdb_id}/hide, GET /recommendations/hidden)
 - Shared recommendation pipeline: `app/recommendations/pipeline.py` — `RecommendationContext` dataclass + `run_recommendation_pipeline()` used by both user and group recs. Eliminates code duplication.
 - Exploration slots: 15% of each page filled with movies from underrepresented genres (high vote_average, scored by novelty + consensus + trending). Scores rescaled to P25-P75 of main algorithm scores so they blend naturally.
 - Auto-rebuild logic changed: `should_auto_rebuild()` replaces `would_affect_top_n()` — always rebuilds for <50 rated movies, never auto-rebuilds for 50+ (manual refresh via POST /recommendations/me/refresh)
+- Public profile endpoints (friendship-gated): GET /auth/users/{id}/profile (stats), /watched (paginated), /friends (list). Schemas: PublicProfileResponse, PublicWatchedListResponse, PublicFriendsListResponse
+- Account deletion (DELETE /auth/account): full cascade cleanup — group ownership transfer, watchlist cleanup, profile cascade, Supabase Auth + avatar deletion (best-effort)
+- `supabase_admin` client in dependencies.py (service role key, for admin operations like deleting auth users)
+- `get_optional_user` dependency: extracts user ID from Bearer token if present, returns None otherwise (for optional auth endpoints)
+- DB connection pooling: `pool_recycle=1800`, `pool_pre_ping=True`
+- TMDB client moved to FastAPI lifespan (httpx.AsyncClient with connection limits, stored on app.state)
+- JSON structured logging via python-json-logger
+- MATCH_BOOST bumped from 0.12 → 0.33
+- Recommendation page limit bumped from 50 → 100
+- Password validation on signup (min 8 chars, 1 uppercase)
+- Test suite: tests/test_auth_public_profile.py (public profile endpoint tests)
 
 ### Recommendation Architecture
 - **Movie seed pipeline** (import_data domain):
@@ -152,8 +172,8 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   4. Cache in `movies` table via SQLAlchemy
   5. Embed overviews with OpenAI `text-embedding-3-small` → store in `movie_embeddings` table
 - **Taste embeddings** (`compute_taste_embeddings()` in `app/recommendations/services.py`):
-  - **Positive embedding**: rating-weighted average of ALL rated movies (weight = rating, 0.5–5.0). A 5-star movie has 10x the pull of a 0.5-star. No threshold/split needed.
-  - **Negative embedding**: only from explicitly hidden movies (mean of hidden movie embeddings). No longer inferred from ratings — a 3/5 is not a dislike signal.
+  - **Positive embedding**: rating-weighted average of movies at/above the user's 20th percentile rating (weight = rating value, 0.5–5.0). If <10 rated movies, all movies go into positive (sample too small for split).
+  - **Negative embedding**: two sources merged with weighted average — (1) movies below 20th percentile rating, weighted by `MAX_RATING - rating` (0.5-star → weight 4.5); (2) explicitly hidden movies (uniform weight 1.0). Requires 10+ rated movies for rating-derived negatives.
   - Both embeddings persisted on Profile model
 - **Shared 4-step pipeline** (`app/recommendations/pipeline.py`):
   - `RecommendationContext` dataclass holds all inputs (embeddings, exclusions, signal context, genre watch counts)
@@ -164,8 +184,8 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - **Step 4**: Exploration sampling (temp=1.5) + blending (85% algo / 15% exploration)
 - **Re-ranking** (`app/recommendations/ranking.py`): `final_score = 0.50*cosine + 0.20*genre + 0.20*consensus + 0.05*director + 0.05*cast - 0.15*negative_cosine`, clamped ≥ 0
 - **Exploration scoring**: `0.50*genre_novelty + 0.40*consensus + 0.10*trending`. Genre novelty = 1 - max familiarity of movie's genres. Trending = recency by release year. Scores rescaled to P25-P75 of main algorithm scores.
-- **Score scaling**: `to_match_percentage(score) = min(score + MATCH_BOOST, 1.0)` (MATCH_BOOST=0.2). Applied to all score outputs.
-- **Hidden movies**: `hidden_movies` table, excluded from candidate pool. Only source of negative embedding. CRUD: POST/DELETE /recommendations/{tmdb_id}/hide, GET /recommendations/hidden
+- **Score scaling**: `to_match_percentage(score) = min(score + MATCH_BOOST, 1.0)` (MATCH_BOOST=0.33). Applied to all score outputs.
+- **Hidden movies**: `hidden_movies` table, excluded from candidate pool. Contributes to negative embedding (merged with low-rated movie negatives). CRUD: POST/DELETE /recommendations/{tmdb_id}/hide, GET /recommendations/hidden
 - **Auto-refresh triggers**: rating changes trigger rebuild only if user has <50 rated movies. Genre updates always trigger rebuild. Users with 50+ ratings use manual POST /recommendations/me/refresh.
 - **Group context**: averages members' positive + negative embeddings, union of watched + hidden IDs, combined genre watch counts for exploration
 - **Source tracking**: `source` column on watched_movies/watchlist_movies tracks origin
@@ -217,9 +237,12 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [x] 15% exploration slots (genre novelty + consensus + trending, rescaled scores)
 - [x] Refactored auto-rebuild: <50 ratings = auto-rebuild on changes, 50+ = manual refresh only
 
-*Last updated: 2026-03-10*
-
 - [x] Fix recommendation quality: rating-weighted taste embedding + quality filter on candidates
+- [x] Public profile endpoints (friendship-gated stats, watched movies, friends list)
+- [x] Account deletion (DELETE /auth/account — full cascade cleanup)
+- [x] DB connection pooling + TMDB client lifespan management
+- [x] JSON structured logging
+- [x] Negative embedding from low-rated movies (20th percentile split, 10+ movies required)
+- [x] Password validation on signup
 
-
-
+*Last updated: 2026-03-19*
