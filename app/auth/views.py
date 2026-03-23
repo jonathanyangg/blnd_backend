@@ -55,6 +55,32 @@ def refresh(request: Request, body: schemas.RefreshRequest):
         raise HTTPException(status_code=401, detail="Session refresh failed")
 
 
+@router.post("/forgot-password", status_code=200)
+@limiter.limit(LIMIT_DEFAULT)
+def forgot_password(request: Request, body: schemas.ForgotPasswordRequest):
+    try:
+        services.forgot_password(body.email)
+    except Exception:
+        pass
+    return {
+        "message": "If an account exists with that email, a reset link has been sent"
+    }
+
+
+@router.post("/reset-password", status_code=200)
+@limiter.limit(LIMIT_DEFAULT)
+def reset_password(
+    request: Request,
+    body: schemas.ResetPasswordRequest,
+    user_id: str = Depends(get_current_user),
+):
+    try:
+        services.reset_password(user_id, body.new_password)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Password reset failed")
+    return {"message": "Password updated successfully"}
+
+
 @router.get("/me", response_model=schemas.UserResponse)
 @limiter.limit(LIMIT_DEFAULT)
 def me(

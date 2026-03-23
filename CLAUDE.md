@@ -146,6 +146,8 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Rate limiting: slowapi with per-user keying (JWT sub claim, fallback to IP). Tiered limits: LIMIT_HEAVY (1/day) for seed/sync, LIMIT_IMPORT (3/hour) for letterboxd, LIMIT_REFRESH (5/hour) for rec refresh, LIMIT_SEARCH (30/min) for search/discover, LIMIT_DEFAULT (60/min) for everything else. Disabled in tests via TESTING=true. Config in `app/core/rate_limit.py`.
 - TMDB Changes API sync: `POST /import/sync-movies` polls TMDB Changes API for movies modified since last sync, updates cached movies in-place, re-embeds movies whose overviews changed. Uses `sync_state` table (key-value) to track `last_movie_sync_date`. `_cache_movie()` now supports upsert via `existing_movie` param and returns `(movie, overview_changed)` tuple. Migration: `sync_state` table. Rate-limited to 1/day (LIMIT_HEAVY).
 - Eleventh migration: added `negative_embedding` vector(1536) to profiles, created `hidden_movies` table (user_id, tmdb_id, unique constraint)
+- Twelfth migration: added indexes on `watched_movies(user_id)`, `watchlist_movies(watchlist_id)`, `friendships(addressee_id)`, `group_members(user_id)` for query performance at scale
+- Password reset: POST /auth/forgot-password (sends reset email via Supabase, no auth required, constant response to prevent email enumeration), POST /auth/reset-password (updates password, requires JWT)
 - Auth refresh: POST /auth/refresh (accepts refresh_token, returns new access_token + refresh_token, no JWT required)
 - Taste embedding overhaul: `compute_taste_embeddings()` uses 20th percentile split — positive from at/above threshold (rating-weighted), negative from below threshold (weighted by MAX_RATING - rating) merged with hidden movies. Requires 10+ rated movies for rating-derived negatives. Quality filter (vote_average >= 1.0) on pgvector candidates removes junk results.
 - Hidden movies: HiddenMovie model in `app/recommendations/models.py`, CRUD in services.py, endpoints in views.py (POST/DELETE /recommendations/{tmdb_id}/hide, GET /recommendations/hidden)
@@ -245,4 +247,4 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [x] Negative embedding from low-rated movies (20th percentile split, 10+ movies required)
 - [x] Password validation on signup
 
-*Last updated: 2026-03-19*
+*Last updated: 2026-03-22*

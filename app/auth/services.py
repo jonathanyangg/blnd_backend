@@ -77,6 +77,18 @@ def refresh_session(refresh_token: str) -> dict:
     }
 
 
+def forgot_password(email: str) -> None:
+    """Send password reset email via Supabase Auth."""
+    supabase.auth.reset_password_email(email)
+
+
+def reset_password(access_token: str, new_password: str) -> None:
+    """Update password using the access token from the reset link."""
+    supabase_admin.auth.admin.update_user_by_id(
+        access_token, {"password": new_password}
+    )
+
+
 def get_profile(user_id: str, db: Session) -> Profile | None:
     return db.query(Profile).filter(Profile.id == user_id).first()
 
