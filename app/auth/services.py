@@ -1,5 +1,6 @@
 import logging
 
+import httpx
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -9,9 +10,89 @@ from app.dependencies import supabase, supabase_admin
 from app.friends.models import Friendship
 from app.groups.models import Group, GroupMember
 from app.movies.models import Movie
+from app.movies.services import get_movie_details
 from app.tracking.models import WatchedMovie, Watchlist, WatchlistMovie
 
 logger = logging.getLogger(__name__)
+
+
+TASTE_GENRES = [
+    "Action",
+    "Comedy",
+    "Drama",
+    "Horror",
+    "Sci-Fi",
+    "Romance",
+    "Thriller",
+    "Animation",
+]
+
+GENRE_ALIASES: dict[str, set[str]] = {
+    "Sci-Fi": {"science fiction"},
+}
+
+
+def _normalize_genre(raw_name: str) -> str | None:
+    normalized = raw_name.strip().lower()
+    for label in TASTE_GENRES:
+        if normalized == label.lower():
+            return label
+        if normalized in GENRE_ALIASES.get(label, set()):
+            return label
+    return None
+
+
+def get_genre_taste(user_id: str, db: Session) -> dict:
+    """Compute per-genre taste scores for a user from their watch history."""
+    rows = (
+        db.query(Movie.genres, WatchedMovie.rating)
+        .join(WatchedMovie, WatchedMovie.tmdb_id == Movie.tmdb_id)
+        .filter(WatchedMovie.user_id == user_id)
+        .all()
+    )
+
+    watch_count: dict[str, int] = {g: 0 for g in TASTE_GENRES}
+    rating_sum: dict[str, float] = {g: 0.0 for g in TASTE_GENRES}
+    rating_count: dict[str, int] = {g: 0 for g in TASTE_GENRES}
+    total_rated = sum(1 for _, r in rows if r is not None)
+
+    for genres, rating in rows:
+        for genre_obj in genres or []:
+            raw_name = (genre_obj.get("name") or "").strip()
+            label = _normalize_genre(raw_name)
+            if label:
+                watch_count[label] += 1
+                if rating is not None:
+                    rating_sum[label] += rating
+                    rating_count[label] += 1
+
+    max_count = max(watch_count.values()) if any(watch_count.values()) else 1
+
+    result = []
+    for genre in TASTE_GENRES:
+        freq = watch_count[genre] / max_count
+
+        if rating_count[genre] > 0:
+            avg_r: float | None = rating_sum[genre] / rating_count[genre]
+            norm_rating = (avg_r - 0.5) / 4.5
+        elif watch_count[genre] > 0:
+            avg_r = None
+            norm_rating = 0.5
+        else:
+            avg_r = None
+            norm_rating = 0.0
+
+        score = round(0.60 * freq + 0.40 * norm_rating, 4)
+        result.append(
+            {
+                "name": genre,
+                "score": score,
+                "watch_count": watch_count[genre],
+                "avg_rating": round(avg_r, 2) if avg_r is not None else None,
+            }
+        )
+
+    return {"genres": result, "total_rated": total_rated}
 
 
 def signup(
@@ -84,7 +165,7 @@ def forgot_password(email: str) -> None:
 
 def reset_password(access_token: str, new_password: str) -> None:
     """Update password using the access token from the reset link."""
-    supabase_admin.auth.admin.update_user_by_id(
+    supabase_admin.auth.admin.update_user_by_id(  # type: ignore[union-attr]
         access_token, {"password": new_password}
     )
 
@@ -354,13 +435,114 @@ def delete_account(user_id: str, db: Session) -> None:
 
     # 5. Delete Supabase Auth user (best-effort)
     try:
-        supabase_admin.auth.admin.delete_user(user_id)
+        supabase_admin.auth.admin.delete_user(user_id)  # type: ignore[union-attr]
     except Exception:
         logger.warning("Failed to delete Supabase Auth user %s", user_id)
 
     # 6. Delete avatar from storage (best-effort)
     if avatar_url:
         try:
-            supabase_admin.storage.from_("avatars").remove([f"{user_id}/avatar.png"])
+            supabase_admin.storage.from_("avatars").remove([f"{user_id}/avatar.png"])  # type: ignore[union-attr]
         except Exception:
             logger.warning("Failed to delete avatar for user %s", user_id)
+
+
+async def oauth_login(
+    provider: str,
+    id_token: str,
+    nonce: str | None,
+    db: Session,
+    authorization_code: str | None = None,
+) -> dict:
+    """Exchange an OAuth provider token for BLND session tokens via Supabase."""
+    credentials: dict[str, str] = {"provider": provider, "token": id_token}
+    if nonce is not None:
+        credentials["nonce"] = nonce
+
+    # Let AuthApiError propagate -- view layer catches it and returns 401
+    auth_response = supabase.auth.sign_in_with_id_token(credentials)  # type: ignore[arg-type]
+
+    if not auth_response.user or not auth_response.session:
+        raise ValueError("OAuth login failed: missing user or session")
+
+    user_id = str(auth_response.user.id)
+
+    # Check if profile exists to determine new vs returning user
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    is_new_user = profile is None
+
+    # Exchange Apple authorization code for refresh_token
+    apple_refresh_token = None
+    if authorization_code and provider == "apple":
+        try:
+            from app.core.apple import exchange_apple_auth_code
+
+            apple_refresh_token = await exchange_apple_auth_code(authorization_code)
+            if profile:  # returning user -- store immediately
+                profile.apple_refresh_token = apple_refresh_token
+                db.commit()
+        except Exception:
+            logger.warning("Apple auth code exchange failed, continuing login")
+
+    return {
+        "access_token": auth_response.session.access_token,
+        "refresh_token": auth_response.session.refresh_token,
+        "user_id": user_id,
+        "is_new_user": is_new_user,
+        "apple_refresh_token": apple_refresh_token,
+    }
+
+
+async def complete_onboarding(
+    user_id: str,
+    username: str,
+    display_name: str | None,
+    favorite_genres: list[str] | None,
+    rated_movies: list[dict] | None,
+    db: Session,
+    tmdb_client: httpx.AsyncClient,
+    apple_refresh_token: str | None = None,
+) -> dict:
+    """Create Profile + Watchlist + WatchedMovie rows atomically for a new OAuth user."""
+    # Guard: profile already exists (double-submit protection)
+    existing = db.query(Profile).filter(Profile.id == user_id).first()
+    if existing:
+        raise ValueError("Profile already exists")
+
+    # Check username uniqueness (same pattern as signup)
+    conflict = db.query(Profile).filter(Profile.username == username).first()
+    if conflict:
+        raise ValueError("Username is already taken")
+
+    # Create watchlist (FK dependency for profile)
+    watchlist = Watchlist()
+    db.add(watchlist)
+    db.flush()
+
+    # Create profile
+    profile = Profile(
+        id=user_id,
+        username=username,
+        display_name=display_name,
+        favorite_genres=favorite_genres,
+        watchlist_id=watchlist.id,
+        apple_refresh_token=apple_refresh_token,
+    )
+    db.add(profile)
+
+    # Cache and track rated movies
+    if rated_movies:
+        for movie in rated_movies:
+            await get_movie_details(movie["tmdb_id"], db, tmdb_client)
+            watched = WatchedMovie(
+                user_id=user_id,
+                tmdb_id=movie["tmdb_id"],
+                rating=movie["rating"],
+                source="onboarding",
+            )
+            db.add(watched)
+
+    db.commit()
+    db.refresh(profile)
+
+    return {"user_id": str(profile.id), "username": profile.username}

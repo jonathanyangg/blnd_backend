@@ -1,4 +1,5 @@
 import re
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -154,3 +155,53 @@ class PublicFriendResponse(BaseModel):
 
 class PublicFriendsListResponse(BaseModel):
     friends: list[PublicFriendResponse]
+
+
+class GenreScore(BaseModel):
+    name: str
+    score: float
+    watch_count: int
+    avg_rating: float | None = None
+
+
+class GenreTasteResponse(BaseModel):
+    genres: list[GenreScore]
+    total_rated: int
+
+
+class OAuthRequest(BaseModel):
+    provider: Literal["apple"]
+    id_token: str
+    nonce: str | None = None
+    authorization_code: str | None = None
+
+
+class OAuthResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    user_id: str
+    is_new_user: bool
+    apple_refresh_token: str | None = None
+
+
+class RatedMovie(BaseModel):
+    tmdb_id: int
+    rating: float = Field(ge=0.5, le=5.0)
+
+
+class CompleteOnboardingRequest(BaseModel):
+    username: str
+    display_name: str | None = Field(default=None, max_length=100)
+    favorite_genres: list[str] | None = Field(default=None, max_length=20)
+    rated_movies: list[RatedMovie] | None = None
+    apple_refresh_token: str | None = None
+
+    @field_validator("username")
+    @classmethod
+    def check_username(cls, v: str) -> str:
+        return validate_username(v)
+
+
+class CompleteOnboardingResponse(BaseModel):
+    user_id: str
+    username: str
