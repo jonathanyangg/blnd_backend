@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     admin_user_id: str = ""
     test_database_url: str = ""
     blnd_disable_rate_limits: str = ""
+    apple_private_key: str = ""
+    apple_key_id: str = ""
+    apple_team_id: str = ""
+    apple_bundle_id: str = ""
 
     model_config = {"env_file": ".env"}
 

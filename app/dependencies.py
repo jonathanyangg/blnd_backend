@@ -14,6 +14,15 @@ from app.database import SessionLocal
 supabase = create_client(settings.supabase_url, settings.supabase_key)
 openai_client = OpenAI(api_key=settings.openai_api_key)
 
+# Admin client for privileged operations (e.g. account deletion)
+# Uses service_role key which bypasses RLS. Created with default options
+# since supabase-py 2.28.0 ClientOptions has a bug with persist_session=False.
+supabase_admin = (
+    create_client(settings.supabase_url, settings.supabase_service_key)
+    if settings.supabase_service_key
+    else None
+)
+
 security = HTTPBearer()
 
 

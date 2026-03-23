@@ -216,7 +216,7 @@ def rebuild_taste_profile(
     if EMBEDDING_STRATEGY == "average":
         positive_emb, negative_emb = compute_taste_embeddings(user_id, db)
         if not positive_emb:
-            raise Exception("User has no movies rated yet")
+            return profile  # No embeddings available yet (e.g. movies not embedded)
         profile.taste_embedding = positive_emb
         profile.negative_embedding = negative_emb
     else:

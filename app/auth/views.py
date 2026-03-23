@@ -1,11 +1,17 @@
+import logging
+
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from starlette.requests import Request
+from supabase_auth.errors import AuthApiError
 
 from app.auth import schemas, services
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.database import SessionLocal
-from app.dependencies import get_current_user, get_db, openai_client
+from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -55,6 +61,66 @@ def refresh(request: Request, body: schemas.RefreshRequest):
         raise HTTPException(status_code=401, detail="Session refresh failed")
 
 
+@router.post("/oauth", response_model=schemas.OAuthResponse)
+@limiter.limit(LIMIT_DEFAULT)
+async def oauth_login_view(
+    request: Request, body: schemas.OAuthRequest, db: Session = Depends(get_db)
+):
+    try:
+        return await services.oauth_login(
+            body.provider, body.id_token, body.nonce, db, body.authorization_code
+        )
+    except AuthApiError:
+        raise HTTPException(status_code=401, detail="Invalid or expired provider token")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=400, detail="OAuth login failed")
+
+
+@router.post("/complete-onboarding", response_model=schemas.CompleteOnboardingResponse)
+@limiter.limit(LIMIT_DEFAULT)
+async def complete_onboarding_view(
+    request: Request,
+    body: schemas.CompleteOnboardingRequest,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+):
+    try:
+        result = await services.complete_onboarding(
+            user_id,
+            body.username,
+            body.display_name,
+            body.favorite_genres,
+            [{"tmdb_id": m.tmdb_id, "rating": m.rating} for m in body.rated_movies]
+            if body.rated_movies
+            else None,
+            db,
+            tmdb_client,
+            apple_refresh_token=body.apple_refresh_token,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Onboarding failed")
+
+    if body.rated_movies:
+        from app.recommendations.services import rebuild_taste_profile
+
+        def _rebuild_in_background() -> None:
+            bg_db = SessionLocal()
+            try:
+                rebuild_taste_profile(user_id, bg_db, openai_client)
+            finally:
+                bg_db.close()
+
+        background_tasks.add_task(_rebuild_in_background)
+
+    return result
+
+
 @router.get("/me", response_model=schemas.UserResponse)
 @limiter.limit(LIMIT_DEFAULT)
 def me(
@@ -73,6 +139,16 @@ def me(
         taste_bio=profile.taste_bio,
         favorite_genres=profile.favorite_genres or [],
     )
+
+
+@router.get("/me/taste", response_model=schemas.GenreTasteResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def get_taste(
+    request: Request,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return services.get_genre_taste(user_id, db)
 
 
 @router.patch("/profile", response_model=schemas.UserResponse)
