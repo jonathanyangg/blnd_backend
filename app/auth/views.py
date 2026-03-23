@@ -39,7 +39,11 @@ def signup(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception:
+    except AuthApiError as e:
+        logger.warning("Supabase signup error: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.warning("Signup failed: %s", e)
         raise HTTPException(status_code=400, detail="Signup failed")
 
 

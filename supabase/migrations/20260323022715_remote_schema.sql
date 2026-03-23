@@ -2,8 +2,6 @@ alter table "public"."hidden_movies" enable row level security;
 
 alter table "public"."movies" add column "vote_count" integer default 0;
 
-alter table "public"."profiles" drop column "apple_refresh_token";
-
 alter table "public"."sync_state" enable row level security;
 
 alter table "public"."watchlist_movies" enable row level security;

@@ -1,6 +1,7 @@
 from collections.abc import Generator
 
 import httpx
+import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from openai import OpenAI
@@ -38,15 +39,33 @@ def get_tmdb_client(request: Request) -> httpx.AsyncClient:
     return request.app.state.tmdb_client
 
 
+_jwks_client = jwt.PyJWKClient(
+    f"{settings.supabase_url}/auth/v1/.well-known/jwks.json",
+    lifespan=3600,
+)
+
+
+def _decode_jwt(token: str) -> str:
+    """Decode a Supabase JWT locally using JWKS and return the user ID (sub claim)."""
+    signing_key = _jwks_client.get_signing_key_from_jwt(token)
+    payload = jwt.decode(
+        token,
+        signing_key,
+        algorithms=["ES256", "HS256"],
+        audience="authenticated",
+    )
+    sub = payload.get("sub")
+    if not sub:
+        raise ValueError("Missing sub claim")
+    return str(sub)
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> str:
-    """Verify JWT via Supabase Auth and return user ID."""
+    """Verify JWT locally and return user ID."""
     try:
-        user_response = supabase.auth.get_user(credentials.credentials)
-        if not user_response or not user_response.user:
-            raise ValueError("No user found")
-        return str(user_response.user.id)
+        return _decode_jwt(credentials.credentials)
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -59,11 +78,7 @@ async def get_optional_user(request: Request) -> str | None:
     auth = request.headers.get("authorization", "")
     if not auth.startswith("Bearer "):
         return None
-    token = auth[7:]
     try:
-        user_response = supabase.auth.get_user(token)
-        if not user_response or not user_response.user:
-            return None
-        return str(user_response.user.id)
+        return _decode_jwt(auth[7:])
     except Exception:
         return None
