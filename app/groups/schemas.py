@@ -43,6 +43,11 @@ class GroupListResponse(BaseModel):
     groups: list[GroupResponse]
 
 
+class GroupFeedRequest(BaseModel):
+    exclude: list[int] = Field(default_factory=list)
+    limit: int = Field(default=50, ge=1, le=200)
+
+
 class GroupRecMovieResponse(BaseModel):
     tmdb_id: int
     title: str

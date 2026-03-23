@@ -266,6 +266,7 @@ def get_group_recommendations(
     db: Session,
     limit: int = 20,
     offset: int = 0,
+    extra_exclude: list[int] | None = None,
 ) -> dict:
     """Generate group recommendations using the shared pipeline."""
     group = db.query(Group).filter(Group.id == group_id).first()
@@ -334,7 +335,7 @@ def get_group_recommendations(
         .filter(HiddenMovie.user_id.in_(member_ids))
         .all()
     ]
-    exclude_ids = list(set(watched_ids + hidden_ids))
+    exclude_ids = list(set(watched_ids + hidden_ids + (extra_exclude or [])))
 
     # Merge signal context across all members
     all_genres: list[str] = []

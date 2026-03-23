@@ -124,6 +124,24 @@ async def get_group_recommendations(
     return services.get_group_recommendations(group_id, user_id, db, limit, offset)
 
 
+@router.post(
+    "/{group_id}/recommendations/feed",
+    response_model=schemas.GroupRecommendationsResponse,
+)
+@limiter.limit(LIMIT_DEFAULT)
+async def get_group_feed(
+    request: Request,
+    group_id: int,
+    body: schemas.GroupFeedRequest,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Infinite scroll feed for group recommendations with exclude list."""
+    return services.get_group_recommendations(
+        group_id, user_id, db, body.limit, 0, extra_exclude=body.exclude
+    )
+
+
 # --- Group Watchlist Endpoints ---
 
 
