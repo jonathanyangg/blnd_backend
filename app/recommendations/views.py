@@ -29,7 +29,9 @@ def _build_user_context(
     hidden_ids = services.get_hidden_movie_ids(user_id, db)
     exclude_ids = list(set(watched_ids + hidden_ids))
 
-    user_genres, top_directors, top_cast = services.get_user_signal_context(user_id, db)
+    user_genres, top_directors, top_cast = services.get_user_signal_context(
+        user_id, db, profile=profile
+    )
     genre_counts, total_watches = services.compute_genre_watch_counts(user_id, db)
 
     return RecommendationContext(

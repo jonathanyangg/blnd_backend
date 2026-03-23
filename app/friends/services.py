@@ -128,11 +128,18 @@ def get_friends(user_id: str, db: Session) -> dict:
         .all()
     )
 
+    # Batch fetch all friend profiles in one query
+    friend_ids = [
+        f.addressee_id if str(f.requester_id) == user_id else f.requester_id
+        for f in friendships
+    ]
+    profiles = db.query(Profile).filter(Profile.id.in_(friend_ids)).all()
+    profile_map = {p.id: p for p in profiles}
+
     friends = []
     for f in friendships:
-        # The friend is whichever side is NOT the current user
         friend_id = f.addressee_id if str(f.requester_id) == user_id else f.requester_id
-        profile = db.query(Profile).filter(Profile.id == friend_id).first()
+        profile = profile_map.get(friend_id)
         if profile:
             friends.append(_profile_to_response(profile, friendship_id=f.id))
 
@@ -159,9 +166,17 @@ def get_pending_requests(user_id: str, db: Session) -> dict:
         .all()
     )
 
+    # Batch fetch all profiles referenced by pending requests
+    all_ids = set()
+    for f in incoming + outgoing:
+        all_ids.add(f.requester_id)
+        all_ids.add(f.addressee_id)
+    profiles = db.query(Profile).filter(Profile.id.in_(all_ids)).all()
+    profile_map = {p.id: p for p in profiles}
+
     return {
-        "incoming": [_to_request_response(f, db) for f in incoming],
-        "outgoing": [_to_request_response(f, db) for f in outgoing],
+        "incoming": [_to_request_response(f, profile_map) for f in incoming],
+        "outgoing": [_to_request_response(f, profile_map) for f in outgoing],
     }
 
 
@@ -204,9 +219,23 @@ def _profile_to_response(profile: Profile, *, friendship_id: int | None = None) 
     return data
 
 
-def _to_request_response(friendship: Friendship, db: Session) -> dict:
-    requester = db.query(Profile).filter(Profile.id == friendship.requester_id).first()
-    addressee = db.query(Profile).filter(Profile.id == friendship.addressee_id).first()
+def _to_request_response(
+    friendship: Friendship,
+    profile_map_or_db: dict | Session,
+) -> dict:
+    if isinstance(profile_map_or_db, dict):
+        requester = profile_map_or_db.get(friendship.requester_id)
+        addressee = profile_map_or_db.get(friendship.addressee_id)
+    else:
+        db = profile_map_or_db
+        profiles = (
+            db.query(Profile)
+            .filter(Profile.id.in_([friendship.requester_id, friendship.addressee_id]))
+            .all()
+        )
+        pmap = {p.id: p for p in profiles}
+        requester = pmap.get(friendship.requester_id)
+        addressee = pmap.get(friendship.addressee_id)
     return {
         "id": friendship.id,
         "requester": _profile_to_response(requester) if requester else {},

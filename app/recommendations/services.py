@@ -57,13 +57,14 @@ def get_top_rated_movies(user_id: str, db: Session, limit: int = 25) -> list[dic
 
 
 def get_user_signal_context(
-    user_id: str, db: Session
+    user_id: str, db: Session, profile: Profile | None = None
 ) -> tuple[list[str], set[str], set[str]]:
     """Extract user's favorite genres, top directors, and top cast from their top-rated movies.
 
     Returns (favorite_genres, top_directors_lowered, top_cast_lowered).
     """
-    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if profile is None:
+        profile = db.query(Profile).filter(Profile.id == user_id).first()
     favorite_genres = (
         profile.favorite_genres if profile and profile.favorite_genres else []
     )

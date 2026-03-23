@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 from sqlalchemy import text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
@@ -159,11 +159,16 @@ def _run_exploration(
     all_exclude = set(ctx.exclude_ids) | exclude_tmdb_ids
 
     # Query high vote_average movies from DB, excluding watched/hidden/algo picks
-    query = db.query(Movie).filter(
-        Movie.vote_average.isnot(None),
-        Movie.vote_average >= 6.0,
-        Movie.vote_count >= 50,
-        Movie.runtime >= 45,
+    # Defer cast JSONB — not needed for exploration scoring or formatting
+    query = (
+        db.query(Movie)
+        .options(defer(Movie.cast))
+        .filter(
+            Movie.vote_average.isnot(None),
+            Movie.vote_average >= 6.0,
+            Movie.vote_count >= 50,
+            Movie.runtime >= 45,
+        )
     )
     if all_exclude:
         query = query.filter(Movie.tmdb_id.notin_(list(all_exclude)))

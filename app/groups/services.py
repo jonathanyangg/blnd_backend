@@ -20,7 +20,6 @@ from app.recommendations.pipeline import (
     RecommendationContext,
     run_recommendation_pipeline,
 )
-from app.recommendations.services import compute_genre_watch_counts
 from app.tracking.models import Watchlist, WatchedMovie
 
 logger = logging.getLogger(__name__)
@@ -283,11 +282,15 @@ def get_group_recommendations(
     if not member_ids:
         return {"results": []}
 
-    # Build averaged positive + negative embeddings from member profiles
+    # Batch fetch all member profiles in one query
+    profiles = db.query(Profile).filter(Profile.id.in_(member_ids)).all()
+    profile_map = {str(p.id): p for p in profiles}
+
+    # Build averaged positive + negative embeddings from cached profiles
     pos_embeddings = []
     neg_embeddings = []
     for mid in member_ids:
-        profile = db.query(Profile).filter(Profile.id == mid).first()
+        profile = profile_map.get(mid)
         if profile and profile.taste_embedding is not None:
             pos_embeddings.append(np.array(list(profile.taste_embedding)))
             if profile.negative_embedding is not None:
@@ -322,7 +325,7 @@ def get_group_recommendations(
         np.mean(neg_embeddings, axis=0).tolist() if neg_embeddings else None
     )
 
-    # Union of all members' watched + hidden movie IDs
+    # Union of all members' watched + hidden movie IDs (batch queries)
     watched_ids = [
         row[0]
         for row in db.query(WatchedMovie.tmdb_id)
@@ -337,39 +340,50 @@ def get_group_recommendations(
     ]
     exclude_ids = list(set(watched_ids + hidden_ids + (extra_exclude or [])))
 
-    # Merge signal context across all members
+    # Merge signal context from cached profiles + batch top movies query
     all_genres: list[str] = []
     all_directors: set[str] = set()
     all_cast: set[str] = set()
     for mid in member_ids:
-        profile = db.query(Profile).filter(Profile.id == mid).first()
+        profile = profile_map.get(mid)
         if profile and profile.favorite_genres:
             all_genres.extend(profile.favorite_genres)
-        top_movies = (
-            db.query(Movie)
-            .join(WatchedMovie, WatchedMovie.tmdb_id == Movie.tmdb_id)
-            .filter(WatchedMovie.user_id == mid, WatchedMovie.rating.isnot(None))
-            .order_by(WatchedMovie.rating.desc())
-            .limit(10)
-            .all()
+
+    # Single query: top 10 rated movies per member (union)
+    top_movies = (
+        db.query(Movie)
+        .join(WatchedMovie, WatchedMovie.tmdb_id == Movie.tmdb_id)
+        .filter(
+            WatchedMovie.user_id.in_(member_ids),
+            WatchedMovie.rating.isnot(None),
         )
-        for m in top_movies:
-            if m.director:
-                all_directors.add(m.director.lower())
-            for c in (m.cast or [])[:5]:
-                name = c.get("name", "")
-                if name:
-                    all_cast.add(name.lower())
+        .order_by(WatchedMovie.rating.desc())
+        .limit(10 * len(member_ids))
+        .all()
+    )
+    for m in top_movies:
+        if m.director:
+            all_directors.add(m.director.lower())
+        for c in (m.cast or [])[:5]:
+            name = c.get("name", "")
+            if name:
+                all_cast.add(name.lower())
     unique_genres = list(set(all_genres))
 
-    # Combined genre watch counts across all members
+    # Combined genre watch counts — single query across all members
+    all_genre_rows = (
+        db.query(Movie.genres)
+        .join(WatchedMovie, WatchedMovie.tmdb_id == Movie.tmdb_id)
+        .filter(WatchedMovie.user_id.in_(member_ids))
+        .all()
+    )
     combined_counts: dict[str, int] = {}
-    combined_total = 0
-    for mid in member_ids:
-        member_counts, member_total = compute_genre_watch_counts(mid, db)
-        for genre, count in member_counts.items():
-            combined_counts[genre] = combined_counts.get(genre, 0) + count
-        combined_total += member_total
+    combined_total = len(all_genre_rows)
+    for (genres,) in all_genre_rows:
+        for g in genres or []:
+            name = g.get("name", "").lower()
+            if name:
+                combined_counts[name] = combined_counts.get(name, 0) + 1
 
     ctx = RecommendationContext(
         positive_embedding=group_positive,

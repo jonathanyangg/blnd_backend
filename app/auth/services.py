@@ -364,12 +364,16 @@ def get_public_friends(caller_id: str, target_id: str, db: Session) -> dict:
         .all()
     )
 
+    friend_ids = [
+        f.addressee_id if str(f.requester_id) == target_id else f.requester_id
+        for f in friendships
+    ]
+    profiles = db.query(Profile).filter(Profile.id.in_(friend_ids)).all()
+    profile_map = {p.id: p for p in profiles}
+
     friends = []
-    for f in friendships:
-        friend_id = (
-            f.addressee_id if str(f.requester_id) == target_id else f.requester_id
-        )
-        profile = db.query(Profile).filter(Profile.id == friend_id).first()
+    for fid in friend_ids:
+        profile = profile_map.get(fid)
         if profile:
             friends.append(
                 {
