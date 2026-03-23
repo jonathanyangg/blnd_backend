@@ -54,10 +54,9 @@ async def update_group(
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    updates = body.model_dump(exclude_unset=True)
-    if not updates:
+    if not body.model_fields_set:
         raise HTTPException(status_code=400, detail="No fields to update")
-    return services.update_group(group_id, user_id, updates, db)
+    return services.update_group(group_id, user_id, body, db)
 
 
 @router.delete("/{group_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -21,7 +21,7 @@ from app.core.rate_limit import LIMIT_HEAVY, LIMIT_IMPORT, limiter
 from app.database import SessionLocal
 from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
 from app.import_data import services, workflows
-from app.import_data.schemas import ImportSummaryResponse
+from app.import_data.schemas import ImportSummaryResponse, SeedStatusResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -62,7 +62,11 @@ async def _run_seed_pipeline_async(
         db.close()
 
 
-@router.post("/seed-movies", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/seed-movies",
+    response_model=SeedStatusResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 @limiter.limit(LIMIT_HEAVY)
 async def seed_movies(
     request: Request,
@@ -85,7 +89,11 @@ async def _run_sync_pipeline_async(tmdb_client: httpx.AsyncClient) -> None:
         db.close()
 
 
-@router.post("/sync-movies", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/sync-movies",
+    response_model=SeedStatusResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 @limiter.limit(LIMIT_HEAVY)
 async def sync_movies(
     request: Request,

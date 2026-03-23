@@ -61,7 +61,7 @@ def refresh(request: Request, body: schemas.RefreshRequest):
         raise HTTPException(status_code=401, detail="Session refresh failed")
 
 
-@router.post("/forgot-password", status_code=200)
+@router.post("/forgot-password", response_model=schemas.MessageResponse)
 @limiter.limit(LIMIT_DEFAULT)
 def forgot_password(request: Request, body: schemas.ForgotPasswordRequest):
     try:
@@ -73,7 +73,7 @@ def forgot_password(request: Request, body: schemas.ForgotPasswordRequest):
     }
 
 
-@router.post("/reset-password", status_code=200)
+@router.post("/reset-password", response_model=schemas.MessageResponse)
 @limiter.limit(LIMIT_DEFAULT)
 def reset_password(
     request: Request,
@@ -186,12 +186,11 @@ def update_profile(
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    updates = body.model_dump(exclude_unset=True)
-    if not updates:
+    if not body.model_fields_set:
         raise HTTPException(status_code=400, detail="No fields to update")
 
     try:
-        profile, genres_changed = services.update_profile(user_id, updates, db)
+        profile, genres_changed = services.update_profile(user_id, body, db)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not profile:

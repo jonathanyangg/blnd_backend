@@ -4,6 +4,7 @@ from datetime import date
 
 class SeedStatusResponse(BaseModel):
     status: str
+    min_popularity: float | None = None
 
 
 class ImportSummaryResponse(BaseModel):

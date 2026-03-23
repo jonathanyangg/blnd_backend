@@ -59,6 +59,10 @@ class LoginResponse(BaseModel):
     user_id: str
 
 
+class MessageResponse(BaseModel):
+    message: str
+
+
 class UserResponse(BaseModel):
     id: str
     username: str

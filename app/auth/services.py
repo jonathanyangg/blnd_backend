@@ -1,8 +1,17 @@
+from __future__ import annotations
+
+import asyncio
 import logging
+from typing import TYPE_CHECKING
 
 import httpx
 from fastapi import HTTPException, status
+
 from sqlalchemy import func, or_
+
+if TYPE_CHECKING:
+    from app.auth.schemas import UpdateProfileRequest
+
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
@@ -195,17 +204,19 @@ def search_users(query: str, user_id: str, db: Session, limit: int = 10) -> list
 
 
 def update_profile(
-    user_id: str, updates: dict, db: Session
+    user_id: str, updates: UpdateProfileRequest, db: Session
 ) -> tuple[Profile | None, bool]:
     """Update profile fields. Returns (profile, genres_changed)."""
+
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile:
         return None, False
 
     genres_changed = False
+    fields = updates.model_dump(exclude_unset=True)
 
-    if "username" in updates:
-        new_username = updates["username"]
+    if "username" in fields:
+        new_username = fields["username"]
         if new_username != profile.username:
             conflict = (
                 db.query(Profile)
@@ -215,13 +226,13 @@ def update_profile(
             if conflict:
                 raise ValueError("Username is already taken")
             profile.username = new_username
-    if "display_name" in updates:
-        profile.display_name = updates["display_name"]
-    if "avatar_url" in updates:
-        profile.avatar_url = updates["avatar_url"]
-    if "favorite_genres" in updates:
+    if "display_name" in fields:
+        profile.display_name = fields["display_name"]
+    if "avatar_url" in fields:
+        profile.avatar_url = fields["avatar_url"]
+    if "favorite_genres" in fields:
         old_genres = profile.favorite_genres or []
-        new_genres = updates["favorite_genres"]
+        new_genres = fields["favorite_genres"]
         if set(old_genres) != set(new_genres):
             genres_changed = True
         profile.favorite_genres = new_genres
@@ -380,6 +391,7 @@ def delete_account(user_id: str, db: Session) -> None:
 
     personal_watchlist_id = profile.watchlist_id
     avatar_url = profile.avatar_url
+    apple_refresh_token = profile.apple_refresh_token
 
     # 1. Handle owned groups
     owned_groups = db.query(Group).filter(Group.created_by == user_id).all()
@@ -445,6 +457,15 @@ def delete_account(user_id: str, db: Session) -> None:
             supabase_admin.storage.from_("avatars").remove([f"{user_id}/avatar.png"])  # type: ignore[union-attr]
         except Exception:
             logger.warning("Failed to delete avatar for user %s", user_id)
+
+    # 7. Revoke Apple refresh token (best-effort)
+    if apple_refresh_token:
+        try:
+            from app.core.apple import revoke_apple_token
+
+            asyncio.ensure_future(revoke_apple_token(apple_refresh_token))
+        except Exception:
+            logger.warning("Failed to revoke Apple token for user %s", user_id)
 
 
 async def oauth_login(

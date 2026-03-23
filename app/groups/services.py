@@ -1,9 +1,15 @@
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 from fastapi import HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+
+if TYPE_CHECKING:
+    from app.groups.schemas import UpdateGroupRequest
 
 from app.auth.models import Profile
 from app.groups.models import Group, GroupMember
@@ -88,7 +94,9 @@ def get_group(group_id: int, user_id: str, db: Session) -> dict:
     return _group_detail(group, db)
 
 
-def update_group(group_id: int, user_id: str, updates: dict, db: Session) -> dict:
+def update_group(
+    group_id: int, user_id: str, updates: UpdateGroupRequest, db: Session
+) -> dict:
     """Update group fields. Any member can update."""
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group:
@@ -98,8 +106,9 @@ def update_group(group_id: int, user_id: str, updates: dict, db: Session) -> dic
 
     _verify_membership(group_id, user_id, db)
 
-    if "name" in updates:
-        group.name = updates["name"]
+    fields = updates.model_dump(exclude_unset=True)
+    if "name" in fields:
+        group.name = fields["name"]
 
     db.commit()
     db.refresh(group)
