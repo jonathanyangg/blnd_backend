@@ -15,17 +15,28 @@ from app.movies import schemas, services
 router = APIRouter()
 
 
+def _parse_exclude(exclude: str) -> set[int] | None:
+    """Parse comma-separated tmdb_id string into a set."""
+    if not exclude:
+        return None
+    try:
+        return {int(x) for x in exclude.split(",") if x.strip()}
+    except ValueError:
+        return None
+
+
 @router.get("/trending", response_model=schemas.MovieSearchResult)
 @limiter.limit(LIMIT_DEFAULT)
 async def get_trending_movies(
     request: Request,
-    page: int = Query(default=1, ge=1, le=500),
+    exclude: str = Query(default="", description="Comma-separated tmdb_ids to exclude"),
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
+    exclude_ids = _parse_exclude(exclude)
     try:
-        data = await services.get_trending_movies(page, tmdb_client)
+        data = await services.get_trending_movies(tmdb_client, exclude=exclude_ids)
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
 
@@ -41,13 +52,14 @@ async def get_trending_movies(
 @limiter.limit(LIMIT_DEFAULT)
 async def get_top_rated_movies(
     request: Request,
-    page: int = Query(default=1, ge=1, le=500),
+    exclude: str = Query(default="", description="Comma-separated tmdb_ids to exclude"),
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
+    exclude_ids = _parse_exclude(exclude)
     try:
-        data = await services.get_top_rated_movies(page, tmdb_client)
+        data = await services.get_top_rated_movies(tmdb_client, exclude=exclude_ids)
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
 
@@ -64,14 +76,17 @@ async def get_top_rated_movies(
 async def discover_movies(
     request: Request,
     genres: str = Query(description="Comma-separated genre names"),
-    page: int = Query(default=1, ge=1, le=500),
+    exclude: str = Query(default="", description="Comma-separated tmdb_ids to exclude"),
     user_id: str | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
     genre_list = [g.strip() for g in genres.split(",") if g.strip()]
+    exclude_ids = _parse_exclude(exclude)
     try:
-        data = await services.discover_movies_by_genres(genre_list, page, tmdb_client)
+        data = await services.discover_movies_by_genres(
+            genre_list, tmdb_client, exclude=exclude_ids
+        )
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
 

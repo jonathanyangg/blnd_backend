@@ -1,40 +1,13 @@
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
-from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
+from app.dependencies import get_current_user, get_db, get_tmdb_client
 from app.tracking import schemas, services
 
 router = APIRouter()
-
-
-def _rebuild_taste_in_background(user_id: str) -> None:
-    from app.database import SessionLocal
-    from app.recommendations.services import rebuild_taste_profile
-
-    db = SessionLocal()
-    try:
-        rebuild_taste_profile(user_id, db, openai_client)
-    finally:
-        db.close()
-
-
-def _trigger_taste_rebuild(
-    background_tasks: BackgroundTasks,
-    user_id: str,
-) -> None:
-    background_tasks.add_task(_rebuild_taste_in_background, user_id)
-
-
-def _should_rebuild(user_id: str, rating: float | None, db: Session) -> bool:
-    """Rebuild if user has <50 rated movies (still learning). Skip otherwise."""
-    if rating is None:
-        return False
-    from app.recommendations.services import should_auto_rebuild
-
-    return should_auto_rebuild(user_id, db)
 
 
 @router.post("/", response_model=schemas.WatchedMovieResponse)
@@ -42,12 +15,11 @@ def _should_rebuild(user_id: str, rating: float | None, db: Session) -> bool:
 async def track_movie(
     request: Request,
     body: schemas.TrackMovieRequest,
-    background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
-    result = await services.track_movie(
+    return await services.track_movie(
         user_id=user_id,
         tmdb_id=body.tmdb_id,
         rating=body.rating,
@@ -57,9 +29,6 @@ async def track_movie(
         tmdb_client=tmdb_client,
         source=body.source,
     )
-    if _should_rebuild(user_id, body.rating, db):
-        _trigger_taste_rebuild(background_tasks, user_id)
-    return result
 
 
 @router.get("/", response_model=schemas.WatchHistoryResponse)
@@ -104,14 +73,10 @@ async def update_watched_movie(
     request: Request,
     tmdb_id: int,
     body: schemas.UpdateTrackingRequest,
-    background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    result = services.update_watched_movie(user_id, tmdb_id, body, db)
-    if _should_rebuild(user_id, body.rating, db):
-        _trigger_taste_rebuild(background_tasks, user_id)
-    return result
+    return services.update_watched_movie(user_id, tmdb_id, body, db)
 
 
 @router.delete("/{tmdb_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -119,19 +84,7 @@ async def update_watched_movie(
 async def delete_watched_movie(
     request: Request,
     tmdb_id: int,
-    background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Check rating before delete so we know if rebuild is needed
-    from app.tracking.models import WatchedMovie
-
-    entry = (
-        db.query(WatchedMovie)
-        .filter(WatchedMovie.user_id == user_id, WatchedMovie.tmdb_id == tmdb_id)
-        .first()
-    )
-    deleted_rating = float(entry.rating) if entry and entry.rating is not None else None
     services.delete_watched_movie(user_id, tmdb_id, db)
-    if _should_rebuild(user_id, deleted_rating, db):
-        _trigger_taste_rebuild(background_tasks, user_id)

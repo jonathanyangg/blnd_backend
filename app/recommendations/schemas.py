@@ -1,4 +1,9 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class FeedRequest(BaseModel):
+    exclude: list[int] = Field(default_factory=list)
+    limit: int = Field(default=50, ge=1, le=200)
 
 
 class RecommendedMovieResponse(BaseModel):

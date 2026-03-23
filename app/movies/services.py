@@ -106,10 +106,39 @@ TMDB_GENRE_MAP = {
 }
 
 
+def _parse_tmdb_results(data: dict) -> list[dict]:
+    """Parse TMDB list response into standardized movie dicts."""
+    results = []
+    for item in data.get("results", []):
+        year = None
+        if item.get("release_date"):
+            try:
+                year = int(item["release_date"][:4])
+            except (ValueError, IndexError):
+                pass
+
+        results.append(
+            {
+                "tmdb_id": item["id"],
+                "title": item["title"],
+                "year": year,
+                "overview": item.get("overview"),
+                "poster_path": item.get("poster_path"),
+                "genres": [{"id": gid} for gid in item.get("genre_ids", [])],
+                "vote_average": item.get("vote_average"),
+            }
+        )
+    return results
+
+
 async def discover_movies_by_genres(
-    genre_names: list[str], page: int, tmdb_client: httpx.AsyncClient
+    genre_names: list[str],
+    tmdb_client: httpx.AsyncClient,
+    exclude: set[int] | None = None,
 ) -> dict:
-    """Discover top-rated movies matching the given genres via TMDB discover API."""
+    """Discover movies matching the given genres with probabilistic sampling."""
+    from app.movies.sampling import fetch_and_sample
+
     genre_ids = []
     for name in genre_names:
         gid = TMDB_GENRE_MAP.get(name.lower())
@@ -119,100 +148,48 @@ async def discover_movies_by_genres(
     if not genre_ids:
         return {"results": [], "total_results": 0}
 
-    response = await tmdb_client.get(
-        "/discover/movie",
-        params={
-            "with_genres": "|".join(genre_ids),
-            "sort_by": "vote_count.desc",
-            "vote_average.gte": 6.0,
-            "page": page,
-        },
-    )
-    response.raise_for_status()
-    data = response.json()
-
-    results = []
-    for item in data.get("results", []):
-        year = None
-        if item.get("release_date"):
-            try:
-                year = int(item["release_date"][:4])
-            except (ValueError, IndexError):
-                pass
-
-        results.append(
-            {
-                "tmdb_id": item["id"],
-                "title": item["title"],
-                "year": year,
-                "overview": item.get("overview"),
-                "poster_path": item.get("poster_path"),
-                "genres": [{"id": gid} for gid in item.get("genre_ids", [])],
-                "vote_average": item.get("vote_average"),
-            }
+    async def fetch_page(page: int) -> list[dict]:
+        response = await tmdb_client.get(
+            "/discover/movie",
+            params={
+                "with_genres": "|".join(genre_ids),
+                "sort_by": "vote_count.desc",
+                "vote_average.gte": 6.0,
+                "page": page,
+            },
         )
+        response.raise_for_status()
+        return _parse_tmdb_results(response.json())
 
-    return {"results": results, "total_results": data.get("total_results", 0)}
-
-
-async def get_top_rated_movies(page: int, tmdb_client: httpx.AsyncClient) -> dict:
-    """Get top-rated movies from TMDB."""
-    response = await tmdb_client.get("/movie/top_rated", params={"page": page})
-    response.raise_for_status()
-    data = response.json()
-
-    results = []
-    for item in data.get("results", []):
-        year = None
-        if item.get("release_date"):
-            try:
-                year = int(item["release_date"][:4])
-            except (ValueError, IndexError):
-                pass
-
-        results.append(
-            {
-                "tmdb_id": item["id"],
-                "title": item["title"],
-                "year": year,
-                "overview": item.get("overview"),
-                "poster_path": item.get("poster_path"),
-                "genres": [{"id": gid} for gid in item.get("genre_ids", [])],
-                "vote_average": item.get("vote_average"),
-            }
-        )
-
-    return {"results": results, "total_results": data.get("total_results", 0)}
+    return await fetch_and_sample(fetch_page, exclude=exclude)
 
 
-async def get_trending_movies(page: int, tmdb_client: httpx.AsyncClient) -> dict:
-    """Get trending movies from TMDB (weekly)."""
-    response = await tmdb_client.get("/trending/movie/week", params={"page": page})
-    response.raise_for_status()
-    data = response.json()
+async def get_top_rated_movies(
+    tmdb_client: httpx.AsyncClient, exclude: set[int] | None = None
+) -> dict:
+    """Get top-rated movies from TMDB with probabilistic sampling."""
+    from app.movies.sampling import fetch_and_sample
 
-    results = []
-    for item in data.get("results", []):
-        year = None
-        if item.get("release_date"):
-            try:
-                year = int(item["release_date"][:4])
-            except (ValueError, IndexError):
-                pass
+    async def fetch_page(page: int) -> list[dict]:
+        response = await tmdb_client.get("/movie/top_rated", params={"page": page})
+        response.raise_for_status()
+        return _parse_tmdb_results(response.json())
 
-        results.append(
-            {
-                "tmdb_id": item["id"],
-                "title": item["title"],
-                "year": year,
-                "overview": item.get("overview"),
-                "poster_path": item.get("poster_path"),
-                "genres": [{"id": gid} for gid in item.get("genre_ids", [])],
-                "vote_average": item.get("vote_average"),
-            }
-        )
+    return await fetch_and_sample(fetch_page, exclude=exclude)
 
-    return {"results": results, "total_results": data.get("total_results", 0)}
+
+async def get_trending_movies(
+    tmdb_client: httpx.AsyncClient, exclude: set[int] | None = None
+) -> dict:
+    """Get trending movies from TMDB (weekly) with probabilistic sampling."""
+    from app.movies.sampling import fetch_and_sample
+
+    async def fetch_page(page: int) -> list[dict]:
+        response = await tmdb_client.get("/trending/movie/week", params={"page": page})
+        response.raise_for_status()
+        return _parse_tmdb_results(response.json())
+
+    return await fetch_and_sample(fetch_page, exclude=exclude)
 
 
 async def search_movies(query: str, page: int, tmdb_client: httpx.AsyncClient) -> dict:

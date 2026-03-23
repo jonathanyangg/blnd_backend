@@ -5,6 +5,7 @@ from starlette.requests import Request
 from app.auth.models import Profile
 from app.core.rate_limit import LIMIT_DEFAULT, LIMIT_REFRESH, limiter
 from app.dependencies import get_current_user, get_db, openai_client
+from app.movies.models import Movie
 from app.recommendations import schemas, services
 from app.recommendations.pipeline import (
     RecommendationContext,
@@ -51,14 +52,13 @@ def get_recommendations(
     request: Request,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ):
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile:
         return {"results": [], "taste_bio": None}
 
-    # Build taste profile inline if missing
     if profile.taste_embedding is None:
         profile = services.rebuild_taste_profile(user_id, db, openai_client)
         if not profile or profile.taste_embedding is None:
@@ -66,6 +66,31 @@ def get_recommendations(
 
     ctx = _build_user_context(user_id, profile, db)
     results = run_recommendation_pipeline(ctx, db, limit, offset)
+    return {"results": results, "taste_bio": profile.taste_bio}
+
+
+@router.post("/me/feed", response_model=schemas.RecommendationsResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def get_feed(
+    request: Request,
+    body: schemas.FeedRequest,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Infinite scroll feed. Accepts previously-seen tmdb_ids to exclude."""
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if not profile:
+        return {"results": [], "taste_bio": None}
+
+    if profile.taste_embedding is None:
+        profile = services.rebuild_taste_profile(user_id, db, openai_client)
+        if not profile or profile.taste_embedding is None:
+            return {"results": [], "taste_bio": profile.taste_bio if profile else None}
+
+    ctx = _build_user_context(user_id, profile, db)
+    # Add frontend's already-seen IDs to exclusion list
+    ctx.exclude_ids = list(set(ctx.exclude_ids + body.exclude))
+    results = run_recommendation_pipeline(ctx, db, body.limit, 0)
     return {"results": results, "taste_bio": profile.taste_bio}
 
 
@@ -99,16 +124,6 @@ def hide_movie(
     db: Session = Depends(get_db),
 ):
     hidden = services.hide_movie(user_id, tmdb_id, db)
-
-    # Auto-rebuild if <50 rated movies
-    if services.should_auto_rebuild(user_id, db):
-        try:
-            services.rebuild_taste_profile(user_id, db, openai_client)
-        except Exception:
-            pass  # Non-critical
-
-    # Fetch movie details for response
-    from app.movies.models import Movie
 
     movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
     return {
