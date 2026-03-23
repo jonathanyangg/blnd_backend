@@ -235,6 +235,54 @@ def remove_from_watchlist(watchlist_id: int, tmdb_id: int, db: Session) -> None:
     db.commit()
 
 
+def get_watchlist_status(user_id: str, tmdb_id: int, db: Session) -> dict:
+    """Check which of the user's watchlists contain a movie."""
+    from app.groups.models import Group, GroupMember
+
+    # Get personal watchlist_id
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    personal_watchlist_id = profile.watchlist_id if profile else None
+
+    # Get all group watchlist_ids for this user
+    group_rows = (
+        db.query(Group.id, Group.watchlist_id)
+        .join(GroupMember, Group.id == GroupMember.group_id)
+        .filter(GroupMember.user_id == user_id, Group.watchlist_id.isnot(None))
+        .all()
+    )
+
+    # Collect all watchlist_ids to check in one query
+    watchlist_id_map: dict[int, int | None] = {}  # watchlist_id -> group_id or None
+    if personal_watchlist_id:
+        watchlist_id_map[personal_watchlist_id] = None
+    for group_id, watchlist_id in group_rows:
+        if watchlist_id:
+            watchlist_id_map[watchlist_id] = group_id
+
+    if not watchlist_id_map:
+        return {"personal": False, "group_ids": []}
+
+    # Single query: which of these watchlists contain the movie?
+    matching = (
+        db.query(WatchlistMovie.watchlist_id)
+        .filter(
+            WatchlistMovie.watchlist_id.in_(list(watchlist_id_map.keys())),
+            WatchlistMovie.tmdb_id == tmdb_id,
+        )
+        .all()
+    )
+    matching_ids = {row[0] for row in matching}
+
+    personal = personal_watchlist_id in matching_ids if personal_watchlist_id else False
+    group_ids = [
+        watchlist_id_map[wid]
+        for wid in matching_ids
+        if watchlist_id_map[wid] is not None
+    ]
+
+    return {"personal": personal, "group_ids": group_ids}
+
+
 def _watchlist_to_response(entry: WatchlistMovie, movie: Movie | None) -> dict:
     """Convert a WatchlistMovie + Movie pair to response dict."""
     return {

@@ -56,6 +56,11 @@ class WatchlistResponse(BaseModel):
     total: int
 
 
+class WatchlistStatusResponse(BaseModel):
+    personal: bool
+    group_ids: list[int]
+
+
 class FriendWatchedResponse(BaseModel):
     user_id: str
     username: str

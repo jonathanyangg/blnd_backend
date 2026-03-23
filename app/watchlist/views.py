@@ -26,6 +26,17 @@ async def get_watchlist(
     return services.get_watchlist(profile.watchlist_id, db, limit, offset)
 
 
+@router.get("/status/{tmdb_id}", response_model=schemas.WatchlistStatusResponse)
+@limiter.limit(LIMIT_DEFAULT)
+async def get_watchlist_status(
+    request: Request,
+    tmdb_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return services.get_watchlist_status(user_id, tmdb_id, db)
+
+
 @router.post(
     "/",
     response_model=schemas.WatchlistMovieResponse,
