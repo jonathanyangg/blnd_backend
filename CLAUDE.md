@@ -185,6 +185,13 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [x] Apple token revocation on account deletion
 - [x] Local JWKS-based JWT verification (replaced Supabase SDK get_user calls)
 - [x] Remove auto-rebuild on rating changes (manual refresh only)
+- [x] N+1 query optimization: batch fetch profiles in friends list, pending requests, public friends, group recommendations
+- [x] Eliminate duplicate profile fetch in recommendation pipeline (pass through instead of re-query)
+- [x] Defer Movie.cast JSONB on exploration pool query (not needed for scoring)
+- [x] Group recommendations: single profile batch + single top movies query + inline genre counting (was 3 loops × N members)
+- [x] Bump watch history + watchlist limit to 500 (for iOS bootstrap cache)
+- [x] POST /groups/{id}/recommendations/feed with exclude list for infinite scroll
+- [x] Pydantic models on all endpoints: MessageResponse, SeedStatusResponse, UpdateProfileRequest/UpdateGroupRequest passed directly
 
 ---
 - **Rating scale**: 0.5–5.0 in 0.5 increments (enforced by DB check constraint on watched_movies)
@@ -198,4 +205,4 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - **Key metrics to track with `source` column**: positive rate (recs rated >= 4 / total recs tracked), watchlist add rate, intra-list diversity
 - **Recency weighting**: optionally weight more recent ratings higher in the average embedding
 
-*Last updated: 2026-03-23*
+*Last updated: 2026-03-24*
