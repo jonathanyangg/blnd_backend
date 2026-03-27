@@ -56,6 +56,7 @@ class GroupRecMovieResponse(BaseModel):
     poster_path: str | None = None
     genres: list[dict] = []
     director: str | None = None
+    trailer_url: str | None = None
     similarity: float
     score: float
 

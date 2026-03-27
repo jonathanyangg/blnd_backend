@@ -242,6 +242,7 @@ def _format_candidate(c: dict) -> dict:
         "poster_path": movie.poster_path,
         "genres": movie.genres or [],
         "director": movie.director,
+        "trailer_url": movie.trailer_url,
         "similarity": round(c.get("similarity", 0.0), 4),
         "score": to_match_percentage(c["score"]),
     }
