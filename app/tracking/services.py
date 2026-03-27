@@ -290,6 +290,7 @@ def _watchlist_to_response(entry: WatchlistMovie, movie: Movie | None) -> dict:
         "tmdb_id": entry.tmdb_id,
         "title": movie.title if movie else "Unknown",
         "poster_path": movie.poster_path if movie else None,
+        "trailer_url": movie.trailer_url if movie else None,
         "added_by": str(entry.added_by) if entry.added_by else None,
         "added_date": entry.added_date,
         "created_at": entry.created_at,

@@ -45,6 +45,7 @@ class WatchlistMovieResponse(BaseModel):
     tmdb_id: int
     title: str
     poster_path: str | None = None
+    trailer_url: str | None = None
     added_by: str | None = None
     added_date: date | None = None
     created_at: datetime
