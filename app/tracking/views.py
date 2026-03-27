@@ -37,7 +37,7 @@ async def get_watch_history(
     request: Request,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ):
     return services.get_watch_history(user_id, limit, offset, db)

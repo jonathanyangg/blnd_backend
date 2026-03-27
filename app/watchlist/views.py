@@ -17,7 +17,7 @@ async def get_watchlist(
     request: Request,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ):
     profile = db.query(Profile).filter(Profile.id == user_id).first()
