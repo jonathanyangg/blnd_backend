@@ -55,10 +55,14 @@ class GroupRecMovieResponse(BaseModel):
     overview: str | None = None
     poster_path: str | None = None
     genres: list[dict] = []
-    director: str | None = None
+    runtime: int | None = None
+    vote_average: float | None = None
     trailer_url: str | None = None
-    similarity: float
-    score: float
+    director: str | None = None
+    cast: list[dict] = []
+    tagline: str | None = None
+    backdrop_path: str | None = None
+    match_score: float
 
 
 class GroupRecommendationsResponse(BaseModel):

@@ -262,9 +262,14 @@ def _cache_movie_from_tmdb(tmdb_data: dict, db: Session) -> Movie:
             director = crew_member["name"]
             break
 
-    # Extract top 5 cast
+    # Extract top 5 cast (with profile photos for frontend avatars)
     cast_list = [
-        {"name": c["name"], "character": c.get("character", "")}
+        {
+            "id": c["id"],
+            "name": c["name"],
+            "character": c.get("character", ""),
+            "profile_path": c.get("profile_path"),
+        }
         for c in credits.get("cast", [])[:5]
     ]
 

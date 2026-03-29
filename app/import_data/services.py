@@ -251,9 +251,14 @@ def _cache_movie(
             director = crew_member["name"]
             break
 
-    # Extract top 5 cast
+    # Extract top 5 cast (with profile photos for frontend avatars)
     cast_list = [
-        {"name": c["name"], "character": c.get("character", "")}
+        {
+            "id": c["id"],
+            "name": c["name"],
+            "character": c.get("character", ""),
+            "profile_path": c.get("profile_path"),
+        }
         for c in credits.get("cast", [])[:5]
     ]
 
@@ -515,6 +520,79 @@ async def run_sync_pipeline(
     return {"updated": updated, "re_embedded": re_embedded, "errors": errors}
 
 
+async def backfill_cast_data(db: Session, tmdb_client: httpx.AsyncClient) -> dict:
+    """Re-fetch all cached movies from TMDB to backfill cast id/profile_path.
+
+    One-time migration — run after updating _cache_movie to include
+    cast id + profile_path fields.
+    """
+    all_movies = db.query(Movie).all()
+    movie_map = {m.tmdb_id: m for m in all_movies}
+    ids_to_update = list(movie_map.keys())
+
+    logger.info("Backfilling cast data for %d cached movies", len(ids_to_update))
+
+    updated = 0
+    errors = 0
+    semaphore = asyncio.Semaphore(FETCH_CONCURRENCY)
+
+    async def _fetch_one(tmdb_id: int) -> dict | None:
+        async with semaphore:
+            for attempt in range(MAX_RETRIES):
+                try:
+                    response = await tmdb_client.get(
+                        f"/movie/{tmdb_id}",
+                        params={"append_to_response": "credits,videos"},
+                    )
+                    if response.status_code == 404:
+                        return None
+                    if response.status_code == 429:
+                        retry_after = float(response.headers.get("Retry-After", "2"))
+                        await asyncio.sleep(retry_after)
+                        continue
+                    response.raise_for_status()
+                    return response.json()
+                except httpx.HTTPStatusError:
+                    if attempt < MAX_RETRIES - 1:
+                        await asyncio.sleep(2**attempt)
+                        continue
+                    return None
+                except Exception:
+                    return None
+            return None
+
+    chunk_size = 500
+    for chunk_start in range(0, len(ids_to_update), chunk_size):
+        chunk = ids_to_update[chunk_start : chunk_start + chunk_size]
+        results = await asyncio.gather(*[_fetch_one(tid) for tid in chunk])
+
+        for tmdb_data in results:
+            if tmdb_data is not None:
+                existing = movie_map.get(tmdb_data["id"])
+                if existing is None:
+                    errors += 1
+                    continue
+                try:
+                    _cache_movie(tmdb_data, db, commit=False, existing_movie=existing)
+                    updated += 1
+                except Exception:
+                    errors += 1
+            else:
+                errors += 1
+
+        db.commit()
+        logger.info(
+            "Backfill progress: %d / %d (updated=%d, errors=%d)",
+            min(chunk_start + chunk_size, len(ids_to_update)),
+            len(ids_to_update),
+            updated,
+            errors,
+        )
+
+    logger.info("Backfill complete: updated=%d, errors=%d", updated, errors)
+    return {"updated": updated, "errors": errors}
+
+
 def _upsert_sync_state(db: Session, key: str, value: str) -> None:
     """Insert or update a sync_state row."""
     row = db.query(SyncState).filter(SyncState.key == key).first()
@@ -524,3 +602,54 @@ def _upsert_sync_state(db: Session, key: str, value: str) -> None:
     else:
         db.add(SyncState(key=key, value=value))
     db.commit()
+
+
+# --- Background runners (fire-and-forget from views) ---
+
+
+async def run_seed_background(
+    tmdb_client: httpx.AsyncClient,
+    openai: OpenAI,
+    min_popularity: float,
+) -> None:
+    """Run seed pipeline in the background with its own DB session."""
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        await run_seed_pipeline(db, tmdb_client, openai, min_popularity)
+    except Exception:
+        logger.exception("Seed pipeline failed")
+    finally:
+        db.close()
+
+
+async def run_sync_background(
+    tmdb_client: httpx.AsyncClient,
+    openai: OpenAI,
+) -> None:
+    """Run sync pipeline in the background with its own DB session."""
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        await run_sync_pipeline(db, tmdb_client, openai)
+    except Exception:
+        logger.exception("Sync pipeline failed")
+    finally:
+        db.close()
+
+
+async def run_backfill_cast_background(
+    tmdb_client: httpx.AsyncClient,
+) -> None:
+    """Run cast backfill in the background with its own DB session."""
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        await backfill_cast_data(db, tmdb_client)
+    except Exception:
+        logger.exception("Cast backfill failed")
+    finally:
+        db.close()

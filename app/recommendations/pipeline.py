@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 from sqlalchemy import text
-from sqlalchemy.orm import Session, defer
+from sqlalchemy.orm import Session
 
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
@@ -159,16 +159,11 @@ def _run_exploration(
     all_exclude = set(ctx.exclude_ids) | exclude_tmdb_ids
 
     # Query high vote_average movies from DB, excluding watched/hidden/algo picks
-    # Defer cast JSONB — not needed for exploration scoring or formatting
-    query = (
-        db.query(Movie)
-        .options(defer(Movie.cast))
-        .filter(
-            Movie.vote_average.isnot(None),
-            Movie.vote_average >= 6.0,
-            Movie.vote_count >= 50,
-            Movie.runtime >= 45,
-        )
+    query = db.query(Movie).filter(
+        Movie.vote_average.isnot(None),
+        Movie.vote_average >= 6.0,
+        Movie.vote_count >= 50,
+        Movie.runtime >= 45,
     )
     if all_exclude:
         query = query.filter(Movie.tmdb_id.notin_(list(all_exclude)))
@@ -234,6 +229,7 @@ def _rescale_exploration_scores(
 def _format_candidate(c: dict) -> dict:
     """Format a candidate dict for response serialization."""
     movie = c["movie"]
+    vote = movie.vote_average
     return {
         "tmdb_id": movie.tmdb_id,
         "title": movie.title,
@@ -241,8 +237,12 @@ def _format_candidate(c: dict) -> dict:
         "overview": movie.overview,
         "poster_path": movie.poster_path,
         "genres": movie.genres or [],
-        "director": movie.director,
+        "runtime": movie.runtime,
+        "vote_average": round(vote / 2, 1) if vote else None,
         "trailer_url": movie.trailer_url,
-        "similarity": round(c.get("similarity", 0.0), 4),
-        "score": to_match_percentage(c["score"]),
+        "director": movie.director,
+        "cast": (movie.cast or [])[:5],
+        "tagline": movie.tagline,
+        "backdrop_path": movie.backdrop_path,
+        "match_score": to_match_percentage(c["score"]),
     }

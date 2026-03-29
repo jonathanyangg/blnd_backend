@@ -1,7 +1,5 @@
 import asyncio
-import io
 import logging
-import zipfile
 
 import httpx
 from fastapi import (
@@ -18,48 +16,18 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.core.rate_limit import LIMIT_HEAVY, LIMIT_IMPORT, limiter
-from app.database import SessionLocal
-from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
+from app.dependencies import (
+    get_current_user,
+    get_db,
+    get_tmdb_client,
+    openai_client,
+    require_admin,
+)
 from app.import_data import services, workflows
 from app.import_data.schemas import ImportSummaryResponse, SeedStatusResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-
-def _require_admin(user_id: str) -> None:
-    from app.config import settings
-
-    admin_ids: set[str] = {settings.admin_user_id} if settings.admin_user_id else set()
-    if not admin_ids or user_id not in admin_ids:
-        raise HTTPException(status_code=403, detail="Admin only")
-
-
-MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
-MAX_DECOMPRESSION_RATIO = 100
-
-
-def _validate_zip(file_bytes: bytes) -> None:
-    """Validate that file_bytes is a valid zip archive with safe decompression ratio."""
-    if not zipfile.is_zipfile(io.BytesIO(file_bytes)):
-        raise HTTPException(status_code=400, detail="File is not a valid zip archive")
-
-    with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
-        total_uncompressed = sum(info.file_size for info in zf.infolist())
-        if total_uncompressed / len(file_bytes) > MAX_DECOMPRESSION_RATIO:
-            raise HTTPException(status_code=400, detail="Zip archive failed validation")
-
-
-async def _run_seed_pipeline_async(
-    tmdb_client: httpx.AsyncClient, min_popularity: float
-) -> None:
-    db = SessionLocal()
-    try:
-        await services.run_seed_pipeline(db, tmdb_client, openai_client, min_popularity)
-    except Exception:
-        logger.exception("Seed pipeline failed")
-    finally:
-        db.close()
 
 
 @router.post(
@@ -71,22 +39,13 @@ async def _run_seed_pipeline_async(
 async def seed_movies(
     request: Request,
     min_popularity: float = Query(default=5.0, ge=1.0),
-    user_id: str = Depends(get_current_user),
+    user_id: str = Depends(require_admin),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
-    _require_admin(user_id)
-    asyncio.ensure_future(_run_seed_pipeline_async(tmdb_client, min_popularity))
+    asyncio.ensure_future(
+        services.run_seed_background(tmdb_client, openai_client, min_popularity)
+    )
     return {"status": "started", "min_popularity": min_popularity}
-
-
-async def _run_sync_pipeline_async(tmdb_client: httpx.AsyncClient) -> None:
-    db = SessionLocal()
-    try:
-        await services.run_sync_pipeline(db, tmdb_client, openai_client)
-    except Exception:
-        logger.exception("Sync pipeline failed")
-    finally:
-        db.close()
 
 
 @router.post(
@@ -97,11 +56,26 @@ async def _run_sync_pipeline_async(tmdb_client: httpx.AsyncClient) -> None:
 @limiter.limit(LIMIT_HEAVY)
 async def sync_movies(
     request: Request,
-    user_id: str = Depends(get_current_user),
+    user_id: str = Depends(require_admin),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
-    _require_admin(user_id)
-    asyncio.ensure_future(_run_sync_pipeline_async(tmdb_client))
+    asyncio.ensure_future(services.run_sync_background(tmdb_client, openai_client))
+    return {"status": "started"}
+
+
+@router.post(
+    "/backfill-cast",
+    response_model=SeedStatusResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@limiter.limit(LIMIT_HEAVY)
+async def backfill_cast(
+    request: Request,
+    user_id: str = Depends(require_admin),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+):
+    """Re-fetch all cached movies to backfill cast id + profile_path."""
+    asyncio.ensure_future(services.run_backfill_cast_background(tmdb_client))
     return {"status": "started"}
 
 
@@ -113,14 +87,13 @@ async def import_letterboxd(
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
-    content_length: int = Header(default=0, le=MAX_UPLOAD_SIZE),
+    content_length: int = Header(default=0, le=workflows.MAX_UPLOAD_SIZE),
 ):
     file_bytes = await file.read()
 
-    if len(file_bytes) > MAX_UPLOAD_SIZE:
+    if len(file_bytes) > workflows.MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="File too large (max 10 MB)")
 
-    _validate_zip(file_bytes)
+    workflows.validate_zip(file_bytes)
 
-    result = await workflows.run_letterboxd_import(user_id, file_bytes, db, tmdb_client)
-    return result
+    return await workflows.run_letterboxd_import(user_id, file_bytes, db, tmdb_client)

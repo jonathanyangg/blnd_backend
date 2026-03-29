@@ -7,14 +7,30 @@ import zipfile
 from datetime import date
 
 import httpx
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
-from app.import_data.schemas import ImportSummaryResponse, FilmRecord
+from app.import_data.schemas import FilmRecord, ImportSummaryResponse
 from app.movies.services import get_movie_details
 from app.tracking.models import WatchedMovie, WatchlistMovie
 
 logger = logging.getLogger(__name__)
+
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_DECOMPRESSION_RATIO = 100
+
+
+def validate_zip(file_bytes: bytes) -> None:
+    """Validate that file_bytes is a valid zip archive with safe decompression ratio."""
+    if not zipfile.is_zipfile(io.BytesIO(file_bytes)):
+        raise HTTPException(status_code=400, detail="File is not a valid zip archive")
+
+    with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+        total_uncompressed = sum(info.file_size for info in zf.infolist())
+        if total_uncompressed / len(file_bytes) > MAX_DECOMPRESSION_RATIO:
+            raise HTTPException(status_code=400, detail="Zip archive failed validation")
+
 
 TMDB_RATE_LIMIT_DELAY = 0.025  # ~40 req/s — matches seed pipeline
 
