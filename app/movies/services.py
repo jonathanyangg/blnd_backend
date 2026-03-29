@@ -1,3 +1,5 @@
+import logging
+
 import httpx
 from sqlalchemy.orm import Session
 
@@ -19,6 +21,8 @@ from app.recommendations.ranking import (
     to_match_percentage,
 )
 from app.recommendations.services import get_user_signal_context
+
+logger = logging.getLogger(__name__)
 
 
 def _compute_score(
@@ -129,6 +133,63 @@ def _parse_tmdb_results(data: dict) -> list[dict]:
             }
         )
     return results
+
+
+def enrich_from_cache(results: list[dict], db: Session) -> tuple[list[dict], list[int]]:
+    """Enrich movie dicts with cached detail data (trailer, cast, etc).
+
+    Returns (enriched_results, uncached_tmdb_ids).
+    """
+    tmdb_ids = [r["tmdb_id"] for r in results]
+    cached = db.query(Movie).filter(Movie.tmdb_id.in_(tmdb_ids)).all()
+    cache_map = {m.tmdb_id: m for m in cached}
+
+    uncached_ids = []
+    for result in results:
+        movie = cache_map.get(result["tmdb_id"])
+        if movie:
+            result["trailer_url"] = movie.trailer_url
+            result["cast"] = movie.cast or []
+            result["director"] = movie.director
+            result["runtime"] = movie.runtime
+            result["tagline"] = movie.tagline
+            result["backdrop_path"] = movie.backdrop_path
+            if movie.genres:
+                result["genres"] = movie.genres
+        else:
+            uncached_ids.append(result["tmdb_id"])
+
+    return results, uncached_ids
+
+
+async def cache_movies_in_background(uncached_ids: list[int]) -> None:
+    """Fetch and cache movie details for uncached IDs. Runs as a background task."""
+    from app.config import settings
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        async with httpx.AsyncClient(
+            base_url="https://api.themoviedb.org/3",
+            headers={"Authorization": f"Bearer {settings.tmdb_api_key}"},
+            timeout=30,
+        ) as client:
+            for tmdb_id in uncached_ids:
+                # Skip if another request cached it in the meantime
+                if db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first():
+                    continue
+                try:
+                    resp = await client.get(
+                        f"/movie/{tmdb_id}",
+                        params={"append_to_response": "credits,videos"},
+                    )
+                    resp.raise_for_status()
+                    _cache_movie_from_tmdb(resp.json(), db)
+                except Exception:
+                    logger.warning("Background cache failed for tmdb_id=%s", tmdb_id)
+                    db.rollback()
+    finally:
+        db.close()
 
 
 async def discover_movies_by_genres(

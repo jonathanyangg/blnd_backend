@@ -1,5 +1,5 @@
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
@@ -29,6 +29,7 @@ def _parse_exclude(exclude: str) -> set[int] | None:
 @limiter.limit(LIMIT_DEFAULT)
 async def get_trending_movies(
     request: Request,
+    background_tasks: BackgroundTasks,
     exclude: str = Query(default="", description="Comma-separated tmdb_ids to exclude"),
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -39,6 +40,10 @@ async def get_trending_movies(
         data = await services.get_trending_movies(tmdb_client, exclude=exclude_ids)
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
+
+    data["results"], uncached = services.enrich_from_cache(data["results"], db)
+    if uncached:
+        background_tasks.add_task(services.cache_movies_in_background, uncached)
 
     tmdb_ids = [r["tmdb_id"] for r in data["results"]]
     scores = services.compute_match_scores(tmdb_ids, user_id, db)
@@ -52,6 +57,7 @@ async def get_trending_movies(
 @limiter.limit(LIMIT_DEFAULT)
 async def get_top_rated_movies(
     request: Request,
+    background_tasks: BackgroundTasks,
     exclude: str = Query(default="", description="Comma-separated tmdb_ids to exclude"),
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -62,6 +68,10 @@ async def get_top_rated_movies(
         data = await services.get_top_rated_movies(tmdb_client, exclude=exclude_ids)
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
+
+    data["results"], uncached = services.enrich_from_cache(data["results"], db)
+    if uncached:
+        background_tasks.add_task(services.cache_movies_in_background, uncached)
 
     tmdb_ids = [r["tmdb_id"] for r in data["results"]]
     scores = services.compute_match_scores(tmdb_ids, user_id, db)
@@ -75,6 +85,7 @@ async def get_top_rated_movies(
 @limiter.limit(LIMIT_SEARCH)
 async def discover_movies(
     request: Request,
+    background_tasks: BackgroundTasks,
     genres: str = Query(description="Comma-separated genre names"),
     exclude: str = Query(default="", description="Comma-separated tmdb_ids to exclude"),
     user_id: str | None = Depends(get_optional_user),
@@ -89,6 +100,10 @@ async def discover_movies(
         )
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
+
+    data["results"], uncached = services.enrich_from_cache(data["results"], db)
+    if uncached:
+        background_tasks.add_task(services.cache_movies_in_background, uncached)
 
     if user_id:
         tmdb_ids = [r["tmdb_id"] for r in data["results"]]

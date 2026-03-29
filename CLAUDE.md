@@ -68,8 +68,8 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Movies domain: fully implemented
   - Model: Movie (SQLAlchemy, includes director, cast, tagline, backdrop_path, imdb_id)
   - Schemas: MovieResponse (all fields including credits, vote_average scaled from TMDB 0-10 to 0-5 via Pydantic validator), MovieSearchResult
-  - Services: TMDB search, movie detail fetch with DB caching (uses append_to_response=credits,videos for single API call), `compute_match_scores()` batch-computes personalized scores for any list of tmdb_ids
-  - Browse endpoints with softmax sampling (`app/movies/sampling.py`): over-fetches 5 TMDB pages concurrently, deduplicates, softmax-samples 20 results weighted by vote_average (temp=1.2). Supports `exclude` query param (comma-separated tmdb_ids) for infinite scroll.
+  - Services: TMDB search, movie detail fetch with DB caching (uses append_to_response=credits,videos for single API call), `compute_match_scores()` batch-computes personalized scores for any list of tmdb_ids, `enrich_from_cache()` merges cached movie details (trailer, cast, director, runtime, tagline, backdrop) into list responses, `cache_movies_in_background()` async background task fetches + caches uncached movies after response
+  - Browse endpoints with softmax sampling (`app/movies/sampling.py`): over-fetches 5 TMDB pages concurrently, deduplicates, softmax-samples 20 results weighted by vote_average (temp=1.2). Supports `exclude` query param (comma-separated tmdb_ids) for infinite scroll. Results enriched from DB cache (hybrid: cached movies get full detail, uncached get basic fields + background task to cache).
   - Views: GET /movies/trending (weekly trending + match_score), GET /movies/top-rated (top rated + match_score), GET /movies/discover?genres= (genre-filtered discovery, optional auth via `get_optional_user`, vote_avg >= 6.0), GET /movies/search (TMDB search), GET /movies/{tmdb_id} (cached detail + trailer + credits + match_score)
   - `match_score` = same ranking formula as recommendations (0.50*cosine + 0.20*genre + 0.20*consensus + 0.05*director + 0.05*cast), null if user has no taste profile
   - All endpoints require JWT auth except discover (optional)
@@ -144,7 +144,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   4. Cache in `movies` table via SQLAlchemy
   5. Embed overviews with OpenAI `text-embedding-3-small` → store in `movie_embeddings` table
 - **Taste embeddings** (`compute_taste_embeddings()` in `app/recommendations/services.py`):
-  - **Positive embedding**: rating-weighted average of movies at/above the user's 20th percentile rating (weight = rating value, 0.5–5.0). If <10 rated movies, all movies go into positive (sample too small for split).
+  - **Positive embedding**: rating-weighted average of movies at/above the user's 20th percentile rating (weight = rating value, 0.5–5.0), blended with watchlist movie embeddings (weight = 1.5 per movie). If <10 rated movies, all movies go into positive (sample too small for split). Watchlist blend is proportional — rated movies' total weight vs watchlist total weight, so watchlist nudges direction without dominating.
   - **Negative embedding**: two sources merged with weighted average — (1) movies below 20th percentile rating, weighted by `MAX_RATING - rating` (0.5-star → weight 4.5); (2) explicitly hidden movies (uniform weight 1.0). Requires 10+ rated movies for rating-derived negatives.
   - Both embeddings persisted on Profile model
 - **Shared 4-step pipeline** (`app/recommendations/pipeline.py`):
@@ -158,8 +158,9 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - **Exploration scoring**: `0.50*genre_novelty + 0.40*consensus + 0.10*trending`. Genre novelty = 1 - max familiarity of movie's genres. Trending = recency by release year. Scores rescaled to P25-P75 of main algorithm scores.
 - **Score scaling**: `to_match_percentage(score) = min(score + MATCH_BOOST, 1.0)` (MATCH_BOOST=0.33). Applied to all score outputs.
 - **Hidden movies**: `hidden_movies` table, excluded from candidate pool. Contributes to negative embedding (merged with low-rated movie negatives). CRUD: POST/DELETE /recommendations/{tmdb_id}/hide, GET /recommendations/hidden
+- **Watchlist exclusion**: personal recs exclude user's watchlist movies; group recs exclude group's shared watchlist movies. Watchlist movies are already queued to watch — no need to recommend them again.
 - **Auto-refresh triggers**: rating changes trigger rebuild only if user has <50 rated movies. Genre updates always trigger rebuild. Users with 50+ ratings use manual POST /recommendations/me/refresh.
-- **Group context**: averages members' positive + negative embeddings, union of watched + hidden IDs, combined genre watch counts for exploration
+- **Group context**: averages members' positive + negative embeddings, union of watched + hidden + group watchlist IDs, combined genre watch counts for exploration
 - **Source tracking**: `source` column on watched_movies/watchlist_movies tracks origin
 - **Ongoing sync**: TMDB Changes API for daily updates to cached movies
 - **On-demand caching**: Movies found via search/Letterboxd import also get cached + embedded
@@ -192,6 +193,9 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [x] Bump watch history + watchlist limit to 500 (for iOS bootstrap cache)
 - [x] POST /groups/{id}/recommendations/feed with exclude list for infinite scroll
 - [x] Pydantic models on all endpoints: MessageResponse, SeedStatusResponse, UpdateProfileRequest/UpdateGroupRequest passed directly
+- [x] Exclude watchlist movies from personal and group recommendations
+- [x] Blend watchlist movies into positive taste embedding (weight 1.5 per movie)
+- [x] Enrich trending/top-rated/discover with cached movie details (trailer, cast, director, runtime, tagline, backdrop) + background task to cache uncached movies
 
 ---
 - **Rating scale**: 0.5–5.0 in 0.5 increments (enforced by DB check constraint on watched_movies)
@@ -205,4 +209,4 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - **Key metrics to track with `source` column**: positive rate (recs rated >= 4 / total recs tracked), watchlist add rate, intra-list diversity
 - **Recency weighting**: optionally weight more recent ratings higher in the average embedding
 
-*Last updated: 2026-03-24*
+*Last updated: 2026-03-29*
