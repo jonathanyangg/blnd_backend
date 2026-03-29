@@ -11,7 +11,7 @@ from app.recommendations.pipeline import (
     RecommendationContext,
     run_recommendation_pipeline,
 )
-from app.tracking.models import WatchedMovie
+from app.tracking.models import WatchedMovie, WatchlistMovie
 
 router = APIRouter()
 
@@ -27,7 +27,17 @@ def _build_user_context(
         .all()
     ]
     hidden_ids = services.get_hidden_movie_ids(user_id, db)
-    exclude_ids = list(set(watched_ids + hidden_ids))
+    watchlist_ids = (
+        [
+            row[0]
+            for row in db.query(WatchlistMovie.tmdb_id)
+            .filter(WatchlistMovie.watchlist_id == profile.watchlist_id)
+            .all()
+        ]
+        if profile.watchlist_id
+        else []
+    )
+    exclude_ids = list(set(watched_ids + hidden_ids + watchlist_ids))
 
     user_genres, top_directors, top_cast = services.get_user_signal_context(
         user_id, db, profile=profile

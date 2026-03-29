@@ -8,7 +8,7 @@ from app.auth.models import Profile
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
 from app.recommendations.models import HiddenMovie
-from app.tracking.models import WatchedMovie
+from app.tracking.models import WatchedMovie, WatchlistMovie
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +16,7 @@ AUTO_REBUILD_THRESHOLD = 50
 NEGATIVE_RATING_MIN_MOVIES = 10
 NEGATIVE_RATING_PERCENTILE = 20
 MAX_RATING = 5.0
+WATCHLIST_WEIGHT = 1.5
 
 
 def should_auto_rebuild(user_id: str, db: Session) -> bool:
@@ -201,7 +202,29 @@ def compute_taste_embeddings(
     # Positive: rating-weighted average of movies at/above threshold
     pos_embeddings = embeddings[pos_mask]
     pos_ratings = ratings[pos_mask]
-    positive_emb = np.average(pos_embeddings, axis=0, weights=pos_ratings).tolist()
+    positive_emb = np.average(pos_embeddings, axis=0, weights=pos_ratings)
+
+    # Blend watchlist movie embeddings as soft positive signal
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if profile and profile.watchlist_id:
+        wl_rows = (
+            db.query(MovieEmbedding.embedding)
+            .join(WatchlistMovie, WatchlistMovie.tmdb_id == MovieEmbedding.tmdb_id)
+            .filter(WatchlistMovie.watchlist_id == profile.watchlist_id)
+            .all()
+        )
+        if wl_rows:
+            wl_embeddings = np.array([e for (e,) in wl_rows])
+            wl_avg = np.mean(wl_embeddings, axis=0)
+            # Weighted merge: rated movies total weight vs watchlist total weight
+            rated_total_weight = float(pos_ratings.sum())
+            wl_total_weight = len(wl_rows) * WATCHLIST_WEIGHT
+            total = rated_total_weight + wl_total_weight
+            positive_emb = (
+                positive_emb * rated_total_weight + wl_avg * wl_total_weight
+            ) / total
+
+    positive_emb = positive_emb.tolist()
 
     # Negative: weighted by (MAX_RATING - rating) so 0.5-star → weight 4.5
     neg_parts: list[np.ndarray] = []

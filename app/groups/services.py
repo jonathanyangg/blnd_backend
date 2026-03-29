@@ -20,7 +20,7 @@ from app.recommendations.pipeline import (
     RecommendationContext,
     run_recommendation_pipeline,
 )
-from app.tracking.models import Watchlist, WatchedMovie
+from app.tracking.models import Watchlist, WatchedMovie, WatchlistMovie
 
 logger = logging.getLogger(__name__)
 
@@ -338,7 +338,19 @@ def get_group_recommendations(
         .filter(HiddenMovie.user_id.in_(member_ids))
         .all()
     ]
-    exclude_ids = list(set(watched_ids + hidden_ids + (extra_exclude or [])))
+    group_watchlist_ids = (
+        [
+            row[0]
+            for row in db.query(WatchlistMovie.tmdb_id)
+            .filter(WatchlistMovie.watchlist_id == group.watchlist_id)
+            .all()
+        ]
+        if group.watchlist_id
+        else []
+    )
+    exclude_ids = list(
+        set(watched_ids + hidden_ids + group_watchlist_ids + (extra_exclude or []))
+    )
 
     # Merge signal context from cached profiles + batch top movies query
     all_genres: list[str] = []
