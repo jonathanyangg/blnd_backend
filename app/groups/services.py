@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 import numpy as np
 from fastapi import HTTPException, status
-from sqlalchemy import func
+from sqlalchemy import func, select, union_all
 from sqlalchemy.orm import Session
 
 if TYPE_CHECKING:
@@ -58,21 +59,27 @@ def list_groups(user_id: str, db: Session) -> dict:
 
     groups = db.query(Group).filter(Group.id.in_(group_ids)).all()
 
+    # Batch fetch all members for all groups in one query (avoids N+1)
+    all_members = (
+        db.query(GroupMember, Profile)
+        .join(Profile, GroupMember.user_id == Profile.id)
+        .filter(GroupMember.group_id.in_(group_ids))
+        .all()
+    )
+    members_by_group: dict[int, list[Profile]] = defaultdict(list)
+    for gm, profile in all_members:
+        members_by_group[gm.group_id].append(profile)
+
     results = []
     for g in groups:
-        members_rows = (
-            db.query(GroupMember, Profile)
-            .join(Profile, GroupMember.user_id == Profile.id)
-            .filter(GroupMember.group_id == g.id)
-            .all()
-        )
-        avatars = [p.avatar_url for _, p in members_rows[:4]]
+        group_members = members_by_group.get(g.id, [])
+        avatars = [p.avatar_url for p in group_members[:4]]
         results.append(
             {
                 "id": g.id,
                 "name": g.name,
                 "created_by": str(g.created_by),
-                "member_count": len(members_rows),
+                "member_count": len(group_members),
                 "member_avatars": avatars,
                 "created_at": g.created_at,
             }
@@ -297,20 +304,30 @@ def get_group_recommendations(
                 neg_embeddings.append(np.array(list(profile.negative_embedding)))
 
     if not pos_embeddings:
-        # Fallback: build from rated movies directly
+        # Fallback: build from rated movies directly (single batch query)
         per_member_limit = max(5, 50 // len(member_ids))
-        for mid in member_ids:
-            rows = (
-                db.query(WatchedMovie.rating, MovieEmbedding.embedding)
-                .join(MovieEmbedding, WatchedMovie.tmdb_id == MovieEmbedding.tmdb_id)
-                .filter(WatchedMovie.user_id == mid, WatchedMovie.rating.isnot(None))
-                .order_by(WatchedMovie.rating.desc())
-                .limit(per_member_limit)
-                .all()
+        all_rows = (
+            db.query(
+                WatchedMovie.user_id, WatchedMovie.rating, MovieEmbedding.embedding
             )
+            .join(MovieEmbedding, WatchedMovie.tmdb_id == MovieEmbedding.tmdb_id)
+            .filter(
+                WatchedMovie.user_id.in_(member_ids),
+                WatchedMovie.rating.isnot(None),
+            )
+            .order_by(WatchedMovie.user_id, WatchedMovie.rating.desc())
+            .all()
+        )
+        rows_by_member: dict[str, list[tuple[float, list[float]]]] = defaultdict(list)
+        for uid, rating, embedding in all_rows:
+            uid_str = str(uid)
+            if len(rows_by_member[uid_str]) < per_member_limit:
+                rows_by_member[uid_str].append((float(rating), embedding))
+        for mid in member_ids:
+            rows = rows_by_member.get(mid, [])
             if not rows:
                 continue
-            ratings = np.array([float(r) for r, _ in rows])
+            ratings = np.array([r for r, _ in rows])
             embeddings = np.array([e for _, e in rows])
             if ratings.sum() == 0:
                 continue
@@ -325,31 +342,20 @@ def get_group_recommendations(
         np.mean(neg_embeddings, axis=0).tolist() if neg_embeddings else None
     )
 
-    # Union of all members' watched + hidden movie IDs (batch queries)
-    watched_ids = [
-        row[0]
-        for row in db.query(WatchedMovie.tmdb_id)
-        .filter(WatchedMovie.user_id.in_(member_ids))
-        .all()
+    # Union of all members' watched + hidden + group watchlist IDs (single query)
+    exclude_stmts = [
+        select(WatchedMovie.tmdb_id).where(WatchedMovie.user_id.in_(member_ids)),
+        select(HiddenMovie.tmdb_id).where(HiddenMovie.user_id.in_(member_ids)),
     ]
-    hidden_ids = [
-        row[0]
-        for row in db.query(HiddenMovie.tmdb_id)
-        .filter(HiddenMovie.user_id.in_(member_ids))
-        .all()
-    ]
-    group_watchlist_ids = (
-        [
-            row[0]
-            for row in db.query(WatchlistMovie.tmdb_id)
-            .filter(WatchlistMovie.watchlist_id == group.watchlist_id)
-            .all()
-        ]
-        if group.watchlist_id
-        else []
-    )
+    if group.watchlist_id:
+        exclude_stmts.append(
+            select(WatchlistMovie.tmdb_id).where(
+                WatchlistMovie.watchlist_id == group.watchlist_id
+            )
+        )
+    combined = union_all(*exclude_stmts)
     exclude_ids = list(
-        set(watched_ids + hidden_ids + group_watchlist_ids + (extra_exclude or []))
+        {row[0] for row in db.execute(combined).all()} | set(extra_exclude or [])
     )
 
     # Merge signal context from cached profiles + batch top movies query
@@ -429,27 +435,32 @@ def compute_group_match_scores(
     if not member_ids:
         return {}
 
-    # Build group embedding from members' rated movies
+    # Build group embedding from members' rated movies (single batch query)
     per_member_limit = max(5, 50 // len(member_ids))
-    member_embeddings = []
+    all_rows = (
+        db.query(WatchedMovie.user_id, WatchedMovie.rating, MovieEmbedding.embedding)
+        .join(MovieEmbedding, WatchedMovie.tmdb_id == MovieEmbedding.tmdb_id)
+        .filter(WatchedMovie.user_id.in_(member_ids), WatchedMovie.rating.isnot(None))
+        .order_by(WatchedMovie.user_id, WatchedMovie.rating.desc())
+        .all()
+    )
 
+    # Group by member and take top N per member in memory
+    rows_by_member: dict[str, list[tuple[float, list[float]]]] = defaultdict(list)
+    for uid, rating, embedding in all_rows:
+        uid_str = str(uid)
+        if len(rows_by_member[uid_str]) < per_member_limit:
+            rows_by_member[uid_str].append((float(rating), embedding))
+
+    member_embeddings = []
     for mid in member_ids:
-        rows = (
-            db.query(WatchedMovie.rating, MovieEmbedding.embedding)
-            .join(MovieEmbedding, WatchedMovie.tmdb_id == MovieEmbedding.tmdb_id)
-            .filter(WatchedMovie.user_id == mid, WatchedMovie.rating.isnot(None))
-            .order_by(WatchedMovie.rating.desc())
-            .limit(per_member_limit)
-            .all()
-        )
+        rows = rows_by_member.get(mid, [])
         if not rows:
             continue
-
-        ratings = np.array([float(r) for r, _ in rows])
+        ratings = np.array([r for r, _ in rows])
         embeddings = np.array([e for _, e in rows])
         if ratings.sum() == 0:
             continue
-
         weighted_avg = np.average(embeddings, axis=0, weights=ratings)
         member_embeddings.append(weighted_avg)
 
