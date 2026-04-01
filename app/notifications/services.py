@@ -114,6 +114,7 @@ async def send_push(
     aps: dict[str, object] = {
         "alert": {"title": title, "body": body},
         "sound": "default",
+        "badge": 1,
     }
     if thread_id:
         aps["thread-id"] = thread_id
