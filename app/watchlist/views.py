@@ -1,11 +1,13 @@
 import httpx
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.auth.models import Profile
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
-from app.dependencies import get_current_user, get_db, get_tmdb_client
+from app.database import SessionLocal
+from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
+from app.recommendations.services import increment_action_counter, rebuild_taste_profile
 from app.tracking import schemas, services
 
 router = APIRouter()
@@ -46,6 +48,7 @@ async def get_watchlist_status(
 async def add_to_watchlist(
     request: Request,
     body: schemas.AddToWatchlistRequest,
+    background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
@@ -53,9 +56,20 @@ async def add_to_watchlist(
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile or not profile.watchlist_id:
         return Response(status_code=status.HTTP_404_NOT_FOUND)
-    return await services.add_to_watchlist(
+    result = await services.add_to_watchlist(
         profile.watchlist_id, body.tmdb_id, user_id, db, tmdb_client, body.source
     )
+    if increment_action_counter(user_id, db):
+
+        def _rebuild() -> None:
+            bg_db = SessionLocal()
+            try:
+                rebuild_taste_profile(user_id, bg_db, openai_client)
+            finally:
+                bg_db.close()
+
+        background_tasks.add_task(_rebuild)
+    return result
 
 
 @router.delete("/{tmdb_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -1,10 +1,12 @@
 import httpx
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
-from app.dependencies import get_current_user, get_db, get_tmdb_client
+from app.database import SessionLocal
+from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
+from app.recommendations.services import increment_action_counter, rebuild_taste_profile
 from app.tracking import schemas, services
 
 router = APIRouter()
@@ -15,11 +17,12 @@ router = APIRouter()
 async def track_movie(
     request: Request,
     body: schemas.TrackMovieRequest,
+    background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
-    return await services.track_movie(
+    result = await services.track_movie(
         user_id=user_id,
         tmdb_id=body.tmdb_id,
         rating=body.rating,
@@ -29,6 +32,17 @@ async def track_movie(
         tmdb_client=tmdb_client,
         source=body.source,
     )
+    if increment_action_counter(user_id, db):
+
+        def _rebuild() -> None:
+            bg_db = SessionLocal()
+            try:
+                rebuild_taste_profile(user_id, bg_db, openai_client)
+            finally:
+                bg_db.close()
+
+        background_tasks.add_task(_rebuild)
+    return result
 
 
 @router.get("/", response_model=schemas.WatchHistoryResponse)

@@ -13,6 +13,7 @@ from app.tracking.models import WatchedMovie, WatchlistMovie
 logger = logging.getLogger(__name__)
 
 AUTO_REBUILD_THRESHOLD = 50
+REBUILD_ACTION_INTERVAL = 5
 NEGATIVE_RATING_MIN_MOVIES = 10
 NEGATIVE_RATING_PERCENTILE = 20
 MAX_RATING = 5.0
@@ -31,6 +32,24 @@ def should_auto_rebuild(user_id: str, db: Session) -> bool:
         .count()
     )
     return count < AUTO_REBUILD_THRESHOLD
+
+
+def increment_action_counter(user_id: str, db: Session) -> bool:
+    """Increment action counter. Returns True if a rebuild should be triggered."""
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if not profile:
+        return False
+
+    profile.actions_since_rebuild = (profile.actions_since_rebuild or 0) + 1
+
+    if profile.actions_since_rebuild >= REBUILD_ACTION_INTERVAL:
+        profile.actions_since_rebuild = 0
+        db.commit()
+        logger.info("Debounced taste rebuild triggered for user %s", user_id)
+        return True
+
+    db.commit()
+    return False
 
 
 def get_top_rated_movies(user_id: str, db: Session, limit: int = 25) -> list[dict]:

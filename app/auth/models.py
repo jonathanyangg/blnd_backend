@@ -21,6 +21,9 @@ class Profile(Base):
     taste_embedding = mapped_column(Vector(1536), nullable=True)
     negative_embedding = mapped_column(Vector(1536), nullable=True)
     apple_refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actions_since_rebuild: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
     watchlist_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

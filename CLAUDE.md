@@ -41,13 +41,14 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Project scaffolding: folder structure, config, database, dependencies, main.py
 - Pre-commit hooks: ruff, ruff-format, codespell, pyright (pyrightconfig.json points to .venv)
 - Supabase project set up, CLI initialized and linked
-- Migrations (16 total in `supabase/migrations/`):
+- Migrations (17 total in `supabase/migrations/`):
   - Initial schema: profiles, movies, watched_movies, friendships, groups, group_members, movie_embeddings, pgvector, match_movies RPC
   - Taste profile fields on profiles, trailer_url/detail fields on movies, liked on watched_movies
   - Standalone watchlists table, watchlist_id on profiles/groups, watchlist_movies with watchlist_id FK
   - Source column on watched_movies/watchlist_movies, sync_state table
   - Negative embedding + hidden_movies, vote_count on movies
   - Apple refresh token on profiles, performance indexes, remote schema sync
+  - actions_since_rebuild counter on profiles (debounced taste rebuild every 5 actions)
 - Auth domain: fully implemented
   - Models: Profile (taste fields, apple_refresh_token)
   - Schemas: signup/login/refresh/profile, OAuth, onboarding, genre taste, public profile
@@ -84,7 +85,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Views: POST /tracking/ (track/upsert), GET /tracking/ (paginated history), GET /tracking/{tmdb_id}, PATCH /tracking/{tmdb_id}, DELETE /tracking/{tmdb_id}, GET /tracking/{tmdb_id}/friends (friends who watched this movie with their ratings/reviews)
   - All endpoints require JWT auth; POST auto-caches movie from TMDB if not in DB
   - Tracking a movie auto-removes it from the user's personal watchlist (if present)
-  - No auto-rebuild of taste profile on rating changes (removed — users manually refresh)
+  - Debounced taste rebuild: every 5 user actions (rate/hide/watchlist) triggers background rebuild via BackgroundTasks
 - Friends domain: fully implemented
   - Model: Friendship (SQLAlchemy, matches friendships table with unique(requester_id, addressee_id))
   - Schemas: SendFriendRequestRequest, FriendResponse (includes friendship_id for delete), FriendRequestResponse, FriendListResponse, PendingRequestsResponse
@@ -126,7 +127,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Re-ranking formula: `0.50*cosine + 0.20*genre + 0.20*consensus + 0.05*director + 0.05*cast - 0.15*negative_cosine`, clamped ≥ 0
   - Views: GET /recommendations/me (limit up to 200), POST /recommendations/me/feed (infinite scroll — accepts `exclude` list of seen tmdb_ids + `limit`), POST /recommendations/me/refresh, POST /recommendations/{tmdb_id}/hide, DELETE /recommendations/{tmdb_id}/hide, GET /recommendations/hidden
   - Hidden movies: HiddenMovie model, excluded from recs. Hidden movies contribute to negative embedding (merged with low-rated movie negatives).
-  - No auto-rebuild on rating changes (removed). Users manually refresh via POST /recommendations/me/refresh. Genre updates via PATCH /auth/profile still trigger background rebuild.
+  - Debounced taste rebuild: `actions_since_rebuild` counter on profiles, triggers background rebuild every 5 actions (rate/hide/watchlist). Genre updates via PATCH /auth/profile still trigger immediate background rebuild. Manual refresh via POST /recommendations/me/refresh always rebuilds.
   - Exploration picks: movies from underrepresented genres with high vote_average, scored by `0.50*novelty + 0.40*consensus + 0.10*trending`, rescaled to P25-P75 of main scores
 - TMDB Changes API sync: `POST /import/sync-movies` polls TMDB Changes API for movies modified since last sync, updates cached movies in-place, re-embeds on overview change. Uses `sync_state` table. Rate-limited to 1/day.
 - JWT verification: local JWKS-based validation via PyJWKClient (ES256/HS256, audience=authenticated, 1h cache)
@@ -159,7 +160,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - **Score scaling**: `to_match_percentage(score) = min(score + MATCH_BOOST, 1.0)` (MATCH_BOOST=0.33). Applied to all score outputs.
 - **Hidden movies**: `hidden_movies` table, excluded from candidate pool. Contributes to negative embedding (merged with low-rated movie negatives). CRUD: POST/DELETE /recommendations/{tmdb_id}/hide, GET /recommendations/hidden
 - **Watchlist exclusion**: personal recs exclude user's watchlist movies; group recs exclude group's shared watchlist movies. Watchlist movies are already queued to watch — no need to recommend them again.
-- **Auto-refresh triggers**: rating changes trigger rebuild only if user has <50 rated movies. Genre updates always trigger rebuild. Users with 50+ ratings use manual POST /recommendations/me/refresh.
+- **Debounced taste rebuild**: `actions_since_rebuild` counter on profiles increments on rate/hide/watchlist actions. Every 5 actions (`REBUILD_ACTION_INTERVAL`), triggers a background `rebuild_taste_profile()` via FastAPI `BackgroundTasks` and resets counter to 0. Wired into POST /tracking/, POST /recommendations/{id}/hide, POST /watchlist/. Genre updates via PATCH /auth/profile still trigger immediate background rebuild. Manual refresh via POST /recommendations/me/refresh always rebuilds.
 - **Group context**: averages members' positive + negative embeddings, union of watched + hidden + group watchlist IDs, combined genre watch counts for exploration
 - **Source tracking**: `source` column on watched_movies/watchlist_movies tracks origin
 - **Ongoing sync**: TMDB Changes API for daily updates to cached movies
@@ -185,7 +186,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [x] Friends who watched (GET /tracking/{tmdb_id}/friends)
 - [x] Apple token revocation on account deletion
 - [x] Local JWKS-based JWT verification (replaced Supabase SDK get_user calls)
-- [x] Remove auto-rebuild on rating changes (manual refresh only)
+- [x] Debounced taste rebuild every 5 actions (rate/hide/watchlist) via BackgroundTasks
 - [x] N+1 query optimization: batch fetch profiles in friends list, pending requests, public friends, group recommendations
 - [x] Eliminate duplicate profile fetch in recommendation pipeline (pass through instead of re-query)
 - [x] Defer Movie.cast JSONB on exploration pool query (not needed for scoring)
@@ -209,4 +210,4 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - **Key metrics to track with `source` column**: positive rate (recs rated >= 4 / total recs tracked), watchlist add rate, intra-list diversity
 - **Recency weighting**: optionally weight more recent ratings higher in the average embedding
 
-*Last updated: 2026-03-29*
+*Last updated: 2026-04-01*
