@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import httpx
+from aioapns import APNs
 from fastapi import FastAPI
 from pythonjsonlogger.json import JsonFormatter  # pyright: ignore[reportMissingImports]
 from slowapi import _rate_limit_exceeded_handler
@@ -17,6 +18,7 @@ from app.friends.views import router as friends_router
 from app.groups.views import router as groups_router
 from app.import_data.views import router as import_router
 from app.movies.views import router as movies_router
+from app.notifications.views import router as notifications_router
 from app.recommendations.views import router as recommendations_router
 from app.tracking.views import router as tracking_router
 from app.watchlist.views import router as watchlist_router
@@ -40,6 +42,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         timeout=30,
         limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
     )
+
+    # APNs client -- graceful degradation when not configured
+    if settings.apns_key and settings.apns_key_id:
+        app.state.apns_client = APNs(
+            key=settings.apns_key,
+            key_id=settings.apns_key_id,
+            team_id=settings.apple_team_id,
+            topic=settings.apple_bundle_id,
+            use_sandbox=settings.apns_use_sandbox == "true",
+        )
+    else:
+        app.state.apns_client = None
+
     yield
     await app.state.tmdb_client.aclose()
     engine.dispose()
@@ -60,6 +75,9 @@ app.include_router(
 app.include_router(friends_router, prefix="/friends", tags=["friends"])
 app.include_router(groups_router, prefix="/groups", tags=["groups"])
 app.include_router(watchlist_router, prefix="/watchlist", tags=["watchlist"])
+app.include_router(
+    notifications_router, prefix="/notifications", tags=["notifications"]
+)
 
 
 @app.get("/health")

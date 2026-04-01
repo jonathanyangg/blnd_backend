@@ -1,0 +1,38 @@
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import BigInteger, Boolean, DateTime, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.database import Base
+
+
+class DeviceToken(Base):
+    __tablename__ = "device_tokens"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    token: Mapped[str] = mapped_column(Text, nullable=False)
+    platform: Mapped[str] = mapped_column(String, default="ios")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+    __table_args__ = (UniqueConstraint("user_id", "token"),)
+
+
+class NotificationPreference(Base):
+    __tablename__ = "notification_preferences"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    friend_requests: Mapped[bool] = mapped_column(Boolean, default=True)
+    group_invites: Mapped[bool] = mapped_column(Boolean, default=True)
+    recommendations: Mapped[bool] = mapped_column(Boolean, default=True)
+    friend_activity: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
