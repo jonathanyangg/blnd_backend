@@ -1,12 +1,16 @@
-"""Notification domain endpoints: device token CRUD, notification preferences."""
+"""Notification domain endpoints: device token CRUD, notification preferences, digest."""
 
-from fastapi import APIRouter, Depends, status
+import asyncio
+
+from aioapns import APNs
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 from starlette.responses import Response
 
-from app.core.rate_limit import LIMIT_DEFAULT, limiter
-from app.dependencies import get_current_user, get_db
+from app.config import settings
+from app.core.rate_limit import LIMIT_DEFAULT, LIMIT_HEAVY, limiter
+from app.dependencies import get_apns_client, get_current_user, get_db
 from app.notifications import schemas, services
 
 router = APIRouter()
@@ -67,3 +71,22 @@ async def update_preferences(
         recommendations=pref.recommendations,
         friend_activity=pref.friend_activity,
     )
+
+
+@router.post(
+    "/send-weekly-digest",
+    response_model=schemas.DigestStatusResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@limiter.limit(LIMIT_HEAVY)
+async def send_weekly_digest(
+    request: Request,
+    x_digest_key: str = Header(..., alias="X-Digest-Key"),
+    apns_client: APNs | None = Depends(get_apns_client),
+) -> schemas.DigestStatusResponse:
+    """Trigger weekly digest push notifications (API key auth, for cron use)."""
+    if not settings.digest_api_key or x_digest_key != settings.digest_api_key:
+        raise HTTPException(status_code=403, detail="Invalid digest key")
+
+    asyncio.ensure_future(services.run_weekly_digest(apns_client))
+    return schemas.DigestStatusResponse(status="started")

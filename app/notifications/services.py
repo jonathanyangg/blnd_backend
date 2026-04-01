@@ -1,14 +1,19 @@
-"""Notification domain services: device CRUD, preference CRUD, send_push."""
+"""Notification domain services: device CRUD, preference CRUD, send_push, digest."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from aioapns import APNs, NotificationRequest
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.auth.models import Profile
+from app.database import SessionLocal
 from app.notifications.models import DeviceToken, NotificationPreference
 
 logger = logging.getLogger(__name__)
+
+DIGEST_COOLDOWN_DAYS = 6
 
 
 def register_device(user_id: str, token: str, platform: str, db: Session) -> None:
@@ -130,3 +135,63 @@ async def send_push(
         db.commit()
 
     return sent
+
+
+async def run_weekly_digest(apns_client: APNs | None) -> None:
+    """Send weekly digest push to all eligible users. Idempotent."""
+    db = SessionLocal()
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=DIGEST_COOLDOWN_DAYS)
+
+        eligible_user_ids = (
+            db.query(Profile.id)
+            .join(DeviceToken, DeviceToken.user_id == Profile.id)
+            .outerjoin(
+                NotificationPreference,
+                NotificationPreference.user_id == Profile.id,
+            )
+            .filter(
+                Profile.taste_embedding.isnot(None),
+                or_(
+                    NotificationPreference.last_digest_sent_at.is_(None),
+                    NotificationPreference.last_digest_sent_at < cutoff,
+                ),
+                or_(
+                    NotificationPreference.recommendations.is_(None),
+                    NotificationPreference.recommendations == True,  # noqa: E712
+                ),
+            )
+            .distinct()
+            .all()
+        )
+
+        sent_count = 0
+        for (user_id,) in eligible_user_ids:
+            try:
+                count = await send_push(
+                    user_id=str(user_id),
+                    notification_type="recommendations",
+                    title="Fresh picks this week",
+                    body="See what we found for you",
+                    data={"type": "weekly_digest"},
+                    db=db,
+                    apns_client=apns_client,
+                )
+                if count > 0:
+                    pref = get_or_create_preferences(str(user_id), db)
+                    pref.last_digest_sent_at = datetime.now(timezone.utc)
+                    db.commit()
+                    sent_count += 1
+            except Exception:
+                logger.exception("Digest send failed for user %s", user_id)
+                continue
+
+        logger.info(
+            "Weekly digest complete: sent to %d/%d eligible users",
+            sent_count,
+            len(eligible_user_ids),
+        )
+    except Exception:
+        logger.exception("Weekly digest failed")
+    finally:
+        db.close()
