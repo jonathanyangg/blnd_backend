@@ -1,12 +1,19 @@
+import asyncio
+
 import httpx
+from aioapns import APNs
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
+from app.auth.models import Profile
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
-from app.dependencies import get_current_user, get_db, get_tmdb_client
+from app.database import SessionLocal
+from app.dependencies import get_apns_client, get_current_user, get_db, get_tmdb_client
 from app.groups import schemas, services
 from app.groups.models import Group
+from app.notifications import services as notification_services
+from app.notifications.services import THREAD_GROUP_INVITES
 from app.tracking import schemas as tracking_schemas
 from app.tracking import services as watchlist_services
 
@@ -78,8 +85,40 @@ async def add_member(
     body: schemas.AddMemberRequest,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
+    apns_client: APNs | None = Depends(get_apns_client),
 ):
-    return services.add_member(group_id, user_id, body.username, db)
+    result = services.add_member(group_id, user_id, body.username, db)
+
+    # Gather data for notification (within request scope)
+    target_profile = db.query(Profile).filter(Profile.username == body.username).first()
+    adder_profile = db.query(Profile).filter(Profile.id == user_id).first()
+    group_name = result.get("name", "a group")
+
+    if target_profile and adder_profile:
+        target_id = str(target_profile.id)
+        adder_username = adder_profile.username or "Someone"
+
+        async def _send_group_invite_push() -> None:
+            bg_db = SessionLocal()
+            try:
+                await notification_services.send_push(
+                    user_id=target_id,
+                    notification_type="group_invites",
+                    title="Added to Group",
+                    body=f"{adder_username} added you to {group_name}",
+                    data={"type": "group_invite", "group_id": str(group_id)},
+                    db=bg_db,
+                    apns_client=apns_client,
+                    thread_id=THREAD_GROUP_INVITES,
+                )
+            except Exception:
+                pass  # Fire-and-forget; send_push logs its own errors
+            finally:
+                bg_db.close()
+
+        asyncio.ensure_future(_send_group_invite_push())
+
+    return result
 
 
 @router.post(
