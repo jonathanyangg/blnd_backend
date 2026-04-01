@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     apple_key_id: str = ""
     apple_team_id: str = ""
     apple_bundle_id: str = ""
+    rapidapi_key: str = ""
 
     model_config = {"env_file": ".env"}
 

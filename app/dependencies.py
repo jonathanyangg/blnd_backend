@@ -39,6 +39,10 @@ def get_tmdb_client(request: Request) -> httpx.AsyncClient:
     return request.app.state.tmdb_client
 
 
+def get_streaming_client(request: Request) -> httpx.AsyncClient:
+    return request.app.state.streaming_client
+
+
 _jwks_client = jwt.PyJWKClient(
     f"{settings.supabase_url}/auth/v1/.well-known/jwks.json",
     lifespan=3600,

@@ -18,6 +18,7 @@ from app.groups.views import router as groups_router
 from app.import_data.views import router as import_router
 from app.movies.views import router as movies_router
 from app.recommendations.views import router as recommendations_router
+from app.streaming.views import router as streaming_router
 from app.tracking.views import router as tracking_router
 from app.watchlist.views import router as watchlist_router
 
@@ -40,8 +41,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         timeout=30,
         limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
     )
+    app.state.streaming_client = httpx.AsyncClient(
+        base_url="https://streaming-availability.p.rapidapi.com",
+        headers={
+            "X-RapidAPI-Key": settings.rapidapi_key,
+            "X-RapidAPI-Host": "streaming-availability.p.rapidapi.com",
+        },
+        timeout=15,
+        limits=httpx.Limits(max_connections=20, max_keepalive_connections=5),
+    )
     yield
     await app.state.tmdb_client.aclose()
+    await app.state.streaming_client.aclose()
     engine.dispose()
 
 
@@ -60,6 +71,7 @@ app.include_router(
 app.include_router(friends_router, prefix="/friends", tags=["friends"])
 app.include_router(groups_router, prefix="/groups", tags=["groups"])
 app.include_router(watchlist_router, prefix="/watchlist", tags=["watchlist"])
+app.include_router(streaming_router, prefix="/movies", tags=["streaming"])
 
 
 @app.get("/health")
