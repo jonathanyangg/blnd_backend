@@ -33,6 +33,9 @@ class NotificationPreference(Base):
     group_invites: Mapped[bool] = mapped_column(Boolean, default=True)
     recommendations: Mapped[bool] = mapped_column(Boolean, default=True)
     friend_activity: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_digest_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

@@ -22,3 +22,7 @@ class UpdatePreferencesRequest(BaseModel):
     group_invites: bool | None = None
     recommendations: bool | None = None
     friend_activity: bool | None = None
+
+
+class DigestStatusResponse(BaseModel):
+    status: str
