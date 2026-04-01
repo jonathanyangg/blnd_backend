@@ -2,6 +2,7 @@ from collections.abc import Generator
 
 import httpx
 import jwt
+from aioapns import APNs
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from openai import OpenAI
@@ -37,6 +38,10 @@ def get_db() -> Generator[Session, None, None]:
 
 def get_tmdb_client(request: Request) -> httpx.AsyncClient:
     return request.app.state.tmdb_client
+
+
+def get_apns_client(request: Request) -> APNs | None:
+    return getattr(request.app.state, "apns_client", None)
 
 
 _jwks_client = jwt.PyJWKClient(
