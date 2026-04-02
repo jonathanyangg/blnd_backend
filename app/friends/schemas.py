@@ -30,3 +30,36 @@ class FriendListResponse(BaseModel):
 class PendingRequestsResponse(BaseModel):
     incoming: list[FriendRequestResponse]
     outgoing: list[FriendRequestResponse]
+
+
+# --- Contact Discovery ---
+
+
+class UploadContactsRequest(BaseModel):
+    phone_numbers: list[str] = Field(max_length=5000)
+
+
+class SuggestedFriendResponse(BaseModel):
+    id: str
+    username: str
+    display_name: str | None = None
+    avatar_url: str | None = None
+    source: str  # "contact" | "mutual"
+    mutual_count: int = 0
+
+
+class FriendSuggestionsResponse(BaseModel):
+    contacts: list[SuggestedFriendResponse]
+    mutuals: list[SuggestedFriendResponse]
+
+
+class MutualFriendResponse(BaseModel):
+    id: str
+    username: str
+    display_name: str | None = None
+    avatar_url: str | None = None
+
+
+class MutualFriendsResponse(BaseModel):
+    mutuals: list[MutualFriendResponse]
+    count: int

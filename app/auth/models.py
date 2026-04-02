@@ -20,6 +20,7 @@ class Profile(Base):
     favorite_genres: Mapped[list | None] = mapped_column(JSONB, default=list)
     taste_embedding = mapped_column(Vector(1536), nullable=True)
     negative_embedding = mapped_column(Vector(1536), nullable=True)
+    phone_number: Mapped[str | None] = mapped_column(String, nullable=True)
     apple_refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     actions_since_rebuild: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0, server_default="0"

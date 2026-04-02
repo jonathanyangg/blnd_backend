@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
-from app.core.rate_limit import LIMIT_DEFAULT, limiter
+from app.core.rate_limit import LIMIT_DEFAULT, LIMIT_IMPORT, limiter
 from app.dependencies import get_current_user, get_db
 from app.friends import schemas, services
 
@@ -71,3 +71,41 @@ async def remove_friend(
     db: Session = Depends(get_db),
 ):
     services.remove_friend(user_id, friendship_id, db)
+
+
+# --- Contact Discovery ---
+
+
+@router.post("/contacts", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(LIMIT_IMPORT)
+async def upload_contacts(
+    request: Request,
+    body: schemas.UploadContactsRequest,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Upload phone numbers from contacts for friend matching."""
+    services.upload_contacts(user_id, body.phone_numbers, db)
+
+
+@router.get("/suggestions", response_model=schemas.FriendSuggestionsResponse)
+@limiter.limit(LIMIT_DEFAULT)
+async def get_suggestions(
+    request: Request,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get friend suggestions from contacts + mutual friends."""
+    return services.get_suggestions(user_id, db)
+
+
+@router.get("/{user_id}/mutuals", response_model=schemas.MutualFriendsResponse)
+@limiter.limit(LIMIT_DEFAULT)
+async def get_mutual_friends(
+    request: Request,
+    user_id: str,
+    caller_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get mutual friends between current user and target user."""
+    return services.get_mutual_friends(caller_id, user_id, db)

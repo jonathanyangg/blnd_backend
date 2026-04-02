@@ -1,11 +1,12 @@
 import uuid as _uuid
+from collections import Counter
 
 from fastapi import HTTPException, status
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
-from app.friends.models import Friendship
+from app.friends.models import Friendship, UserContact
 
 
 def send_friend_request(user_id: str, addressee_username: str, db: Session) -> dict:
@@ -243,3 +244,178 @@ def _to_request_response(
         "status": friendship.status,
         "created_at": friendship.created_at,
     }
+
+
+# --- Contact Discovery ---
+
+
+def upload_contacts(user_id: str, phone_numbers: list[str], db: Session) -> None:
+    """Replace user's stored contacts with the new list."""
+    db.query(UserContact).filter(UserContact.user_id == user_id).delete()
+    for phone in phone_numbers:
+        db.add(UserContact(user_id=user_id, contact_phone=phone))
+    db.commit()
+
+
+def _get_friend_ids(user_id: str, db: Session) -> set[str]:
+    """Get IDs of all accepted friends."""
+    friendships = (
+        db.query(Friendship)
+        .filter(
+            Friendship.status == "accepted",
+            or_(
+                Friendship.requester_id == user_id,
+                Friendship.addressee_id == user_id,
+            ),
+        )
+        .all()
+    )
+    return {
+        str(f.addressee_id) if str(f.requester_id) == user_id else str(f.requester_id)
+        for f in friendships
+    }
+
+
+def _get_pending_ids(user_id: str, db: Session) -> set[str]:
+    """Get IDs of users with pending friend requests (either direction)."""
+    pending = (
+        db.query(Friendship)
+        .filter(
+            Friendship.status == "pending",
+            or_(
+                Friendship.requester_id == user_id,
+                Friendship.addressee_id == user_id,
+            ),
+        )
+        .all()
+    )
+    return {
+        str(f.addressee_id) if str(f.requester_id) == user_id else str(f.requester_id)
+        for f in pending
+    }
+
+
+def get_contact_suggestions(user_id: str, db: Session) -> list[dict]:
+    """Find blnd users who match the uploaded contacts."""
+    exclude_ids = _get_friend_ids(user_id, db) | _get_pending_ids(user_id, db)
+    exclude_ids.add(user_id)
+
+    # Get this user's uploaded contact phone numbers
+    contact_phones = [
+        row[0]
+        for row in db.query(UserContact.contact_phone)
+        .filter(UserContact.user_id == user_id)
+        .all()
+    ]
+    if not contact_phones:
+        return []
+
+    # Match against profiles with phone numbers
+    matches = (
+        db.query(Profile)
+        .filter(
+            Profile.phone_number.in_(contact_phones),
+            Profile.id.notin_(list(exclude_ids)),
+        )
+        .limit(50)
+        .all()
+    )
+
+    return [
+        {
+            "id": str(p.id),
+            "username": p.username,
+            "display_name": p.display_name,
+            "avatar_url": p.avatar_url,
+            "source": "contact",
+            "mutual_count": 0,
+        }
+        for p in matches
+    ]
+
+
+def get_mutual_suggestions(user_id: str, db: Session) -> list[dict]:
+    """Find friends-of-friends ranked by mutual friend count."""
+    friend_ids = _get_friend_ids(user_id, db)
+    if not friend_ids:
+        return []
+
+    exclude_ids = friend_ids | _get_pending_ids(user_id, db)
+    exclude_ids.add(user_id)
+
+    # For each friend, get their friends (2nd degree connections)
+    fof_friendships = (
+        db.query(Friendship)
+        .filter(
+            Friendship.status == "accepted",
+            or_(
+                Friendship.requester_id.in_(list(friend_ids)),
+                Friendship.addressee_id.in_(list(friend_ids)),
+            ),
+        )
+        .all()
+    )
+
+    # Count how many mutual friends each 2nd-degree user has
+    mutual_counter: Counter[str] = Counter()
+    for f in fof_friendships:
+        req_id = str(f.requester_id)
+        addr_id = str(f.addressee_id)
+        # One side is our friend, the other is a potential suggestion
+        if req_id in friend_ids and addr_id not in exclude_ids:
+            mutual_counter[addr_id] += 1
+        elif addr_id in friend_ids and req_id not in exclude_ids:
+            mutual_counter[req_id] += 1
+
+    if not mutual_counter:
+        return []
+
+    # Fetch profiles for top suggestions, ranked by mutual count
+    top_ids = [uid for uid, _ in mutual_counter.most_common(30)]
+    profiles = db.query(Profile).filter(Profile.id.in_(top_ids)).all()
+    profile_map = {str(p.id): p for p in profiles}
+
+    results = []
+    for uid, count in mutual_counter.most_common(30):
+        p = profile_map.get(uid)
+        if p:
+            results.append(
+                {
+                    "id": str(p.id),
+                    "username": p.username,
+                    "display_name": p.display_name,
+                    "avatar_url": p.avatar_url,
+                    "source": "mutual",
+                    "mutual_count": count,
+                }
+            )
+    return results
+
+
+def get_suggestions(user_id: str, db: Session) -> dict:
+    """Combined contact + mutual friend suggestions."""
+    contacts = get_contact_suggestions(user_id, db)
+    mutuals = get_mutual_suggestions(user_id, db)
+    return {"contacts": contacts, "mutuals": mutuals}
+
+
+def get_mutual_friends(user_id: str, target_id: str, db: Session) -> dict:
+    """Get mutual friends between two users."""
+    my_friends = _get_friend_ids(user_id, db)
+    their_friends = _get_friend_ids(target_id, db)
+    mutual_ids = my_friends & their_friends
+
+    if not mutual_ids:
+        return {"mutuals": [], "count": 0}
+
+    profiles = db.query(Profile).filter(Profile.id.in_(list(mutual_ids))).all()
+    mutuals = [
+        {
+            "id": str(p.id),
+            "username": p.username,
+            "display_name": p.display_name,
+            "avatar_url": p.avatar_url,
+        }
+        for p in profiles
+    ]
+    return {"mutuals": mutuals, "count": len(mutuals)}

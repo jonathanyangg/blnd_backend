@@ -179,6 +179,34 @@ def reset_password(access_token: str, new_password: str) -> None:
     )
 
 
+def change_password(
+    user_id: str, current_password: str, new_password: str, db: Session
+) -> None:
+    """Change password for a logged-in user. Verifies current password first."""
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Get the user's email from Supabase Auth to verify current password
+    user = supabase_admin.auth.admin.get_user_by_id(user_id)  # type: ignore[union-attr]
+    email = user.user.email if user and user.user else None
+    if not email:
+        raise HTTPException(
+            status_code=400, detail="Cannot change password for this account"
+        )
+
+    # Verify current password by attempting sign-in
+    try:
+        supabase.auth.sign_in_with_password(
+            {"email": email, "password": current_password}
+        )
+    except Exception:
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    # Update to new password
+    supabase_admin.auth.admin.update_user_by_id(user_id, {"password": new_password})  # type: ignore[union-attr]
+
+
 def get_profile(user_id: str, db: Session) -> Profile | None:
     return db.query(Profile).filter(Profile.id == user_id).first()
 
@@ -188,7 +216,13 @@ def search_users(query: str, user_id: str, db: Session, limit: int = 10) -> list
     escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     profiles = (
         db.query(Profile)
-        .filter(Profile.username.ilike(f"{escaped}%"), Profile.id != user_id)
+        .filter(
+            or_(
+                Profile.username.ilike(f"{escaped}%"),
+                Profile.display_name.ilike(f"%{escaped}%"),
+            ),
+            Profile.id != user_id,
+        )
         .limit(limit)
         .all()
     )
@@ -265,9 +299,7 @@ def assert_are_friends(caller_id: str, target_id: str, db: Session) -> None:
 
 
 def get_public_profile(caller_id: str, target_id: str, db: Session) -> dict:
-    """Get public profile stats for another user. Requires friendship."""
-    assert_are_friends(caller_id, target_id, db)
-
+    """Get public profile stats for another user. No friendship required."""
     profile = db.query(Profile).filter(Profile.id == target_id).first()
     if not profile:
         raise HTTPException(status_code=404, detail="User not found")

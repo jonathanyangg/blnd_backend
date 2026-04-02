@@ -91,6 +91,18 @@ def reset_password(
     return {"message": "Password updated successfully"}
 
 
+@router.post("/change-password", response_model=schemas.MessageResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def change_password(
+    request: Request,
+    body: schemas.ChangePasswordRequest,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    services.change_password(user_id, body.current_password, body.new_password, db)
+    return {"message": "Password changed successfully"}
+
+
 @router.post("/oauth", response_model=schemas.OAuthResponse)
 @limiter.limit(LIMIT_DEFAULT)
 async def oauth_login_view(
