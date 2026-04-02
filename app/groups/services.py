@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -58,14 +59,19 @@ def list_groups(user_id: str, db: Session) -> dict:
 
     groups = db.query(Group).filter(Group.id.in_(group_ids)).all()
 
+    all_members = (
+        db.query(GroupMember, Profile)
+        .join(Profile, GroupMember.user_id == Profile.id)
+        .filter(GroupMember.group_id.in_(group_ids))
+        .all()
+    )
+    members_by_group: dict[int, list[tuple[GroupMember, Profile]]] = defaultdict(list)
+    for member, profile in all_members:
+        members_by_group[member.group_id].append((member, profile))
+
     results = []
     for g in groups:
-        members_rows = (
-            db.query(GroupMember, Profile)
-            .join(Profile, GroupMember.user_id == Profile.id)
-            .filter(GroupMember.group_id == g.id)
-            .all()
-        )
+        members_rows = members_by_group[g.id]
         avatars = [p.avatar_url for _, p in members_rows[:4]]
         results.append(
             {
@@ -431,21 +437,30 @@ def compute_group_match_scores(
 
     # Build group embedding from members' rated movies
     per_member_limit = max(5, 50 // len(member_ids))
-    member_embeddings = []
 
-    for mid in member_ids:
-        rows = (
-            db.query(WatchedMovie.rating, MovieEmbedding.embedding)
-            .join(MovieEmbedding, WatchedMovie.tmdb_id == MovieEmbedding.tmdb_id)
-            .filter(WatchedMovie.user_id == mid, WatchedMovie.rating.isnot(None))
-            .order_by(WatchedMovie.rating.desc())
-            .limit(per_member_limit)
-            .all()
+    all_rows = (
+        db.query(WatchedMovie.user_id, WatchedMovie.rating, MovieEmbedding.embedding)
+        .join(MovieEmbedding, WatchedMovie.tmdb_id == MovieEmbedding.tmdb_id)
+        .filter(
+            WatchedMovie.user_id.in_(member_ids),
+            WatchedMovie.rating.isnot(None),
         )
+        .order_by(WatchedMovie.rating.desc())
+        .all()
+    )
+    rows_by_member: dict[str, list[tuple[float, list]]] = defaultdict(list)
+    for uid, rating, embedding in all_rows:
+        uid_str = str(uid)
+        if len(rows_by_member[uid_str]) < per_member_limit:
+            rows_by_member[uid_str].append((float(rating), embedding))
+
+    member_embeddings = []
+    for mid in member_ids:
+        rows = rows_by_member.get(mid, [])
         if not rows:
             continue
 
-        ratings = np.array([float(r) for r, _ in rows])
+        ratings = np.array([r for r, _ in rows])
         embeddings = np.array([e for _, e in rows])
         if ratings.sum() == 0:
             continue

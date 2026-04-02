@@ -156,6 +156,9 @@ async def complete_onboarding_view(
             bg_db = SessionLocal()
             try:
                 rebuild_taste_profile(user_id, bg_db, openai_client)
+            except Exception:
+                bg_db.rollback()
+                raise
             finally:
                 bg_db.close()
 
@@ -221,6 +224,9 @@ def update_profile(
             bg_db = SessionLocal()
             try:
                 rebuild_taste_profile(user_id, bg_db, openai_client)
+            except Exception:
+                bg_db.rollback()
+                raise
             finally:
                 bg_db.close()
 

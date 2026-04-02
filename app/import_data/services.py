@@ -619,6 +619,7 @@ async def run_seed_background(
     try:
         await run_seed_pipeline(db, tmdb_client, openai, min_popularity)
     except Exception:
+        db.rollback()
         logger.exception("Seed pipeline failed")
     finally:
         db.close()
@@ -635,6 +636,7 @@ async def run_sync_background(
     try:
         await run_sync_pipeline(db, tmdb_client, openai)
     except Exception:
+        db.rollback()
         logger.exception("Sync pipeline failed")
     finally:
         db.close()
@@ -650,6 +652,7 @@ async def run_backfill_cast_background(
     try:
         await backfill_cast_data(db, tmdb_client)
     except Exception:
+        db.rollback()
         logger.exception("Cast backfill failed")
     finally:
         db.close()

@@ -65,6 +65,9 @@ async def add_to_watchlist(
             bg_db = SessionLocal()
             try:
                 rebuild_taste_profile(user_id, bg_db, openai_client)
+            except Exception:
+                bg_db.rollback()
+                raise
             finally:
                 bg_db.close()
 

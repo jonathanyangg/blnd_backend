@@ -181,7 +181,7 @@ EMBEDDING_STRATEGY = "average"
 
 
 def compute_taste_embeddings(
-    user_id: str, db: Session
+    user_id: str, db: Session, profile: Profile | None = None
 ) -> tuple[list[float] | None, list[float] | None]:
     """Compute taste embeddings using rating-weighted average.
 
@@ -224,7 +224,8 @@ def compute_taste_embeddings(
     positive_emb = np.average(pos_embeddings, axis=0, weights=pos_ratings)
 
     # Blend watchlist movie embeddings as soft positive signal
-    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if profile is None:
+        profile = db.query(Profile).filter(Profile.id == user_id).first()
     if profile and profile.watchlist_id:
         wl_rows = (
             db.query(MovieEmbedding.embedding)
@@ -288,7 +289,9 @@ def rebuild_taste_profile(
 
     # Taste embedding: switch between strategies
     if EMBEDDING_STRATEGY == "average":
-        positive_emb, negative_emb = compute_taste_embeddings(user_id, db)
+        positive_emb, negative_emb = compute_taste_embeddings(
+            user_id, db, profile=profile
+        )
         if not positive_emb:
             return profile  # No embeddings available yet (e.g. movies not embedded)
         profile.taste_embedding = positive_emb
@@ -303,7 +306,7 @@ def rebuild_taste_profile(
         profile.taste_bio = taste_bio
         profile.taste_embedding = taste_embedding
         # Still compute negative for LLM strategy
-        _, negative_emb = compute_taste_embeddings(user_id, db)
+        _, negative_emb = compute_taste_embeddings(user_id, db, profile=profile)
         profile.negative_embedding = negative_emb
 
     db.commit()

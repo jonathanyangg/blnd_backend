@@ -172,11 +172,11 @@ def forgot_password(email: str) -> None:
     supabase.auth.reset_password_email(email)
 
 
-def reset_password(access_token: str, new_password: str) -> None:
-    """Update password using the access token from the reset link."""
-    supabase_admin.auth.admin.update_user_by_id(  # type: ignore[union-attr]
-        access_token, {"password": new_password}
-    )
+def reset_password(user_id: str, new_password: str) -> None:
+    """Update password using the user ID from the authenticated reset request."""
+    if supabase_admin is None:
+        raise HTTPException(status_code=500, detail="Admin client not configured")
+    supabase_admin.auth.admin.update_user_by_id(user_id, {"password": new_password})
 
 
 def change_password(
@@ -187,8 +187,11 @@ def change_password(
     if not profile:
         raise HTTPException(status_code=404, detail="User not found")
 
+    if supabase_admin is None:
+        raise HTTPException(status_code=500, detail="Admin client not configured")
+
     # Get the user's email from Supabase Auth to verify current password
-    user = supabase_admin.auth.admin.get_user_by_id(user_id)  # type: ignore[union-attr]
+    user = supabase_admin.auth.admin.get_user_by_id(user_id)
     email = user.user.email if user and user.user else None
     if not email:
         raise HTTPException(
@@ -204,7 +207,7 @@ def change_password(
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
     # Update to new password
-    supabase_admin.auth.admin.update_user_by_id(user_id, {"password": new_password})  # type: ignore[union-attr]
+    supabase_admin.auth.admin.update_user_by_id(user_id, {"password": new_password})
 
 
 def get_profile(user_id: str, db: Session) -> Profile | None:
@@ -493,17 +496,29 @@ def delete_account(user_id: str, db: Session) -> None:
     db.commit()
 
     # 5. Delete Supabase Auth user (best-effort)
-    try:
-        supabase_admin.auth.admin.delete_user(user_id)  # type: ignore[union-attr]
-    except Exception:
-        logger.warning("Failed to delete Supabase Auth user %s", user_id)
+    if supabase_admin is None:
+        logger.warning(
+            "supabase_admin not configured, skipping Auth user deletion for %s", user_id
+        )
+    else:
+        try:
+            supabase_admin.auth.admin.delete_user(user_id)
+        except Exception:
+            logger.warning("Failed to delete Supabase Auth user %s", user_id)
 
     # 6. Delete avatar from storage (best-effort)
     if avatar_url:
-        try:
-            supabase_admin.storage.from_("avatars").remove([f"{user_id}/avatar.png"])  # type: ignore[union-attr]
-        except Exception:
-            logger.warning("Failed to delete avatar for user %s", user_id)
+        if supabase_admin is None:
+            logger.warning(
+                "supabase_admin not configured, skipping avatar cleanup for %s", user_id
+            )
+        else:
+            try:
+                supabase_admin.storage.from_("avatars").remove(
+                    [f"{user_id}/avatar.png"]
+                )
+            except Exception:
+                logger.warning("Failed to delete avatar for user %s", user_id)
 
     # 7. Revoke Apple refresh token (best-effort)
     if apple_refresh_token:
