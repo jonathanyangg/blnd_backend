@@ -105,7 +105,12 @@ def get_genre_taste(user_id: str, db: Session) -> dict:
 
 
 def signup(
-    email: str, password: str, username: str, display_name: str | None, db: Session
+    email: str,
+    password: str,
+    username: str,
+    display_name: str | None,
+    db: Session,
+    phone_number: str | None = None,
 ) -> dict:
     """Create user via Supabase Auth and insert profile via SQLAlchemy."""
     existing = db.query(Profile).filter(Profile.username == username).first()
@@ -127,6 +132,7 @@ def signup(
         username=username,
         display_name=display_name,
         watchlist_id=watchlist.id,
+        phone_number=phone_number,
     )
     db.add(profile)
     db.commit()
@@ -169,7 +175,10 @@ def refresh_session(refresh_token: str) -> dict:
 
 def forgot_password(email: str) -> None:
     """Send password reset email via Supabase Auth."""
-    supabase.auth.reset_password_email(email)
+    supabase.auth.reset_password_email(
+        email,
+        options={"redirect_to": "https://blnd.movie/auth/reset-password"},
+    )
 
 
 def reset_password(user_id: str, new_password: str) -> None:
@@ -229,12 +238,36 @@ def search_users(query: str, user_id: str, db: Session, limit: int = 10) -> list
         .limit(limit)
         .all()
     )
+    # Batch fetch friendship statuses
+    profile_ids = [p.id for p in profiles]
+    friendships = (
+        db.query(Friendship)
+        .filter(
+            or_(
+                (Friendship.requester_id == user_id)
+                & (Friendship.addressee_id.in_(profile_ids)),
+                (Friendship.requester_id.in_(profile_ids))
+                & (Friendship.addressee_id == user_id),
+            )
+        )
+        .all()
+    )
+    status_map: dict[str, str] = {}
+    for fship in friendships:
+        other_id = (
+            str(fship.addressee_id)
+            if str(fship.requester_id) == user_id
+            else str(fship.requester_id)
+        )
+        status_map[other_id] = fship.status
+
     return [
         {
             "id": str(p.id),
             "username": p.username,
             "display_name": p.display_name,
             "avatar_url": p.avatar_url,
+            "friendship_status": status_map.get(str(p.id)),
         }
         for p in profiles
     ]

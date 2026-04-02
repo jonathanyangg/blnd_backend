@@ -35,7 +35,12 @@ def signup(
 ):
     try:
         return services.signup(
-            body.email, body.password, body.username, body.display_name, db
+            body.email,
+            body.password,
+            body.username,
+            body.display_name,
+            db,
+            phone_number=body.phone_number,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

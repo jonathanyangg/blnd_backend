@@ -39,6 +39,14 @@ class SignupRequest(BaseModel):
     password: str
     username: str
     display_name: str | None = Field(default=None, max_length=100)
+    phone_number: str | None = None
+
+    @field_validator("phone_number")
+    @classmethod
+    def check_phone(cls, v: str | None) -> str | None:
+        if v and v.strip():
+            return validate_phone_number(v)
+        return None
 
     @field_validator("username")
     @classmethod
