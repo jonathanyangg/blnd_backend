@@ -178,6 +178,8 @@ class PublicProfileResponse(BaseModel):
     watched_count: int
     friends_count: int
     blends_count: int
+    friendship_status: str | None = None
+    friendship_id: int | None = None
 
 
 class PublicWatchedMovieResponse(BaseModel):

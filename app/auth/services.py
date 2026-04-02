@@ -384,6 +384,19 @@ def get_public_profile(caller_id: str, target_id: str, db: Session) -> dict:
         or 0
     )
 
+    friendship = (
+        db.query(Friendship)
+        .filter(
+            or_(
+                (Friendship.requester_id == caller_id)
+                & (Friendship.addressee_id == target_id),
+                (Friendship.requester_id == target_id)
+                & (Friendship.addressee_id == caller_id),
+            )
+        )
+        .first()
+    )
+
     return {
         "id": str(profile.id),
         "username": profile.username,
@@ -392,6 +405,8 @@ def get_public_profile(caller_id: str, target_id: str, db: Session) -> dict:
         "watched_count": watched_count,
         "friends_count": friends_count,
         "blends_count": blends_count,
+        "friendship_status": friendship.status if friendship else None,
+        "friendship_id": friendship.id if friendship else None,
     }
 
 
