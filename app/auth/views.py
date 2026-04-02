@@ -142,6 +142,7 @@ async def complete_onboarding_view(
             db,
             tmdb_client,
             apple_refresh_token=body.apple_refresh_token,
+            phone_number=body.phone_number,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -180,6 +181,7 @@ def me(
         avatar_url=profile.avatar_url,
         taste_bio=profile.taste_bio,
         favorite_genres=profile.favorite_genres or [],
+        phone_number=profile.phone_number,
     )
 
 
@@ -231,6 +233,7 @@ def update_profile(
         avatar_url=profile.avatar_url,
         taste_bio=profile.taste_bio,
         favorite_genres=profile.favorite_genres or [],
+        phone_number=profile.phone_number,
     )
 
 

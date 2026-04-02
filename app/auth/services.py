@@ -270,6 +270,17 @@ def update_profile(
         if set(old_genres) != set(new_genres):
             genres_changed = True
         profile.favorite_genres = new_genres
+    if "phone_number" in fields:
+        new_phone = fields["phone_number"]
+        if new_phone and new_phone != profile.phone_number:
+            conflict = (
+                db.query(Profile)
+                .filter(Profile.phone_number == new_phone, Profile.id != profile.id)
+                .first()
+            )
+            if conflict:
+                raise ValueError("Phone number is already linked to another account")
+        profile.phone_number = new_phone
 
     db.commit()
     db.refresh(profile)
@@ -559,6 +570,7 @@ async def complete_onboarding(
     db: Session,
     tmdb_client: httpx.AsyncClient,
     apple_refresh_token: str | None = None,
+    phone_number: str | None = None,
 ) -> dict:
     """Create Profile + Watchlist + WatchedMovie rows atomically for a new OAuth user."""
     # Guard: profile already exists (double-submit protection)
@@ -576,6 +588,14 @@ async def complete_onboarding(
     db.add(watchlist)
     db.flush()
 
+    # Validate phone uniqueness
+    if phone_number:
+        phone_conflict = (
+            db.query(Profile).filter(Profile.phone_number == phone_number).first()
+        )
+        if phone_conflict:
+            raise ValueError("Phone number is already linked to another account")
+
     # Create profile
     profile = Profile(
         id=user_id,
@@ -584,6 +604,7 @@ async def complete_onboarding(
         favorite_genres=favorite_genres,
         watchlist_id=watchlist.id,
         apple_refresh_token=apple_refresh_token,
+        phone_number=phone_number,
     )
     db.add(profile)
 

@@ -4,6 +4,17 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9._]+$")
+PHONE_RE = re.compile(r"^\+[1-9]\d{6,14}$")
+
+
+def validate_phone_number(v: str) -> str:
+    """Validate E.164 phone number format (+1234567890)."""
+    v = v.strip()
+    if not PHONE_RE.match(v):
+        raise ValueError("Phone number must be in E.164 format (e.g. +15551234567)")
+    return v
+
+
 USERNAME_MIN = 3
 USERNAME_MAX = 30
 
@@ -70,6 +81,7 @@ class UserResponse(BaseModel):
     avatar_url: str | None = None
     taste_bio: str | None = None
     favorite_genres: list[str] = []
+    phone_number: str | None = None
 
 
 class UserSearchResponse(BaseModel):
@@ -81,6 +93,7 @@ class UpdateProfileRequest(BaseModel):
     display_name: str | None = Field(default=None, max_length=100)
     avatar_url: str | None = None
     favorite_genres: list[str] | None = Field(default=None, max_length=20)
+    phone_number: str | None = None
 
     @field_validator("username")
     @classmethod
@@ -88,6 +101,13 @@ class UpdateProfileRequest(BaseModel):
         if v is None:
             return v
         return validate_username(v)
+
+    @field_validator("phone_number")
+    @classmethod
+    def check_phone(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        return validate_phone_number(v)
 
     @field_validator("avatar_url")
     @classmethod
@@ -213,11 +233,19 @@ class CompleteOnboardingRequest(BaseModel):
     favorite_genres: list[str] | None = Field(default=None, max_length=20)
     rated_movies: list[RatedMovie] | None = None
     apple_refresh_token: str | None = None
+    phone_number: str | None = None
 
     @field_validator("username")
     @classmethod
     def check_username(cls, v: str) -> str:
         return validate_username(v)
+
+    @field_validator("phone_number")
+    @classmethod
+    def check_phone(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        return validate_phone_number(v)
 
 
 class CompleteOnboardingResponse(BaseModel):
