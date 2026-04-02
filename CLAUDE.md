@@ -41,7 +41,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Project scaffolding: folder structure, config, database, dependencies, main.py
 - Pre-commit hooks: ruff, ruff-format, codespell, pyright (pyrightconfig.json points to .venv)
 - Supabase project set up, CLI initialized and linked
-- Migrations (20 total in `supabase/migrations/`):
+- Migrations (21 total in `supabase/migrations/`):
   - Initial schema: profiles, movies, watched_movies, friendships, groups, group_members, movie_embeddings, pgvector, match_movies RPC
   - Taste profile fields on profiles, trailer_url/detail fields on movies, liked on watched_movies
   - Standalone watchlists table, watchlist_id on profiles/groups, watchlist_movies with watchlist_id FK
@@ -50,6 +50,8 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Apple refresh token on profiles, performance indexes, remote schema sync
   - actions_since_rebuild counter on profiles (debounced taste rebuild every 5 actions)
   - streaming_availability cache table (tmdb_id + country, FK to movies, 30-day TTL)
+  - Missing indexes: hidden_movies(user_id), watchlist_movies(tmdb_id), friendships(requester_id)
+  - Phone number on profiles, contact_hashes table for friend discovery
   - phone_number on profiles + user_contacts table for contact discovery
 - Auth domain: fully implemented
   - Models: Profile (taste fields, apple_refresh_token, phone_number)
@@ -216,6 +218,14 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [x] Change password: POST /auth/change-password (verifies current password)
 - [x] Public profile stats without friendship requirement (watched movies still gated)
 - [x] Group member cap reduced from 10 to 8
+- [x] Fix N+1 queries in list_groups() and compute_group_match_scores() (batch fetch members + rated movies)
+- [x] DB pool_size=20, max_overflow=10 on SQLAlchemy engine
+- [x] Null checks for supabase_admin in auth services (guard critical ops, skip best-effort)
+- [x] Harden admin bypass check for empty/whitespace admin_user_id
+- [x] Add rollback to all background task SessionLocal patterns
+- [x] Fix reset_password parameter name (access_token → user_id)
+- [x] Pass profile to compute_taste_embeddings() to avoid duplicate fetch
+- [x] Missing indexes: hidden_movies(user_id), watchlist_movies(tmdb_id), friendships(requester_id)
 
 ---
 - **Rating scale**: 0.5–5.0 in 0.5 increments (enforced by DB check constraint on watched_movies)
