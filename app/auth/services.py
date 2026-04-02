@@ -252,14 +252,14 @@ def search_users(query: str, user_id: str, db: Session, limit: int = 10) -> list
         )
         .all()
     )
-    status_map: dict[str, str] = {}
+    friendship_map: dict[str, tuple[str, int]] = {}
     for fship in friendships:
         other_id = (
             str(fship.addressee_id)
             if str(fship.requester_id) == user_id
             else str(fship.requester_id)
         )
-        status_map[other_id] = fship.status
+        friendship_map[other_id] = (fship.status, fship.id)
 
     return [
         {
@@ -267,7 +267,12 @@ def search_users(query: str, user_id: str, db: Session, limit: int = 10) -> list
             "username": p.username,
             "display_name": p.display_name,
             "avatar_url": p.avatar_url,
-            "friendship_status": status_map.get(str(p.id)),
+            "friendship_status": friendship_map[str(p.id)][0]
+            if str(p.id) in friendship_map
+            else None,
+            "friendship_id": friendship_map[str(p.id)][1]
+            if str(p.id) in friendship_map
+            else None,
         }
         for p in profiles
     ]
@@ -301,10 +306,11 @@ def update_profile(
     if "avatar_url" in fields:
         profile.avatar_url = fields["avatar_url"]
     if "favorite_genres" in fields:
-        old_genres = profile.favorite_genres or []
         new_genres = fields["favorite_genres"]
-        if set(old_genres) != set(new_genres):
-            genres_changed = True
+        if new_genres is not None:
+            old_genres = profile.favorite_genres or []
+            if set(old_genres) != set(new_genres):
+                genres_changed = True
         profile.favorite_genres = new_genres
     if "phone_number" in fields:
         new_phone = fields["phone_number"]

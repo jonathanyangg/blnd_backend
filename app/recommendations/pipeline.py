@@ -211,6 +211,9 @@ def _rescale_exploration_scores(
     p25 = float(np.percentile(main_scores, 25))
     p75 = float(np.percentile(main_scores, 75))
 
+    if not explore_page:
+        return explore_page
+
     exp_scores = [c["score"] for c in explore_page]
     exp_min = min(exp_scores)
     exp_max = max(exp_scores)

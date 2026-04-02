@@ -221,6 +221,8 @@ def compute_taste_embeddings(
     # Positive: rating-weighted average of movies at/above threshold
     pos_embeddings = embeddings[pos_mask]
     pos_ratings = ratings[pos_mask]
+    if len(pos_embeddings) == 0:
+        return None, None
     positive_emb = np.average(pos_embeddings, axis=0, weights=pos_ratings)
 
     # Blend watchlist movie embeddings as soft positive signal
