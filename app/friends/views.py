@@ -42,6 +42,17 @@ async def reject_friend_request(
     return services.reject_friend_request(user_id, friendship_id, db)
 
 
+@router.delete("/{friendship_id}/withdraw", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(LIMIT_DEFAULT)
+async def withdraw_friend_request(
+    request: Request,
+    friendship_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    services.withdraw_friend_request(user_id, friendship_id, db)
+
+
 @router.get("/", response_model=schemas.FriendListResponse)
 @limiter.limit(LIMIT_DEFAULT)
 async def list_friends(

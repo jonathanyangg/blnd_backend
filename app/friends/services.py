@@ -115,6 +115,30 @@ def reject_friend_request(user_id: str, friendship_id: int, db: Session) -> dict
     return _to_request_response(friendship, db)
 
 
+def withdraw_friend_request(user_id: str, friendship_id: int, db: Session) -> None:
+    """Withdraw a pending outgoing friend request (only requester can withdraw)."""
+    friendship = db.query(Friendship).filter(Friendship.id == friendship_id).first()
+    if not friendship:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Friend request not found"
+        )
+
+    if str(friendship.requester_id) != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the requester can withdraw a friend request",
+        )
+
+    if friendship.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot withdraw a request with status '{friendship.status}'",
+        )
+
+    db.delete(friendship)
+    db.commit()
+
+
 def get_friends(user_id: str, db: Session) -> dict:
     """Get all accepted friends for a user."""
     friendships = (
