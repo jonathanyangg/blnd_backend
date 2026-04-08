@@ -239,4 +239,9 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - **Key metrics to track with `source` column**: positive rate (recs rated >= 4 / total recs tracked), watchlist add rate, intra-list diversity
 - **Recency weighting**: optionally weight more recent ratings higher in the average embedding
 
+
+---
+cp .env.production .env    # switch to prod
+cp .env.development .env   # switch back to test
+
 *Last updated: 2026-04-02*
