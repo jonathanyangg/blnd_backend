@@ -224,8 +224,12 @@ def get_profile(user_id: str, db: Session) -> Profile | None:
 
 
 def search_users(query: str, user_id: str, db: Session, limit: int = 10) -> list[dict]:
-    """Search users by username prefix (ILIKE), excluding the current user."""
+    """Search users by username prefix (ILIKE), excluding the current user and blocked users."""
+    from app.friends.services import get_blocked_user_ids
+
     escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    blocked_ids = get_blocked_user_ids(user_id, db)
+    excluded_ids = blocked_ids | {user_id}
     profiles = (
         db.query(Profile)
         .filter(
@@ -233,7 +237,7 @@ def search_users(query: str, user_id: str, db: Session, limit: int = 10) -> list
                 Profile.username.ilike(f"{escaped}%"),
                 Profile.display_name.ilike(f"%{escaped}%"),
             ),
-            Profile.id != user_id,
+            Profile.id.notin_(list(excluded_ids)),
         )
         .limit(limit)
         .all()
@@ -353,8 +357,15 @@ def assert_are_friends(caller_id: str, target_id: str, db: Session) -> None:
 
 def get_public_profile(caller_id: str, target_id: str, db: Session) -> dict:
     """Get public profile stats for another user. No friendship required."""
+    from app.friends.services import get_block_state
+
     profile = db.query(Profile).filter(Profile.id == target_id).first()
     if not profile:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    is_blocked_by_me, has_blocked_me = get_block_state(caller_id, target_id, db)
+    # If the target has blocked the caller, hide them entirely
+    if has_blocked_me:
         raise HTTPException(status_code=404, detail="User not found")
 
     watched_count = (
@@ -407,6 +418,7 @@ def get_public_profile(caller_id: str, target_id: str, db: Session) -> dict:
         "blends_count": blends_count,
         "friendship_status": friendship.status if friendship else None,
         "friendship_id": friendship.id if friendship else None,
+        "is_blocked": is_blocked_by_me,
     }
 
 

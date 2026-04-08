@@ -53,6 +53,41 @@ async def withdraw_friend_request(
     services.withdraw_friend_request(user_id, friendship_id, db)
 
 
+# --- Blocking ---
+
+
+@router.post("/blocks/{target_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(LIMIT_DEFAULT)
+async def block_user(
+    request: Request,
+    target_id: str,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    services.block_user(user_id, target_id, db)
+
+
+@router.delete("/blocks/{target_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(LIMIT_DEFAULT)
+async def unblock_user(
+    request: Request,
+    target_id: str,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    services.unblock_user(user_id, target_id, db)
+
+
+@router.get("/blocks", response_model=schemas.BlockedUsersResponse)
+@limiter.limit(LIMIT_DEFAULT)
+async def list_blocked(
+    request: Request,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return services.list_blocked_users(user_id, db)
+
+
 @router.get("/", response_model=schemas.FriendListResponse)
 @limiter.limit(LIMIT_DEFAULT)
 async def list_friends(

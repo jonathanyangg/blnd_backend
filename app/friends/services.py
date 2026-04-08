@@ -6,7 +6,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
-from app.friends.models import Friendship, UserContact
+from app.friends.models import Friendship, UserBlock, UserContact
 
 
 def send_friend_request(user_id: str, addressee_username: str, db: Session) -> dict:
@@ -21,6 +21,13 @@ def send_friend_request(user_id: str, addressee_username: str, db: Session) -> d
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot send friend request to yourself",
+        )
+
+    # Cannot send a friend request if either side has blocked the other
+    is_blocked_by_me, has_blocked_me = get_block_state(user_id, str(addressee.id), db)
+    if is_blocked_by_me or has_blocked_me:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
 
     # Check existing friendship in either direction
@@ -113,6 +120,120 @@ def reject_friend_request(user_id: str, friendship_id: int, db: Session) -> dict
     db.commit()
     db.refresh(friendship)
     return _to_request_response(friendship, db)
+
+
+def block_user(user_id: str, target_id: str, db: Session) -> None:
+    """Block a user. Auto-removes any existing friendship/request between the two."""
+    if target_id == user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot block yourself",
+        )
+
+    target = db.query(Profile).filter(Profile.id == target_id).first()
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+    existing = (
+        db.query(UserBlock)
+        .filter(UserBlock.blocker_id == user_id, UserBlock.blocked_id == target_id)
+        .first()
+    )
+    if existing:
+        return  # Already blocked — idempotent
+
+    # Remove any friendship/request between the two users (either direction)
+    db.query(Friendship).filter(
+        or_(
+            (Friendship.requester_id == user_id)
+            & (Friendship.addressee_id == target_id),
+            (Friendship.requester_id == target_id)
+            & (Friendship.addressee_id == user_id),
+        )
+    ).delete(synchronize_session=False)
+
+    db.add(UserBlock(blocker_id=user_id, blocked_id=target_id))
+    db.commit()
+
+
+def unblock_user(user_id: str, target_id: str, db: Session) -> None:
+    """Unblock a user."""
+    block = (
+        db.query(UserBlock)
+        .filter(UserBlock.blocker_id == user_id, UserBlock.blocked_id == target_id)
+        .first()
+    )
+    if not block:
+        return  # Not blocked — idempotent
+    db.delete(block)
+    db.commit()
+
+
+def list_blocked_users(user_id: str, db: Session) -> dict:
+    """Return all users this user has blocked."""
+    blocks = (
+        db.query(UserBlock)
+        .filter(UserBlock.blocker_id == user_id)
+        .order_by(UserBlock.created_at.desc())
+        .all()
+    )
+    if not blocks:
+        return {"blocked": []}
+
+    profile_map = {
+        p.id: p
+        for p in db.query(Profile)
+        .filter(Profile.id.in_([b.blocked_id for b in blocks]))
+        .all()
+    }
+    return {
+        "blocked": [
+            {
+                "id": str(p.id),
+                "username": p.username,
+                "display_name": p.display_name,
+                "avatar_url": p.avatar_url,
+                "blocked_at": b.created_at,
+            }
+            for b in blocks
+            if (p := profile_map.get(b.blocked_id)) is not None
+        ]
+    }
+
+
+def get_block_state(user_id: str, target_id: str, db: Session) -> tuple[bool, bool]:
+    """Return (is_blocked_by_me, has_blocked_me) for a target user."""
+    rows = (
+        db.query(UserBlock)
+        .filter(
+            or_(
+                (UserBlock.blocker_id == user_id) & (UserBlock.blocked_id == target_id),
+                (UserBlock.blocker_id == target_id) & (UserBlock.blocked_id == user_id),
+            )
+        )
+        .all()
+    )
+    is_blocked_by_me = any(str(r.blocker_id) == user_id for r in rows)
+    has_blocked_me = any(str(r.blocker_id) == target_id for r in rows)
+    return is_blocked_by_me, has_blocked_me
+
+
+def get_blocked_user_ids(user_id: str, db: Session) -> set[str]:
+    """Return IDs of users involved in any block relationship with this user (either direction)."""
+    rows = (
+        db.query(UserBlock)
+        .filter(or_(UserBlock.blocker_id == user_id, UserBlock.blocked_id == user_id))
+        .all()
+    )
+    ids: set[str] = set()
+    for r in rows:
+        if str(r.blocker_id) == user_id:
+            ids.add(str(r.blocked_id))
+        else:
+            ids.add(str(r.blocker_id))
+    return ids
 
 
 def withdraw_friend_request(user_id: str, friendship_id: int, db: Session) -> None:
@@ -321,7 +442,11 @@ def _get_pending_ids(user_id: str, db: Session) -> set[str]:
 
 def get_contact_suggestions(user_id: str, db: Session) -> list[dict]:
     """Find blnd users who match the uploaded contacts."""
-    exclude_ids = _get_friend_ids(user_id, db) | _get_pending_ids(user_id, db)
+    exclude_ids = (
+        _get_friend_ids(user_id, db)
+        | _get_pending_ids(user_id, db)
+        | get_blocked_user_ids(user_id, db)
+    )
     exclude_ids.add(user_id)
 
     # Get this user's uploaded contact phone numbers
@@ -364,7 +489,9 @@ def get_mutual_suggestions(user_id: str, db: Session) -> list[dict]:
     if not friend_ids:
         return []
 
-    exclude_ids = friend_ids | _get_pending_ids(user_id, db)
+    exclude_ids = (
+        friend_ids | _get_pending_ids(user_id, db) | get_blocked_user_ids(user_id, db)
+    )
     exclude_ids.add(user_id)
 
     # For each friend, get their friends (2nd degree connections)

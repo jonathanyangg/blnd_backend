@@ -180,6 +180,7 @@ class PublicProfileResponse(BaseModel):
     blends_count: int
     friendship_status: str | None = None
     friendship_id: int | None = None
+    is_blocked: bool = False
 
 
 class PublicWatchedMovieResponse(BaseModel):

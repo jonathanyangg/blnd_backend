@@ -63,3 +63,18 @@ class MutualFriendResponse(BaseModel):
 class MutualFriendsResponse(BaseModel):
     mutuals: list[MutualFriendResponse]
     count: int
+
+
+# --- Blocking ---
+
+
+class BlockedUserResponse(BaseModel):
+    id: str
+    username: str
+    display_name: str | None = None
+    avatar_url: str | None = None
+    blocked_at: datetime
+
+
+class BlockedUsersResponse(BaseModel):
+    blocked: list[BlockedUserResponse]
