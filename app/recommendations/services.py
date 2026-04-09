@@ -279,10 +279,90 @@ def compute_taste_embeddings(
     return positive_emb, negative_emb
 
 
+GENRE_SEED_TOP_N = 20
+GENRE_SEED_MIN_VOTE = 7.0
+GLOBAL_SEED_TOP_N = 100
+
+# Maps iOS-facing genre names to canonical TMDB genre names.
+# TMDB stores genres in movies.genres JSONB as [{"id": ..., "name": "..."}].
+IOS_TO_TMDB_GENRE = {
+    "action": "Action",
+    "comedy": "Comedy",
+    "horror": "Horror",
+    "sci-fi": "Science Fiction",
+    "romance": "Romance",
+    "thriller": "Thriller",
+    "drama": "Drama",
+    "animation": "Animation",
+    "documentary": "Documentary",
+    "mystery": "Mystery",
+    "fantasy": "Fantasy",
+    "crime": "Crime",
+}
+
+
+def compute_genre_seed_embedding(
+    favorite_genres: list[str] | None, db: Session
+) -> list[float] | None:
+    """Build a fallback taste embedding from genre preferences alone.
+
+    For each favorite genre, averages the embeddings of the top ~20 movies in
+    that genre (vote_average >= 7.0), weighted by vote_average. If no genres,
+    falls back to the global top 100 highest-rated movies.
+
+    Used as a cold-start seed for users who complete onboarding without rating
+    any movies. Replaced on the next rebuild if the user rates something.
+    """
+    all_embeddings: list[np.ndarray] = []
+    all_weights: list[float] = []
+
+    if favorite_genres:
+        for genre_name in favorite_genres:
+            tmdb_name = IOS_TO_TMDB_GENRE.get(genre_name.lower(), genre_name)
+            rows = (
+                db.query(Movie.vote_average, MovieEmbedding.embedding)
+                .join(MovieEmbedding, Movie.tmdb_id == MovieEmbedding.tmdb_id)
+                .filter(
+                    Movie.vote_average >= GENRE_SEED_MIN_VOTE,
+                    Movie.genres.contains([{"name": tmdb_name}]),
+                )
+                .order_by(Movie.vote_average.desc())
+                .limit(GENRE_SEED_TOP_N)
+                .all()
+            )
+            for vote_avg, emb in rows:
+                all_embeddings.append(np.array(emb))
+                all_weights.append(float(vote_avg or GENRE_SEED_MIN_VOTE))
+    else:
+        # No genres — fall back to global top N by vote_average
+        rows = (
+            db.query(Movie.vote_average, MovieEmbedding.embedding)
+            .join(MovieEmbedding, Movie.tmdb_id == MovieEmbedding.tmdb_id)
+            .filter(Movie.vote_average.isnot(None))
+            .order_by(Movie.vote_average.desc())
+            .limit(GLOBAL_SEED_TOP_N)
+            .all()
+        )
+        for vote_avg, emb in rows:
+            all_embeddings.append(np.array(emb))
+            all_weights.append(float(vote_avg or 7.0))
+
+    if not all_embeddings:
+        return None
+
+    emb_array = np.stack(all_embeddings, axis=0)
+    weights = np.array(all_weights)
+    return np.average(emb_array, axis=0, weights=weights).tolist()
+
+
 def rebuild_taste_profile(
     user_id: str, db: Session, openai_client: OpenAI
 ) -> Profile | None:
-    """Orchestrator: build taste embedding + generate taste bio for display."""
+    """Orchestrator: build taste embedding + generate taste bio for display.
+
+    Tries rated-movie weighted average first. Falls back to genre seed
+    embedding (or global top-rated average) if the user has no ratings yet.
+    """
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile:
         return None
@@ -295,7 +375,20 @@ def rebuild_taste_profile(
             user_id, db, profile=profile
         )
         if not positive_emb:
-            return profile  # No embeddings available yet (e.g. movies not embedded)
+            # Cold-start fallback: seed from favorite genres (or global top)
+            seed = compute_genre_seed_embedding(profile.favorite_genres, db)
+            if not seed:
+                return profile  # No movies embedded yet, nothing to seed from
+            profile.taste_embedding = seed
+            profile.negative_embedding = None
+            db.commit()
+            db.refresh(profile)
+            logger.info(
+                "Seeded taste profile from %s for user %s",
+                "genres" if profile.favorite_genres else "global",
+                user_id,
+            )
+            return profile
         profile.taste_embedding = positive_emb
         profile.negative_embedding = negative_emb
     else:

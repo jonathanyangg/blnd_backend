@@ -53,7 +53,10 @@ def compute_match_scores(
 ) -> dict[int, float]:
     """Compute match scores for a list of movies against a user's taste profile.
 
-    Returns {tmdb_id: score} for movies that have embeddings. Missing ones are omitted.
+    Returns {tmdb_id: score} for every movie in the list that has a Movie record.
+    When a movie has no embedding, falls back to a genre+consensus-only score
+    (cosine similarity term becomes 0, remaining signals renormalized so the
+    fallback can still reach ~100%).
     """
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile or profile.taste_embedding is None:
@@ -78,17 +81,34 @@ def compute_match_scores(
 
     user_genres, top_directors, top_cast = get_user_signal_context(user_id, db)
 
+    # Renormalization factor for fallback (drops W_SIMILARITY and W_NEGATIVE)
+    fallback_denom = W_GENRE + W_CONSENSUS + W_DIRECTOR + W_CAST
+
     scores: dict[int, float] = {}
     for tid in tmdb_ids:
-        movie_emb = emb_map.get(tid)
         movie = movie_map.get(tid)
-        if not movie_emb or not movie:
+        if not movie:
             continue
-        similarity = _cosine_sim(taste_emb, movie_emb)
-        neg_sim = _cosine_sim(movie_emb, negative_emb) if negative_emb else 0.0
-        raw = _compute_score(
-            movie, similarity, user_genres, top_directors, top_cast, neg_sim
-        )
+        movie_emb = emb_map.get(tid)
+        if movie_emb:
+            similarity = _cosine_sim(taste_emb, movie_emb)
+            neg_sim = _cosine_sim(movie_emb, negative_emb) if negative_emb else 0.0
+            raw = _compute_score(
+                movie, similarity, user_genres, top_directors, top_cast, neg_sim
+            )
+        else:
+            # Fallback: no embedding for this movie. Use non-cosine signals only.
+            genre = _genre_overlap(movie.genres or [], user_genres)
+            consensus = _consensus_score(movie.vote_average)
+            director = _director_boost(movie.director, top_directors)
+            cast = _cast_boost(movie.cast or [], top_cast)
+            weighted = (
+                W_GENRE * genre
+                + W_CONSENSUS * consensus
+                + W_DIRECTOR * director
+                + W_CAST * cast
+            )
+            raw = round(max(weighted / fallback_denom, 0.0), 4)
         scores[tid] = to_match_percentage(raw)
 
     return scores
@@ -365,3 +385,48 @@ def _extract_trailer_url(videos_data: dict) -> str | None:
         if video.get("site") == "YouTube" and video.get("type") == "Trailer":
             return f"https://www.youtube.com/watch?v={video['key']}"
     return None
+
+
+def embed_movie_in_background(tmdb_id: int) -> None:
+    """Generate a MovieEmbedding for a single movie. Runs in a background task.
+
+    Fired when a detail view request finds a Movie without an embedding
+    (typically from search/new releases not covered by the seed pipeline).
+    Idempotent — exits early if the embedding already exists.
+    """
+    from app.database import SessionLocal
+    from app.dependencies import openai_client
+
+    db = SessionLocal()
+    try:
+        # Sanity dedup — another request may have embedded it already
+        existing = (
+            db.query(MovieEmbedding).filter(MovieEmbedding.tmdb_id == tmdb_id).first()
+        )
+        if existing:
+            return
+
+        movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+        if not movie or not movie.overview:
+            return
+
+        text = (
+            f"{movie.title} ({movie.year}): {movie.overview}"
+            if movie.year
+            else f"{movie.title}: {movie.overview}"
+        )
+
+        response = openai_client.embeddings.create(
+            model="text-embedding-3-small",
+            input=[text],
+        )
+        embedding = response.data[0].embedding
+
+        db.add(MovieEmbedding(tmdb_id=tmdb_id, embedding=embedding))
+        db.commit()
+        logger.info("Background-embedded movie tmdb_id=%s", tmdb_id)
+    except Exception:
+        logger.warning("Background embed failed for tmdb_id=%s", tmdb_id, exc_info=True)
+        db.rollback()
+    finally:
+        db.close()

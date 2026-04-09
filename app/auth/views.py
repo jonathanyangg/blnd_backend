@@ -154,20 +154,17 @@ async def complete_onboarding_view(
     except Exception:
         raise HTTPException(status_code=400, detail="Onboarding failed")
 
-    if body.rated_movies:
-        from app.recommendations.services import rebuild_taste_profile
+    # Always seed a taste profile so the user lands in the app with FYP ready.
+    # Uses the rating-weighted average if they rated movies, otherwise falls
+    # back to a genre-seeded embedding (or global top if no genres).
+    from app.recommendations.services import rebuild_taste_profile
 
-        def _rebuild_in_background() -> None:
-            bg_db = SessionLocal()
-            try:
-                rebuild_taste_profile(user_id, bg_db, openai_client)
-            except Exception:
-                bg_db.rollback()
-                raise
-            finally:
-                bg_db.close()
-
-        background_tasks.add_task(_rebuild_in_background)
+    try:
+        rebuild_taste_profile(user_id, db, openai_client)
+    except Exception:
+        # Non-critical — user can still enter the app, FYP will be empty until
+        # they interact. Rollback any partial profile changes so signup succeeds.
+        db.rollback()
 
     return result
 
