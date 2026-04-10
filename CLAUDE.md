@@ -250,7 +250,16 @@ cp .env.development .env   # switch back to test
 
 This project has a graphify knowledge graph at graphify-out/.
 
-Rules:
-- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
-- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
-- After modifying code files in this session, run `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"` to keep the graph current
+Discovery rules:
+- **Default to grep / read / glob.** Most code questions — "where is X defined", "what does this function do", "what are the weight constants" — are answered fastest by direct search. Do not detour through the graph for them.
+- **Reach for graphify only on graphify-shaped problems**: tracing orchestration across many files (request → service → background task → DB), finding non-obvious cross-module connections, or building a first-pass architectural map of an unfamiliar subsystem. If grep would solve it in two queries, skip graphify.
+- **When you do use graphify, use the query CLI. Never read `graphify-out/graph.json` directly** — it is 25K+ lines and will thrash a subagent's context. Use:
+  ```
+  .venv/bin/python -m graphify query "<question>" --budget 1500
+  ```
+  This BFS-traverses the graph and returns the relevant nodes with `src=<file> loc=L<line>`.
+- `graphify-out/GRAPH_REPORT.md` (~220 lines) is fine to read once for orientation — god nodes, communities, hyperedges, surprising connections.
+- After the graph points you at relevant src files, switch back to targeted grep / read with offset+limit for actual code. The graph is the index; grep is the reader.
+- Do NOT read files under `graphify-out/cache/`. They are LLM cache, not source.
+
+After modifying code files in this session, run `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"` to keep the graph current.
