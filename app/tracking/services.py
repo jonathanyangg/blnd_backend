@@ -11,7 +11,7 @@ from app.auth.models import Profile
 from app.friends.models import Friendship
 from app.movies.models import Movie
 from app.movies.services import get_movie_details
-from app.tracking.models import WatchedMovie, WatchlistMovie
+from app.tracking.models import ActivityFeedItem, WatchedMovie, WatchlistMovie
 from app.tracking.schemas import UpdateTrackingRequest
 
 
@@ -379,3 +379,71 @@ def _to_response(entry: WatchedMovie, movie: Movie | None) -> dict:
         "liked": entry.liked,
         "created_at": entry.created_at,
     }
+
+
+# --- Activity Feed ---
+
+
+def record_activity(
+    user_id: str, action: str, tmdb_id: int, db: Session, rating: float | None = None
+) -> None:
+    """Record an activity feed item."""
+    item = ActivityFeedItem(
+        user_id=user_id, action=action, tmdb_id=tmdb_id, rating=rating
+    )
+    db.add(item)
+    db.commit()
+
+
+def get_friend_feed(
+    user_id: str, db: Session, limit: int = 50, offset: int = 0
+) -> dict:
+    """Get activity feed from friends, most recent first."""
+    # Get friend IDs
+    friendships = (
+        db.query(Friendship)
+        .filter(
+            Friendship.status == "accepted",
+            or_(
+                Friendship.requester_id == user_id,
+                Friendship.addressee_id == user_id,
+            ),
+        )
+        .all()
+    )
+    friend_ids = [
+        str(f.addressee_id) if str(f.requester_id) == user_id else str(f.requester_id)
+        for f in friendships
+    ]
+    if not friend_ids:
+        return {"results": []}
+
+    # Query feed items from friends, joined with profile + movie
+    rows = (
+        db.query(ActivityFeedItem, Profile, Movie)
+        .join(Profile, ActivityFeedItem.user_id == Profile.id)
+        .outerjoin(Movie, ActivityFeedItem.tmdb_id == Movie.tmdb_id)
+        .filter(ActivityFeedItem.user_id.in_(friend_ids))
+        .order_by(ActivityFeedItem.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    results = [
+        {
+            "id": item.id,
+            "user_id": str(profile.id),
+            "username": profile.username,
+            "display_name": profile.display_name,
+            "avatar_url": profile.avatar_url,
+            "action": item.action,
+            "tmdb_id": item.tmdb_id,
+            "title": movie.title if movie else None,
+            "poster_path": movie.poster_path if movie else None,
+            "rating": item.rating,
+            "created_at": item.created_at,
+        }
+        for item, profile, movie in rows
+    ]
+    return {"results": results}

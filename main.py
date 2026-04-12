@@ -2,6 +2,7 @@ import logging
 import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from aioapns import APNs
@@ -46,8 +47,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     # APNs client -- graceful degradation when not configured
     if settings.apns_key and settings.apns_key_id:
+        apns_key = settings.apns_key
+        # If it's a file path, read the key content
+        if not apns_key.startswith("-----") and Path(apns_key).is_file():
+            apns_key = Path(apns_key).read_text()
         app.state.apns_client = APNs(
-            key=settings.apns_key,
+            key=apns_key,
             key_id=settings.apns_key_id,
             team_id=settings.apple_team_id,
             topic=settings.apple_bundle_id,

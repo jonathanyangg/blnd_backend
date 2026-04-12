@@ -84,3 +84,24 @@ class FriendWatchedResponse(BaseModel):
 class FriendsWhoWatchedResponse(BaseModel):
     results: list[FriendWatchedResponse]
     total: int
+
+
+# --- Activity Feed ---
+
+
+class ActivityFeedItemResponse(BaseModel):
+    id: int
+    user_id: str
+    username: str
+    display_name: str | None = None
+    avatar_url: str | None = None
+    action: str
+    tmdb_id: int
+    title: str | None = None
+    poster_path: str | None = None
+    rating: float | None = None
+    created_at: datetime
+
+
+class ActivityFeedResponse(BaseModel):
+    results: list[ActivityFeedItemResponse]
