@@ -17,6 +17,7 @@ from app.notifications import services as notification_services
 from app.notifications.services import THREAD_GROUP_ACTIVITY, THREAD_GROUP_INVITES
 from app.tracking import schemas as tracking_schemas
 from app.tracking import services as watchlist_services
+from app.tracking.services import record_activity
 
 router = APIRouter()
 
@@ -231,6 +232,9 @@ async def add_to_group_watchlist(
     result = await watchlist_services.add_to_watchlist(
         group.watchlist_id, body.tmdb_id, user_id, db, tmdb_client, body.source
     )
+
+    # Record activity
+    record_activity(user_id, "watchlisted", body.tmdb_id, db)
 
     # Notify other group members
     adder_profile = db.query(Profile).filter(Profile.id == user_id).first()
