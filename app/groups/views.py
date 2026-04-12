@@ -11,9 +11,10 @@ from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.database import SessionLocal
 from app.dependencies import get_apns_client, get_current_user, get_db, get_tmdb_client
 from app.groups import schemas, services
-from app.groups.models import Group
+from app.groups.models import Group, GroupMember
+from app.movies.models import Movie
 from app.notifications import services as notification_services
-from app.notifications.services import THREAD_GROUP_INVITES
+from app.notifications.services import THREAD_GROUP_ACTIVITY, THREAD_GROUP_INVITES
 from app.tracking import schemas as tracking_schemas
 from app.tracking import services as watchlist_services
 
@@ -221,14 +222,57 @@ async def add_to_group_watchlist(
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+    apns_client: APNs | None = Depends(get_apns_client),
 ):
     services._verify_membership(group_id, user_id, db)
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group or not group.watchlist_id:
         return Response(status_code=status.HTTP_404_NOT_FOUND)
-    return await watchlist_services.add_to_watchlist(
+    result = await watchlist_services.add_to_watchlist(
         group.watchlist_id, body.tmdb_id, user_id, db, tmdb_client, body.source
     )
+
+    # Notify other group members
+    adder_profile = db.query(Profile).filter(Profile.id == user_id).first()
+    movie = db.query(Movie).filter(Movie.tmdb_id == body.tmdb_id).first()
+    group_name = group.name or "a blend"
+    adder_name = adder_profile.username if adder_profile else "Someone"
+    movie_title = movie.title if movie else "a movie"
+
+    member_ids = [
+        str(m.user_id)
+        for m in db.query(GroupMember).filter(GroupMember.group_id == group_id).all()
+        if str(m.user_id) != user_id
+    ]
+
+    if member_ids:
+
+        async def _send_watchlist_push() -> None:
+            bg_db = SessionLocal()
+            try:
+                for mid in member_ids:
+                    await notification_services.send_push(
+                        user_id=mid,
+                        notification_type="group_invites",
+                        title=group_name,
+                        body=f"{adder_name} added {movie_title} to the watchlist",
+                        data={
+                            "type": "group_watchlist",
+                            "group_id": str(group_id),
+                            "tmdb_id": str(body.tmdb_id),
+                        },
+                        db=bg_db,
+                        apns_client=apns_client,
+                        thread_id=THREAD_GROUP_ACTIVITY,
+                    )
+            except Exception:
+                pass
+            finally:
+                bg_db.close()
+
+        asyncio.ensure_future(_send_watchlist_push())
+
+    return result
 
 
 @router.delete(

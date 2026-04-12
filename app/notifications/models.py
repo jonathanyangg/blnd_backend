@@ -36,6 +36,9 @@ class NotificationPreference(Base):
     last_digest_sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    badge_count: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
     last_friend_activity_push_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -21,6 +21,7 @@ DIGEST_COOLDOWN_DAYS = 6
 THREAD_FRIEND_REQUESTS = "friend_requests"
 THREAD_GROUP_INVITES = "group_invites"
 THREAD_FRIEND_ACTIVITY = "friend_activity"
+THREAD_GROUP_ACTIVITY = "group_activity"
 
 
 def register_device(user_id: str, token: str, platform: str, db: Session) -> None:
@@ -110,11 +111,15 @@ async def send_push(
     if not tokens:
         return 0
 
+    # Increment badge count
+    pref.badge_count = (pref.badge_count or 0) + 1
+    db.commit()
+
     # Build aps dict
     aps: dict[str, object] = {
         "alert": {"title": title, "body": body},
         "sound": "default",
-        "badge": 1,
+        "badge": pref.badge_count,
     }
     if thread_id:
         aps["thread-id"] = thread_id
@@ -199,27 +204,27 @@ async def notify_friends_of_rating(
 ) -> None:
     """Fan out friend activity notifications when a user rates a movie >= 4.0.
 
+    Uses batched DB queries for preferences + device tokens to avoid N+1.
+
     Skips entirely when:
     - rating < 4.0
     - previous_rating was already >= 4.0 (no re-notification on updates)
     """
-    if rating < 4.0:
+    if rating < 4.0 or apns_client is None:
         return
 
     if previous_rating is not None and previous_rating >= 4.0:
         return
 
-    # Get sender's username
+    # Get sender's username + movie title
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if profile is None:
         return
-
-    # Get movie title
     movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
     if movie is None:
         return
 
-    # Get all accepted friendships
+    # Get all friend IDs in one query
     friendships = (
         db.query(Friendship)
         .filter(
@@ -231,27 +236,93 @@ async def notify_friends_of_rating(
         )
         .all()
     )
+    friend_ids = [
+        str(f.addressee_id) if str(f.requester_id) == user_id else str(f.requester_id)
+        for f in friendships
+    ]
+    if not friend_ids:
+        return
 
-    for friendship in friendships:
-        friend_id = (
-            str(friendship.addressee_id)
-            if str(friendship.requester_id) == user_id
-            else str(friendship.requester_id)
-        )
-        try:
-            await notify_friend_activity(
-                recipient_id=friend_id,
-                sender_username=profile.username,
-                movie_title=movie.title,
-                tmdb_id=tmdb_id,
-                db=db,
-                apns_client=apns_client,
-            )
-        except Exception:
-            logger.exception(
-                "Failed to send friend activity notification to %s", friend_id
-            )
+    # Batch-fetch preferences for all friends
+    prefs = (
+        db.query(NotificationPreference)
+        .filter(NotificationPreference.user_id.in_(friend_ids))
+        .all()
+    )
+    pref_map = {str(p.user_id): p for p in prefs}
+
+    # Batch-fetch device tokens for all friends
+    all_tokens = db.query(DeviceToken).filter(DeviceToken.user_id.in_(friend_ids)).all()
+    tokens_by_user: dict[str, list[DeviceToken]] = {}
+    for t in all_tokens:
+        tokens_by_user.setdefault(str(t.user_id), []).append(t)
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    stale_ids: list[int] = []
+
+    for fid in friend_ids:
+        # Check preference
+        pref = pref_map.get(fid)
+        if pref and not pref.friend_activity:
             continue
+
+        # Check 24-hour cap
+        if (
+            pref
+            and pref.last_friend_activity_push_at
+            and pref.last_friend_activity_push_at > cutoff
+        ):
+            continue
+
+        tokens = tokens_by_user.get(fid, [])
+        if not tokens:
+            continue
+
+        # Increment badge
+        if pref is None:
+            pref = get_or_create_preferences(fid, db)
+        pref.badge_count = (pref.badge_count or 0) + 1
+
+        aps: dict[str, object] = {
+            "alert": {
+                "title": "Friend Activity",
+                "body": f"{profile.username} loved {movie.title}",
+            },
+            "sound": "default",
+            "badge": pref.badge_count,
+            "thread-id": THREAD_FRIEND_ACTIVITY,
+        }
+
+        sent = False
+        for device in tokens:
+            try:
+                request = NotificationRequest(
+                    device_token=device.token,
+                    message={
+                        "aps": aps,
+                        "type": "friend_activity",
+                        "tmdb_id": str(tmdb_id),
+                    },
+                )
+                result = await apns_client.send_notification(request)
+                if result.is_successful:
+                    sent = True
+                elif result.description in ("Unregistered", "BadDeviceToken"):
+                    stale_ids.append(device.id)
+            except Exception:
+                logger.exception(
+                    "Failed to send friend activity push to device %s", device.id
+                )
+
+        if sent:
+            pref.last_friend_activity_push_at = datetime.now(timezone.utc)
+
+    # Bulk cleanup + commit
+    if stale_ids:
+        db.query(DeviceToken).filter(DeviceToken.id.in_(stale_ids)).delete(
+            synchronize_session=False
+        )
+    db.commit()
 
 
 async def run_weekly_digest(apns_client: APNs | None) -> None:
@@ -312,3 +383,10 @@ async def run_weekly_digest(apns_client: APNs | None) -> None:
         logger.exception("Weekly digest failed")
     finally:
         db.close()
+
+
+def reset_badge(user_id: str, db: Session) -> None:
+    """Reset badge count to 0 (called when user opens the app)."""
+    pref = get_or_create_preferences(user_id, db)
+    pref.badge_count = 0
+    db.commit()

@@ -64,7 +64,6 @@ async def track_movie(
                 bg_db.close()
 
         background_tasks.add_task(_rebuild)
-    return result
 
     # Only notify on NEW trackings with rating >= 4.0 (not upserts)
     if not was_already_tracked and body.rating is not None and body.rating >= 4.0:

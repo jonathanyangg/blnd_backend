@@ -62,8 +62,37 @@ async def accept_friend_request(
     friendship_id: int,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
+    apns_client: APNs | None = Depends(get_apns_client),
 ):
-    return services.accept_friend_request(user_id, friendship_id, db)
+    result = services.accept_friend_request(user_id, friendship_id, db)
+
+    # Notify the requester that their request was accepted
+    requester_id = result.get("requester", {}).get("id", "")
+    accepter_username = result.get("addressee", {}).get("username", "")
+
+    if requester_id and accepter_username:
+
+        async def _send_accepted_push() -> None:
+            bg_db = SessionLocal()
+            try:
+                await notification_services.send_push(
+                    user_id=requester_id,
+                    notification_type="friend_requests",
+                    title="Friend Request Accepted",
+                    body=f"{accepter_username} accepted your friend request",
+                    data={"type": "friend_accepted", "user_id": user_id},
+                    db=bg_db,
+                    apns_client=apns_client,
+                    thread_id=THREAD_FRIEND_REQUESTS,
+                )
+            except Exception:
+                pass
+            finally:
+                bg_db.close()
+
+        asyncio.ensure_future(_send_accepted_push())
+
+    return result
 
 
 @router.post("/{friendship_id}/reject", response_model=schemas.FriendRequestResponse)

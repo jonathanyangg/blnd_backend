@@ -73,6 +73,17 @@ async def update_preferences(
     )
 
 
+@router.post("/badge/reset", response_model=schemas.MessageResponse)
+@limiter.limit(LIMIT_DEFAULT)
+async def reset_badge(
+    request: Request,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.MessageResponse:
+    services.reset_badge(user_id, db)
+    return schemas.MessageResponse(message="Badge reset")
+
+
 @router.post(
     "/send-weekly-digest",
     response_model=schemas.DigestStatusResponse,
