@@ -1,12 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.auth.models import Profile
 from app.core.rate_limit import LIMIT_DEFAULT, LIMIT_REFRESH, limiter
+from app.database import SessionLocal
 from app.dependencies import get_current_user, get_db, openai_client
 from app.movies.models import Movie
 from app.recommendations import schemas, services
+from app.recommendations.services import increment_action_counter
 from app.recommendations.pipeline import (
     RecommendationContext,
     run_recommendation_pipeline,
@@ -132,10 +134,25 @@ def refresh_recommendations(
 def hide_movie(
     request: Request,
     tmdb_id: int,
+    background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     hidden = services.hide_movie(user_id, tmdb_id, db)
+
+    if increment_action_counter(user_id, db):
+
+        def _rebuild() -> None:
+            bg_db = SessionLocal()
+            try:
+                services.rebuild_taste_profile(user_id, bg_db, openai_client)
+            except Exception:
+                bg_db.rollback()
+                raise
+            finally:
+                bg_db.close()
+
+        background_tasks.add_task(_rebuild)
 
     movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
     return {

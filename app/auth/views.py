@@ -35,7 +35,12 @@ def signup(
 ):
     try:
         return services.signup(
-            body.email, body.password, body.username, body.display_name, db
+            body.email,
+            body.password,
+            body.username,
+            body.display_name,
+            db,
+            phone_number=body.phone_number,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -91,6 +96,18 @@ def reset_password(
     return {"message": "Password updated successfully"}
 
 
+@router.post("/change-password", response_model=schemas.MessageResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def change_password(
+    request: Request,
+    body: schemas.ChangePasswordRequest,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    services.change_password(user_id, body.current_password, body.new_password, db)
+    return {"message": "Password changed successfully"}
+
+
 @router.post("/oauth", response_model=schemas.OAuthResponse)
 @limiter.limit(LIMIT_DEFAULT)
 async def oauth_login_view(
@@ -130,23 +147,24 @@ async def complete_onboarding_view(
             db,
             tmdb_client,
             apple_refresh_token=body.apple_refresh_token,
+            phone_number=body.phone_number,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         raise HTTPException(status_code=400, detail="Onboarding failed")
 
-    if body.rated_movies:
-        from app.recommendations.services import rebuild_taste_profile
+    # Always seed a taste profile so the user lands in the app with FYP ready.
+    # Uses the rating-weighted average if they rated movies, otherwise falls
+    # back to a genre-seeded embedding (or global top if no genres).
+    from app.recommendations.services import rebuild_taste_profile
 
-        def _rebuild_in_background() -> None:
-            bg_db = SessionLocal()
-            try:
-                rebuild_taste_profile(user_id, bg_db, openai_client)
-            finally:
-                bg_db.close()
-
-        background_tasks.add_task(_rebuild_in_background)
+    try:
+        rebuild_taste_profile(user_id, db, openai_client)
+    except Exception:
+        # Non-critical — user can still enter the app, FYP will be empty until
+        # they interact. Rollback any partial profile changes so signup succeeds.
+        db.rollback()
 
     return result
 
@@ -168,6 +186,7 @@ def me(
         avatar_url=profile.avatar_url,
         taste_bio=profile.taste_bio,
         favorite_genres=profile.favorite_genres or [],
+        phone_number=profile.phone_number,
     )
 
 
@@ -207,6 +226,9 @@ def update_profile(
             bg_db = SessionLocal()
             try:
                 rebuild_taste_profile(user_id, bg_db, openai_client)
+            except Exception:
+                bg_db.rollback()
+                raise
             finally:
                 bg_db.close()
 
@@ -219,6 +241,7 @@ def update_profile(
         avatar_url=profile.avatar_url,
         taste_bio=profile.taste_bio,
         favorite_genres=profile.favorite_genres or [],
+        phone_number=profile.phone_number,
     )
 
 

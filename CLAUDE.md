@@ -41,15 +41,20 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Project scaffolding: folder structure, config, database, dependencies, main.py
 - Pre-commit hooks: ruff, ruff-format, codespell, pyright (pyrightconfig.json points to .venv)
 - Supabase project set up, CLI initialized and linked
-- Migrations (16 total in `supabase/migrations/`):
+- Migrations (21 total in `supabase/migrations/`):
   - Initial schema: profiles, movies, watched_movies, friendships, groups, group_members, movie_embeddings, pgvector, match_movies RPC
   - Taste profile fields on profiles, trailer_url/detail fields on movies, liked on watched_movies
   - Standalone watchlists table, watchlist_id on profiles/groups, watchlist_movies with watchlist_id FK
   - Source column on watched_movies/watchlist_movies, sync_state table
   - Negative embedding + hidden_movies, vote_count on movies
   - Apple refresh token on profiles, performance indexes, remote schema sync
+  - actions_since_rebuild counter on profiles (debounced taste rebuild every 5 actions)
+  - streaming_availability cache table (tmdb_id + country, FK to movies, 30-day TTL)
+  - Missing indexes: hidden_movies(user_id), watchlist_movies(tmdb_id), friendships(requester_id)
+  - Phone number on profiles, contact_hashes table for friend discovery
+  - phone_number on profiles + user_contacts table for contact discovery
 - Auth domain: fully implemented
-  - Models: Profile (taste fields, apple_refresh_token)
+  - Models: Profile (taste fields, apple_refresh_token, phone_number)
   - Schemas: signup/login/refresh/profile, OAuth, onboarding, genre taste, public profile
   - Username validation: 3–30 chars, alphanumeric + periods + underscores, no leading/trailing/consecutive special chars, auto-lowercased, uniqueness check
   - Password validation: min 8 chars, at least 1 uppercase letter
@@ -59,11 +64,12 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - User search: GET /auth/users/search?q= — prefix search (ILIKE) for friend autocomplete, excludes current user, returns up to 10 results
   - Avatar upload: Supabase Storage `avatars` bucket (public), RLS policies, frontend uploads to `avatars/{user_id}/avatar.png`
   - Password reset: POST /auth/forgot-password (constant response, no auth), POST /auth/reset-password (requires JWT)
+  - Change password: POST /auth/change-password (requires JWT, verifies current password via Supabase sign-in before updating)
   - Auth refresh: POST /auth/refresh (accepts refresh_token, no JWT required)
-  - Public profile endpoints (friendship-gated via `assert_are_friends`):
-    - GET /auth/users/{id}/profile — stats (watched_count, friends_count, blends_count)
-    - GET /auth/users/{id}/watched — paginated watched movies
-    - GET /auth/users/{id}/friends — friends list
+  - Public profile endpoints:
+    - GET /auth/users/{id}/profile — stats (watched_count, friends_count, blends_count) — no friendship required (public)
+    - GET /auth/users/{id}/watched — paginated watched movies (friendship-gated)
+    - GET /auth/users/{id}/friends — friends list (friendship-gated)
   - Account deletion: DELETE /auth/account — full cascade cleanup (transfers group ownership, nulls watchlist_movies.added_by, cascade deletes profile/watched/friendships/hidden, deletes personal watchlist, revokes Apple refresh token, best-effort Supabase Auth + avatar cleanup via `supabase_admin`)
 - Movies domain: fully implemented
   - Model: Movie (SQLAlchemy, includes director, cast, tagline, backdrop_path, imdb_id)
@@ -84,12 +90,14 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Views: POST /tracking/ (track/upsert), GET /tracking/ (paginated history), GET /tracking/{tmdb_id}, PATCH /tracking/{tmdb_id}, DELETE /tracking/{tmdb_id}, GET /tracking/{tmdb_id}/friends (friends who watched this movie with their ratings/reviews)
   - All endpoints require JWT auth; POST auto-caches movie from TMDB if not in DB
   - Tracking a movie auto-removes it from the user's personal watchlist (if present)
-  - No auto-rebuild of taste profile on rating changes (removed — users manually refresh)
+  - Debounced taste rebuild: every 5 user actions (rate/hide/watchlist) triggers background rebuild via BackgroundTasks
 - Friends domain: fully implemented
-  - Model: Friendship (SQLAlchemy, matches friendships table with unique(requester_id, addressee_id))
-  - Schemas: SendFriendRequestRequest, FriendResponse (includes friendship_id for delete), FriendRequestResponse, FriendListResponse, PendingRequestsResponse
-  - Services: send_friend_request (by username, prevents self-friending, allows re-request after rejection), accept/reject (addressee only), get_friends (accepted, either party), get_pending_requests (split incoming/outgoing), remove_friend (either party)
-  - Views: POST /friends/request, POST /friends/{id}/accept, POST /friends/{id}/reject, GET /friends/, GET /friends/requests, DELETE /friends/{id}
+  - Models: Friendship (SQLAlchemy, unique(requester_id, addressee_id)), UserContact (composite PK: user_id + contact_phone)
+  - Schemas: SendFriendRequestRequest, FriendResponse, FriendRequestResponse, FriendListResponse, PendingRequestsResponse, UploadContactsRequest, SuggestedFriendResponse, FriendSuggestionsResponse, MutualFriendsResponse
+  - Services: send_friend_request (by username, prevents self-friending, allows re-request after rejection), accept/reject (addressee only), get_friends (accepted, either party), get_pending_requests (split incoming/outgoing), remove_friend (either party), upload_contacts, get_suggestions (contacts + mutuals), get_mutual_friends
+  - Contact discovery: POST /friends/contacts uploads phone numbers, GET /friends/suggestions returns contact matches + friends-of-friends ranked by mutual count
+  - Mutual friends: GET /friends/{user_id}/mutuals returns mutual friends between current user and target
+  - Views: POST /friends/request, POST /friends/{id}/accept, POST /friends/{id}/reject, GET /friends/, GET /friends/requests, DELETE /friends/{id}, POST /friends/contacts, GET /friends/suggestions, GET /friends/{id}/mutuals
   - All endpoints require JWT auth
 - Movie seed pipeline (import_data domain): fully implemented
   - Model: MovieEmbedding (SQLAlchemy, maps to existing movie_embeddings table)
@@ -112,7 +120,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Groups domain: fully implemented
   - Models: Group (id, name, created_by, watchlist_id), GroupMember (composite PK: group_id + user_id)
   - Schemas: CreateGroupRequest, UpdateGroupRequest, AddMemberRequest, GroupMemberResponse, GroupResponse, GroupDetailResponse, GroupListResponse, GroupRecMovieResponse, GroupRecommendationsResponse
-  - Services: create_group (with linked watchlist), list_groups, get_group, update_group (creator only), add_member (by username, 10-member cap), kick_member (can't kick owner), leave_group (transfers ownership), delete_group (creator only, cascade)
+  - Services: create_group (with linked watchlist), list_groups, get_group, update_group (creator only), add_member (by username, 8-member cap), kick_member (can't kick owner), leave_group (transfers ownership), delete_group (creator only, cascade)
   - Views: POST /groups/, GET /groups/, GET /groups/{id}, PATCH /groups/{id} (update name, creator only), DELETE /groups/{id}, POST /groups/{id}/members, POST /groups/{id}/members/{uid}/kick, POST /groups/{id}/leave, GET /groups/{id}/recommendations, GET/POST/DELETE /groups/{id}/watchlist
   - Group recommendations: uses shared 4-step pipeline — averages members' positive + negative embeddings, excludes union of all members' watched + hidden movies, combined genre watch counts for exploration
 - Recommendations domain: fully implemented
@@ -126,7 +134,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Re-ranking formula: `0.50*cosine + 0.20*genre + 0.20*consensus + 0.05*director + 0.05*cast - 0.15*negative_cosine`, clamped ≥ 0
   - Views: GET /recommendations/me (limit up to 200), POST /recommendations/me/feed (infinite scroll — accepts `exclude` list of seen tmdb_ids + `limit`), POST /recommendations/me/refresh, POST /recommendations/{tmdb_id}/hide, DELETE /recommendations/{tmdb_id}/hide, GET /recommendations/hidden
   - Hidden movies: HiddenMovie model, excluded from recs. Hidden movies contribute to negative embedding (merged with low-rated movie negatives).
-  - No auto-rebuild on rating changes (removed). Users manually refresh via POST /recommendations/me/refresh. Genre updates via PATCH /auth/profile still trigger background rebuild.
+  - Debounced taste rebuild: `actions_since_rebuild` counter on profiles, triggers background rebuild every 5 actions (rate/hide/watchlist). Genre updates via PATCH /auth/profile still trigger immediate background rebuild. Manual refresh via POST /recommendations/me/refresh always rebuilds.
   - Exploration picks: movies from underrepresented genres with high vote_average, scored by `0.50*novelty + 0.40*consensus + 0.10*trending`, rescaled to P25-P75 of main scores
 - TMDB Changes API sync: `POST /import/sync-movies` polls TMDB Changes API for movies modified since last sync, updates cached movies in-place, re-embeds on overview change. Uses `sync_state` table. Rate-limited to 1/day.
 - JWT verification: local JWKS-based validation via PyJWKClient (ES256/HS256, audience=authenticated, 1h cache)
@@ -134,6 +142,14 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - `get_optional_user` dependency: extracts user ID from Bearer token if present, returns None otherwise (for optional auth endpoints)
 - Match score scaling: `to_match_percentage()` in `ranking.py` adds flat MATCH_BOOST (0.33) to raw score, capped at 1.0. Applied to all score outputs.
 - Rate limiting: slowapi with per-user keying (JWT sub claim, fallback to IP). Tiered limits: LIMIT_HEAVY (1/day) for seed/sync, LIMIT_IMPORT (3/hour) for letterboxd, LIMIT_REFRESH (5/hour) for rec refresh, LIMIT_SEARCH (30/min) for search/discover, LIMIT_DEFAULT (60/min) for everything else. Disabled in tests via TESTING=true. Config in `app/core/rate_limit.py`.
+- Streaming availability domain (app/streaming/): fully implemented
+  - Model: StreamingAvailability (tmdb_id + country, FK to movies, JSONB streaming_data, fetched_at)
+  - Schemas: StreamingAvailabilityResponse, StreamingOption, StreamingServiceInfo, StreamingPrice
+  - Services: cache-through pattern — checks DB cache (30-day TTL), falls back to Streaming Availability API (Movie of the Night via RapidAPI), caches result. 404s cached as empty to avoid re-fetching.
+  - Views: GET /movies/{tmdb_id}/streaming?country=us — lazy on-demand fetching, only called when user taps "Watch Now"
+  - Streaming client lifecycle: httpx.AsyncClient in FastAPI lifespan (RapidAPI key via `X-RapidAPI-Key` header)
+  - Attribution required: "Streaming Availability API by Movie of the Night" with link
+  - Free tier: 100 requests/day (sufficient with 30-day cache)
 - Test suite: tests/test_auth_public_profile.py (public profile endpoint tests)
 
 ### Recommendation Architecture
@@ -159,7 +175,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - **Score scaling**: `to_match_percentage(score) = min(score + MATCH_BOOST, 1.0)` (MATCH_BOOST=0.33). Applied to all score outputs.
 - **Hidden movies**: `hidden_movies` table, excluded from candidate pool. Contributes to negative embedding (merged with low-rated movie negatives). CRUD: POST/DELETE /recommendations/{tmdb_id}/hide, GET /recommendations/hidden
 - **Watchlist exclusion**: personal recs exclude user's watchlist movies; group recs exclude group's shared watchlist movies. Watchlist movies are already queued to watch — no need to recommend them again.
-- **Auto-refresh triggers**: rating changes trigger rebuild only if user has <50 rated movies. Genre updates always trigger rebuild. Users with 50+ ratings use manual POST /recommendations/me/refresh.
+- **Debounced taste rebuild**: `actions_since_rebuild` counter on profiles increments on rate/hide/watchlist actions. Every 5 actions (`REBUILD_ACTION_INTERVAL`), triggers a background `rebuild_taste_profile()` via FastAPI `BackgroundTasks` and resets counter to 0. Wired into POST /tracking/, POST /recommendations/{id}/hide, POST /watchlist/. Genre updates via PATCH /auth/profile still trigger immediate background rebuild. Manual refresh via POST /recommendations/me/refresh always rebuilds.
 - **Group context**: averages members' positive + negative embeddings, union of watched + hidden + group watchlist IDs, combined genre watch counts for exploration
 - **Source tracking**: `source` column on watched_movies/watchlist_movies tracks origin
 - **Ongoing sync**: TMDB Changes API for daily updates to cached movies
@@ -185,7 +201,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [x] Friends who watched (GET /tracking/{tmdb_id}/friends)
 - [x] Apple token revocation on account deletion
 - [x] Local JWKS-based JWT verification (replaced Supabase SDK get_user calls)
-- [x] Remove auto-rebuild on rating changes (manual refresh only)
+- [x] Debounced taste rebuild every 5 actions (rate/hide/watchlist) via BackgroundTasks
 - [x] N+1 query optimization: batch fetch profiles in friends list, pending requests, public friends, group recommendations
 - [x] Eliminate duplicate profile fetch in recommendation pipeline (pass through instead of re-query)
 - [x] Defer Movie.cast JSONB on exploration pool query (not needed for scoring)
@@ -196,6 +212,20 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [x] Exclude watchlist movies from personal and group recommendations
 - [x] Blend watchlist movies into positive taste embedding (weight 1.5 per movie)
 - [x] Enrich trending/top-rated/discover with cached movie details (trailer, cast, director, runtime, tagline, backdrop) + background task to cache uncached movies
+- [x] Streaming availability: GET /movies/{tmdb_id}/streaming with cache-through (30-day TTL, Streaming Availability API via RapidAPI)
+- [x] Contact discovery: POST /friends/contacts + GET /friends/suggestions (contacts + mutual friends)
+- [x] Mutual friends: GET /friends/{id}/mutuals
+- [x] Change password: POST /auth/change-password (verifies current password)
+- [x] Public profile stats without friendship requirement (watched movies still gated)
+- [x] Group member cap reduced from 10 to 8
+- [x] Fix N+1 queries in list_groups() and compute_group_match_scores() (batch fetch members + rated movies)
+- [x] DB pool_size=20, max_overflow=10 on SQLAlchemy engine
+- [x] Null checks for supabase_admin in auth services (guard critical ops, skip best-effort)
+- [x] Harden admin bypass check for empty/whitespace admin_user_id
+- [x] Add rollback to all background task SessionLocal patterns
+- [x] Fix reset_password parameter name (access_token → user_id)
+- [x] Pass profile to compute_taste_embeddings() to avoid duplicate fetch
+- [x] Missing indexes: hidden_movies(user_id), watchlist_movies(tmdb_id), friendships(requester_id)
 
 ---
 - **Rating scale**: 0.5–5.0 in 0.5 increments (enforced by DB check constraint on watched_movies)
@@ -209,4 +239,27 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - **Key metrics to track with `source` column**: positive rate (recs rated >= 4 / total recs tracked), watchlist add rate, intra-list diversity
 - **Recency weighting**: optionally weight more recent ratings higher in the average embedding
 
-*Last updated: 2026-03-29*
+
+---
+cp .env.production .env    # switch to prod
+cp .env.development .env   # switch back to test
+
+*Last updated: 2026-04-02*
+
+## graphify
+
+This project has a graphify knowledge graph at graphify-out/.
+
+Discovery rules:
+- **Default to grep / read / glob.** Most code questions — "where is X defined", "what does this function do", "what are the weight constants" — are answered fastest by direct search. Do not detour through the graph for them.
+- **Reach for graphify only on graphify-shaped problems**: tracing orchestration across many files (request → service → background task → DB), finding non-obvious cross-module connections, or building a first-pass architectural map of an unfamiliar subsystem. If grep would solve it in two queries, skip graphify.
+- **When you do use graphify, use the query CLI. Never read `graphify-out/graph.json` directly** — it is 25K+ lines and will thrash a subagent's context. Use:
+  ```
+  .venv/bin/python -m graphify query "<question>" --budget 1500
+  ```
+  This BFS-traverses the graph and returns the relevant nodes with `src=<file> loc=L<line>`.
+- `graphify-out/GRAPH_REPORT.md` (~220 lines) is fine to read once for orientation — god nodes, communities, hyperedges, surprising connections.
+- After the graph points you at relevant src files, switch back to targeted grep / read with offset+limit for actual code. The graph is the index; grep is the reader.
+- Do NOT read files under `graphify-out/cache/`. They are LLM cache, not source.
+
+After modifying code files in this session, run `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"` to keep the graph current.

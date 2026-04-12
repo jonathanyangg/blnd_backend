@@ -105,7 +105,12 @@ def get_genre_taste(user_id: str, db: Session) -> dict:
 
 
 def signup(
-    email: str, password: str, username: str, display_name: str | None, db: Session
+    email: str,
+    password: str,
+    username: str,
+    display_name: str | None,
+    db: Session,
+    phone_number: str | None = None,
 ) -> dict:
     """Create user via Supabase Auth and insert profile via SQLAlchemy."""
     existing = db.query(Profile).filter(Profile.username == username).first()
@@ -127,6 +132,7 @@ def signup(
         username=username,
         display_name=display_name,
         watchlist_id=watchlist.id,
+        phone_number=phone_number,
     )
     db.add(profile)
     db.commit()
@@ -169,14 +175,48 @@ def refresh_session(refresh_token: str) -> dict:
 
 def forgot_password(email: str) -> None:
     """Send password reset email via Supabase Auth."""
-    supabase.auth.reset_password_email(email)
-
-
-def reset_password(access_token: str, new_password: str) -> None:
-    """Update password using the access token from the reset link."""
-    supabase_admin.auth.admin.update_user_by_id(  # type: ignore[union-attr]
-        access_token, {"password": new_password}
+    supabase.auth.reset_password_email(
+        email,
+        options={"redirect_to": "https://blnd.movie/auth/reset-password"},
     )
+
+
+def reset_password(user_id: str, new_password: str) -> None:
+    """Update password using the user ID from the authenticated reset request."""
+    if supabase_admin is None:
+        raise HTTPException(status_code=500, detail="Admin client not configured")
+    supabase_admin.auth.admin.update_user_by_id(user_id, {"password": new_password})
+
+
+def change_password(
+    user_id: str, current_password: str, new_password: str, db: Session
+) -> None:
+    """Change password for a logged-in user. Verifies current password first."""
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if supabase_admin is None:
+        raise HTTPException(status_code=500, detail="Admin client not configured")
+
+    # Get the user's email from Supabase Auth to verify current password
+    user = supabase_admin.auth.admin.get_user_by_id(user_id)
+    email = user.user.email if user and user.user else None
+    if not email:
+        raise HTTPException(
+            status_code=400, detail="Cannot change password for this account"
+        )
+
+    # Verify current password by attempting sign-in
+    try:
+        supabase.auth.sign_in_with_password(
+            {"email": email, "password": current_password}
+        )
+    except Exception:
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    # Update to new password
+    supabase_admin.auth.admin.update_user_by_id(user_id, {"password": new_password})
 
 
 def get_profile(user_id: str, db: Session) -> Profile | None:
@@ -184,20 +224,59 @@ def get_profile(user_id: str, db: Session) -> Profile | None:
 
 
 def search_users(query: str, user_id: str, db: Session, limit: int = 10) -> list[dict]:
-    """Search users by username prefix (ILIKE), excluding the current user."""
+    """Search users by username prefix (ILIKE), excluding the current user and blocked users."""
+    from app.friends.services import get_blocked_user_ids
+
     escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    blocked_ids = get_blocked_user_ids(user_id, db)
+    excluded_ids = blocked_ids | {user_id}
     profiles = (
         db.query(Profile)
-        .filter(Profile.username.ilike(f"{escaped}%"), Profile.id != user_id)
+        .filter(
+            or_(
+                Profile.username.ilike(f"{escaped}%"),
+                Profile.display_name.ilike(f"%{escaped}%"),
+            ),
+            Profile.id.notin_(list(excluded_ids)),
+        )
         .limit(limit)
         .all()
     )
+    # Batch fetch friendship statuses
+    profile_ids = [p.id for p in profiles]
+    friendships = (
+        db.query(Friendship)
+        .filter(
+            or_(
+                (Friendship.requester_id == user_id)
+                & (Friendship.addressee_id.in_(profile_ids)),
+                (Friendship.requester_id.in_(profile_ids))
+                & (Friendship.addressee_id == user_id),
+            )
+        )
+        .all()
+    )
+    friendship_map: dict[str, tuple[str, int]] = {}
+    for fship in friendships:
+        other_id = (
+            str(fship.addressee_id)
+            if str(fship.requester_id) == user_id
+            else str(fship.requester_id)
+        )
+        friendship_map[other_id] = (fship.status, fship.id)
+
     return [
         {
             "id": str(p.id),
             "username": p.username,
             "display_name": p.display_name,
             "avatar_url": p.avatar_url,
+            "friendship_status": friendship_map[str(p.id)][0]
+            if str(p.id) in friendship_map
+            else None,
+            "friendship_id": friendship_map[str(p.id)][1]
+            if str(p.id) in friendship_map
+            else None,
         }
         for p in profiles
     ]
@@ -231,11 +310,23 @@ def update_profile(
     if "avatar_url" in fields:
         profile.avatar_url = fields["avatar_url"]
     if "favorite_genres" in fields:
-        old_genres = profile.favorite_genres or []
         new_genres = fields["favorite_genres"]
-        if set(old_genres) != set(new_genres):
-            genres_changed = True
+        if new_genres is not None:
+            old_genres = profile.favorite_genres or []
+            if set(old_genres) != set(new_genres):
+                genres_changed = True
         profile.favorite_genres = new_genres
+    if "phone_number" in fields:
+        new_phone = fields["phone_number"]
+        if new_phone and new_phone != profile.phone_number:
+            conflict = (
+                db.query(Profile)
+                .filter(Profile.phone_number == new_phone, Profile.id != profile.id)
+                .first()
+            )
+            if conflict:
+                raise ValueError("Phone number is already linked to another account")
+        profile.phone_number = new_phone
 
     db.commit()
     db.refresh(profile)
@@ -265,11 +356,16 @@ def assert_are_friends(caller_id: str, target_id: str, db: Session) -> None:
 
 
 def get_public_profile(caller_id: str, target_id: str, db: Session) -> dict:
-    """Get public profile stats for another user. Requires friendship."""
-    assert_are_friends(caller_id, target_id, db)
+    """Get public profile stats for another user. No friendship required."""
+    from app.friends.services import get_block_state
 
     profile = db.query(Profile).filter(Profile.id == target_id).first()
     if not profile:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    is_blocked_by_me, has_blocked_me = get_block_state(caller_id, target_id, db)
+    # If the target has blocked the caller, hide them entirely
+    if has_blocked_me:
         raise HTTPException(status_code=404, detail="User not found")
 
     watched_count = (
@@ -299,6 +395,19 @@ def get_public_profile(caller_id: str, target_id: str, db: Session) -> dict:
         or 0
     )
 
+    friendship = (
+        db.query(Friendship)
+        .filter(
+            or_(
+                (Friendship.requester_id == caller_id)
+                & (Friendship.addressee_id == target_id),
+                (Friendship.requester_id == target_id)
+                & (Friendship.addressee_id == caller_id),
+            )
+        )
+        .first()
+    )
+
     return {
         "id": str(profile.id),
         "username": profile.username,
@@ -307,6 +416,9 @@ def get_public_profile(caller_id: str, target_id: str, db: Session) -> dict:
         "watched_count": watched_count,
         "friends_count": friends_count,
         "blends_count": blends_count,
+        "friendship_status": friendship.status if friendship else None,
+        "friendship_id": friendship.id if friendship else None,
+        "is_blocked": is_blocked_by_me,
     }
 
 
@@ -450,17 +562,29 @@ def delete_account(user_id: str, db: Session) -> None:
     db.commit()
 
     # 5. Delete Supabase Auth user (best-effort)
-    try:
-        supabase_admin.auth.admin.delete_user(user_id)  # type: ignore[union-attr]
-    except Exception:
-        logger.warning("Failed to delete Supabase Auth user %s", user_id)
+    if supabase_admin is None:
+        logger.warning(
+            "supabase_admin not configured, skipping Auth user deletion for %s", user_id
+        )
+    else:
+        try:
+            supabase_admin.auth.admin.delete_user(user_id)
+        except Exception:
+            logger.warning("Failed to delete Supabase Auth user %s", user_id)
 
     # 6. Delete avatar from storage (best-effort)
     if avatar_url:
-        try:
-            supabase_admin.storage.from_("avatars").remove([f"{user_id}/avatar.png"])  # type: ignore[union-attr]
-        except Exception:
-            logger.warning("Failed to delete avatar for user %s", user_id)
+        if supabase_admin is None:
+            logger.warning(
+                "supabase_admin not configured, skipping avatar cleanup for %s", user_id
+            )
+        else:
+            try:
+                supabase_admin.storage.from_("avatars").remove(
+                    [f"{user_id}/avatar.png"]
+                )
+            except Exception:
+                logger.warning("Failed to delete avatar for user %s", user_id)
 
     # 7. Revoke Apple refresh token (best-effort)
     if apple_refresh_token:
@@ -527,6 +651,7 @@ async def complete_onboarding(
     db: Session,
     tmdb_client: httpx.AsyncClient,
     apple_refresh_token: str | None = None,
+    phone_number: str | None = None,
 ) -> dict:
     """Create Profile + Watchlist + WatchedMovie rows atomically for a new OAuth user."""
     # Guard: profile already exists (double-submit protection)
@@ -544,6 +669,14 @@ async def complete_onboarding(
     db.add(watchlist)
     db.flush()
 
+    # Validate phone uniqueness
+    if phone_number:
+        phone_conflict = (
+            db.query(Profile).filter(Profile.phone_number == phone_number).first()
+        )
+        if phone_conflict:
+            raise ValueError("Phone number is already linked to another account")
+
     # Create profile
     profile = Profile(
         id=user_id,
@@ -552,6 +685,7 @@ async def complete_onboarding(
         favorite_genres=favorite_genres,
         watchlist_id=watchlist.id,
         apple_refresh_token=apple_refresh_token,
+        phone_number=phone_number,
     )
     db.add(profile)
 

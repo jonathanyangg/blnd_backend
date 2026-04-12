@@ -26,6 +26,16 @@ from app.recommendations.ranking import (
 CANDIDATE_POOL_SIZE = 500
 EXPLORE_POOL_SIZE = 500
 ALGO_RATIO = 0.92  # 92% algo, 8% exploration
+EXCLUDED_GENRES = {"music", "documentary"}
+
+
+def _has_excluded_genre(movie: Movie) -> bool:
+    """Return True if movie has any genre in EXCLUDED_GENRES (case-insensitive)."""
+    for g in movie.genres or []:
+        name = g.get("name", "").lower() if isinstance(g, dict) else ""
+        if name in EXCLUDED_GENRES:
+            return True
+    return False
 
 
 @dataclass
@@ -127,6 +137,9 @@ def _run_main_algorithm(ctx: RecommendationContext, db: Session) -> list[dict]:
         # Filter out short films and movies with no community validation
         if (movie.runtime or 0) < 45 or (movie.vote_average or 0) < 1.0:
             continue
+        # Filter out excluded genres (Music, Documentary)
+        if _has_excluded_genre(movie):
+            continue
         candidates.append(
             {
                 "tmdb_id": tmdb_id,
@@ -171,6 +184,9 @@ def _run_exploration(
     query = query.order_by(Movie.vote_average.desc()).limit(EXPLORE_POOL_SIZE)
     explore_movies = query.all()
 
+    # Filter out excluded genres (Music, Documentary)
+    explore_movies = [m for m in explore_movies if not _has_excluded_genre(m)]
+
     if not explore_movies:
         return []
 
@@ -210,6 +226,9 @@ def _rescale_exploration_scores(
 
     p25 = float(np.percentile(main_scores, 25))
     p75 = float(np.percentile(main_scores, 75))
+
+    if not explore_page:
+        return explore_page
 
     exp_scores = [c["score"] for c in explore_page]
     exp_min = min(exp_scores)

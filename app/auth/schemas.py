@@ -4,6 +4,17 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9._]+$")
+PHONE_RE = re.compile(r"^\+[1-9]\d{6,14}$")
+
+
+def validate_phone_number(v: str) -> str:
+    """Validate E.164 phone number format (+1234567890)."""
+    v = v.strip()
+    if not PHONE_RE.match(v):
+        raise ValueError("Phone number must be in E.164 format (e.g. +15551234567)")
+    return v
+
+
 USERNAME_MIN = 3
 USERNAME_MAX = 30
 
@@ -28,6 +39,14 @@ class SignupRequest(BaseModel):
     password: str
     username: str
     display_name: str | None = Field(default=None, max_length=100)
+    phone_number: str | None = None
+
+    @field_validator("phone_number")
+    @classmethod
+    def check_phone(cls, v: str | None) -> str | None:
+        if v and v.strip():
+            return validate_phone_number(v)
+        return None
 
     @field_validator("username")
     @classmethod
@@ -70,6 +89,7 @@ class UserResponse(BaseModel):
     avatar_url: str | None = None
     taste_bio: str | None = None
     favorite_genres: list[str] = []
+    phone_number: str | None = None
 
 
 class UserSearchResponse(BaseModel):
@@ -81,6 +101,7 @@ class UpdateProfileRequest(BaseModel):
     display_name: str | None = Field(default=None, max_length=100)
     avatar_url: str | None = None
     favorite_genres: list[str] | None = Field(default=None, max_length=20)
+    phone_number: str | None = None
 
     @field_validator("username")
     @classmethod
@@ -88,6 +109,13 @@ class UpdateProfileRequest(BaseModel):
         if v is None:
             return v
         return validate_username(v)
+
+    @field_validator("phone_number")
+    @classmethod
+    def check_phone(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        return validate_phone_number(v)
 
     @field_validator("avatar_url")
     @classmethod
@@ -128,6 +156,20 @@ class ResetPasswordRequest(BaseModel):
         return v
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def check_password(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        if not any(c.isupper() for c in v):
+            raise ValueError("Password must contain at least one uppercase letter")
+        return v
+
+
 class PublicProfileResponse(BaseModel):
     id: str
     username: str
@@ -136,6 +178,9 @@ class PublicProfileResponse(BaseModel):
     watched_count: int
     friends_count: int
     blends_count: int
+    friendship_status: str | None = None
+    friendship_id: int | None = None
+    is_blocked: bool = False
 
 
 class PublicWatchedMovieResponse(BaseModel):
@@ -199,11 +244,19 @@ class CompleteOnboardingRequest(BaseModel):
     favorite_genres: list[str] | None = Field(default=None, max_length=20)
     rated_movies: list[RatedMovie] | None = None
     apple_refresh_token: str | None = None
+    phone_number: str | None = None
 
     @field_validator("username")
     @classmethod
     def check_username(cls, v: str) -> str:
         return validate_username(v)
+
+    @field_validator("phone_number")
+    @classmethod
+    def check_phone(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        return validate_phone_number(v)
 
 
 class CompleteOnboardingResponse(BaseModel):

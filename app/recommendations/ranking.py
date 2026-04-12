@@ -161,8 +161,9 @@ def probabilistic_sample(
         return candidates
 
     scores = np.array([c["score"] for c in candidates])
-    # Softmax with temperature
-    exp_scores = np.exp(scores / temperature)
+    # Softmax with temperature (subtract max for numerical stability)
+    shifted = scores - scores.max()
+    exp_scores = np.exp(shifted / temperature)
     probabilities = exp_scores / exp_scores.sum()
 
     # Sample without replacement

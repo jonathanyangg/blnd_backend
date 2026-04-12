@@ -25,7 +25,7 @@ from app.tracking.models import Watchlist, WatchedMovie, WatchlistMovie
 
 logger = logging.getLogger(__name__)
 
-MAX_GROUP_MEMBERS = 10
+MAX_GROUP_MEMBERS = 8
 
 
 def create_group(user_id: str, name: str, db: Session) -> dict:
@@ -440,7 +440,10 @@ def compute_group_match_scores(
     all_rows = (
         db.query(WatchedMovie.user_id, WatchedMovie.rating, MovieEmbedding.embedding)
         .join(MovieEmbedding, WatchedMovie.tmdb_id == MovieEmbedding.tmdb_id)
-        .filter(WatchedMovie.user_id.in_(member_ids), WatchedMovie.rating.isnot(None))
+        .filter(
+            WatchedMovie.user_id.in_(member_ids),
+            WatchedMovie.rating.isnot(None),
+        )
         .order_by(WatchedMovie.user_id, WatchedMovie.rating.desc())
         .all()
     )
@@ -457,6 +460,7 @@ def compute_group_match_scores(
         rows = rows_by_member.get(mid, [])
         if not rows:
             continue
+
         ratings = np.array([r for r, _ in rows])
         embeddings = np.array([e for _, e in rows])
         if ratings.sum() == 0:

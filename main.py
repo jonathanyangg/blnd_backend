@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import httpx
 from aioapns import APNs
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pythonjsonlogger.json import JsonFormatter  # pyright: ignore[reportMissingImports]
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -20,6 +21,7 @@ from app.import_data.views import router as import_router
 from app.movies.views import router as movies_router
 from app.notifications.views import router as notifications_router
 from app.recommendations.views import router as recommendations_router
+from app.streaming.views import router as streaming_router
 from app.tracking.views import router as tracking_router
 from app.watchlist.views import router as watchlist_router
 
@@ -42,7 +44,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         timeout=30,
         limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
     )
-
     # APNs client -- graceful degradation when not configured
     if settings.apns_key and settings.apns_key_id:
         app.state.apns_client = APNs(
@@ -55,12 +56,34 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         app.state.apns_client = None
 
+    app.state.streaming_client = httpx.AsyncClient(
+        base_url="https://streaming-availability.p.rapidapi.com",
+        headers={
+            "X-RapidAPI-Key": settings.rapidapi_key,
+            "X-RapidAPI-Host": "streaming-availability.p.rapidapi.com",
+        },
+        timeout=15,
+        limits=httpx.Limits(max_connections=20, max_keepalive_connections=5),
+    )
     yield
     await app.state.tmdb_client.aclose()
+    await app.state.streaming_client.aclose()
     engine.dispose()
 
 
 app = FastAPI(title="BLND", version="0.1.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://blnd.movie",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
@@ -78,6 +101,7 @@ app.include_router(watchlist_router, prefix="/watchlist", tags=["watchlist"])
 app.include_router(
     notifications_router, prefix="/notifications", tags=["notifications"]
 )
+app.include_router(streaming_router, prefix="/movies", tags=["streaming"])
 
 
 @app.get("/health")

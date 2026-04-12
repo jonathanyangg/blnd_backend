@@ -227,7 +227,7 @@ async def add_to_group_watchlist(
     if not group or not group.watchlist_id:
         return Response(status_code=status.HTTP_404_NOT_FOUND)
     return await watchlist_services.add_to_watchlist(
-        group.watchlist_id, body.tmdb_id, user_id, db, tmdb_client
+        group.watchlist_id, body.tmdb_id, user_id, db, tmdb_client, body.source
     )
 
 

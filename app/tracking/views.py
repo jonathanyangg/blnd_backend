@@ -2,14 +2,21 @@ import asyncio
 
 import httpx
 from aioapns import APNs
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.database import SessionLocal
-from app.dependencies import get_apns_client, get_current_user, get_db, get_tmdb_client
+from app.dependencies import (
+    get_apns_client,
+    get_current_user,
+    get_db,
+    get_tmdb_client,
+    openai_client,
+)
 from app.notifications import services as notification_services
+from app.recommendations.services import increment_action_counter, rebuild_taste_profile
 from app.tracking import schemas, services
 from app.tracking.models import WatchedMovie
 
@@ -21,6 +28,7 @@ router = APIRouter()
 async def track_movie(
     request: Request,
     body: schemas.TrackMovieRequest,
+    background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
@@ -33,7 +41,6 @@ async def track_movie(
         .first()
     )
     was_already_tracked = existing_entry is not None
-
     result = await services.track_movie(
         user_id=user_id,
         tmdb_id=body.tmdb_id,
@@ -44,6 +51,20 @@ async def track_movie(
         tmdb_client=tmdb_client,
         source=body.source,
     )
+    if increment_action_counter(user_id, db):
+
+        def _rebuild() -> None:
+            bg_db = SessionLocal()
+            try:
+                rebuild_taste_profile(user_id, bg_db, openai_client)
+            except Exception:
+                bg_db.rollback()
+                raise
+            finally:
+                bg_db.close()
+
+        background_tasks.add_task(_rebuild)
+    return result
 
     # Only notify on NEW trackings with rating >= 4.0 (not upserts)
     if not was_already_tracked and body.rating is not None and body.rating >= 4.0:

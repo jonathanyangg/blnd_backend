@@ -285,12 +285,22 @@ def get_watchlist_status(user_id: str, tmdb_id: int, db: Session) -> dict:
 
 def _watchlist_to_response(entry: WatchlistMovie, movie: Movie | None) -> dict:
     """Convert a WatchlistMovie + Movie pair to response dict."""
+    vote = movie.vote_average if movie else None
     return {
         "id": entry.id,
         "tmdb_id": entry.tmdb_id,
         "title": movie.title if movie else "Unknown",
+        "year": movie.year if movie else None,
+        "overview": movie.overview if movie else None,
         "poster_path": movie.poster_path if movie else None,
+        "backdrop_path": movie.backdrop_path if movie else None,
+        "genres": movie.genres or [] if movie else [],
+        "runtime": movie.runtime if movie else None,
+        "vote_average": round(vote / 2, 1) if vote else None,
         "trailer_url": movie.trailer_url if movie else None,
+        "director": movie.director if movie else None,
+        "cast": (movie.cast or [])[:5] if movie else [],
+        "tagline": movie.tagline if movie else None,
         "added_by": str(entry.added_by) if entry.added_by else None,
         "added_date": entry.added_date,
         "created_at": entry.created_at,

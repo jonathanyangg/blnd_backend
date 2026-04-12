@@ -134,6 +134,7 @@ async def search_movies(
 async def get_movie(
     request: Request,
     tmdb_id: int,
+    background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
@@ -146,6 +147,18 @@ async def get_movie(
         raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
 
     scores = services.compute_match_scores([tmdb_id], user_id, db)
+
+    # Backfill missing embedding asynchronously so next view gets a real score
+    from app.import_data.models import MovieEmbedding
+
+    has_embedding = (
+        db.query(MovieEmbedding.tmdb_id)
+        .filter(MovieEmbedding.tmdb_id == tmdb_id)
+        .first()
+        is not None
+    )
+    if not has_embedding:
+        background_tasks.add_task(services.embed_movie_in_background, tmdb_id)
 
     return schemas.MovieResponse(
         tmdb_id=movie.tmdb_id,

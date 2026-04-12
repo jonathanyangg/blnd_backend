@@ -44,6 +44,10 @@ def get_apns_client(request: Request) -> APNs | None:
     return getattr(request.app.state, "apns_client", None)
 
 
+def get_streaming_client(request: Request) -> httpx.AsyncClient:
+    return request.app.state.streaming_client
+
+
 _jwks_client = jwt.PyJWKClient(
     f"{settings.supabase_url}/auth/v1/.well-known/jwks.json",
     lifespan=3600,
@@ -93,7 +97,11 @@ async def require_admin(
     user_id: str = Depends(get_current_user),
 ) -> str:
     """FastAPI dependency that gates admin-only endpoints."""
-    admin_ids: set[str] = {settings.admin_user_id} if settings.admin_user_id else set()
+    admin_ids: set[str] = (
+        {settings.admin_user_id}
+        if settings.admin_user_id and settings.admin_user_id.strip()
+        else set()
+    )
     if not admin_ids or user_id not in admin_ids:
         raise HTTPException(status_code=403, detail="Admin only")
     return user_id

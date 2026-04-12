@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     apns_key_id: str = ""
     apns_use_sandbox: str = ""
     digest_api_key: str = ""
+    rapidapi_key: str = ""
 
     model_config = {"env_file": ".env"}
 

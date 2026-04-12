@@ -1,7 +1,7 @@
-import os
-
 from slowapi import Limiter
 from starlette.requests import Request
+
+from app.config import settings
 
 
 def get_rate_limit_key(request: Request) -> str:
@@ -13,7 +13,7 @@ def get_rate_limit_key(request: Request) -> str:
 
 limiter = Limiter(
     key_func=get_rate_limit_key,
-    enabled=os.environ.get("BLND_DISABLE_RATE_LIMITS", "").lower() != "true",
+    enabled=settings.blnd_disable_rate_limits.lower() != "true",
 )
 
 # Rate limit constants

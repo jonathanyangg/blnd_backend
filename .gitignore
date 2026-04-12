@@ -155,6 +155,7 @@ activemq-data/
 
 # Environments
 .env
+.env.*
 .envrc
 .venv
 env/
@@ -223,3 +224,5 @@ __marimo__/
 
 # APNs keys
 *.p8
+# Graphify
+graphify-out/
