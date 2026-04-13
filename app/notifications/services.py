@@ -1,17 +1,23 @@
 """Notification domain services: device CRUD, preference CRUD, send_push, digest, event helpers."""
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
 from aioapns import APNs, NotificationRequest
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
 from app.database import SessionLocal
 from app.friends.models import Friendship
 from app.movies.models import Movie
-from app.notifications.models import DeviceToken, NotificationPreference
+from app.notifications.models import (
+    DeviceToken,
+    NotificationInboxItem,
+    NotificationPreference,
+)
+from app.tracking.models import ActivityFeedItem
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +28,44 @@ THREAD_FRIEND_REQUESTS = "friend_requests"
 THREAD_GROUP_INVITES = "group_invites"
 THREAD_FRIEND_ACTIVITY = "friend_activity"
 THREAD_GROUP_ACTIVITY = "group_activity"
+
+
+def fire_notification(
+    *,
+    to: str,
+    from_user: str | None = None,
+    notification_type: str,
+    title: str,
+    body: str,
+    data: dict[str, str] | None = None,
+    thread: str | None = None,
+    apns_client: APNs | None,
+) -> None:
+    """Fire-and-forget push + inbox write. One-liner from any view.
+
+    Handles its own DB session and error isolation.
+    """
+
+    async def _dispatch() -> None:
+        bg_db = SessionLocal()
+        try:
+            await send_push(
+                user_id=to,
+                notification_type=notification_type,
+                title=title,
+                body=body,
+                data=data,
+                db=bg_db,
+                apns_client=apns_client,
+                thread_id=thread,
+                from_user_id=from_user,
+            )
+        except Exception:
+            logger.exception("fire_notification failed for user %s", to)
+        finally:
+            bg_db.close()
+
+    asyncio.ensure_future(_dispatch())
 
 
 def register_device(user_id: str, token: str, platform: str, db: Session) -> None:
@@ -91,13 +135,27 @@ async def send_push(
     db: Session,
     apns_client: APNs | None,
     thread_id: str | None = None,
+    from_user_id: str | None = None,
 ) -> int:
     """Send a push notification to all of a user's devices.
 
+    Also writes to notification_inbox for persistent history.
     Returns the number of successfully sent notifications.
     Checks user preferences before dispatch.
     Cleans up stale tokens on APNs 410 (Unregistered/BadDeviceToken).
     """
+    # Always write to inbox (even if push is skipped/fails)
+    inbox_item = NotificationInboxItem(
+        user_id=user_id,
+        type=data.get("type", notification_type) if data else notification_type,
+        from_user_id=from_user_id,
+        title=title,
+        body=body,
+        data=data or {},
+    )
+    db.add(inbox_item)
+    db.commit()
+
     if apns_client is None:
         return 0
 
@@ -325,6 +383,111 @@ async def notify_friends_of_rating(
     db.commit()
 
 
+def get_inbox(user_id: str, db: Session, limit: int = 30, offset: int = 0) -> dict:
+    """Get notification inbox with sender profile info."""
+    rows = (
+        db.query(NotificationInboxItem, Profile)
+        .outerjoin(Profile, NotificationInboxItem.from_user_id == Profile.id)
+        .filter(NotificationInboxItem.user_id == user_id)
+        .order_by(NotificationInboxItem.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    unread_count = (
+        db.query(func.count(NotificationInboxItem.id))
+        .filter(
+            NotificationInboxItem.user_id == user_id,
+            NotificationInboxItem.read == False,  # noqa: E712
+        )
+        .scalar()
+        or 0
+    )
+
+    results = [
+        {
+            "id": item.id,
+            "type": item.type,
+            "from_username": profile.username if profile else None,
+            "from_avatar_url": profile.avatar_url if profile else None,
+            "title": item.title,
+            "body": item.body,
+            "data": item.data or {},
+            "read": item.read,
+            "created_at": item.created_at.isoformat(),
+        }
+        for item, profile in rows
+    ]
+    return {"results": results, "unread_count": unread_count}
+
+
+def mark_inbox_read(user_id: str, db: Session) -> None:
+    """Mark all inbox items as read."""
+    db.query(NotificationInboxItem).filter(
+        NotificationInboxItem.user_id == user_id,
+        NotificationInboxItem.read == False,  # noqa: E712
+    ).update({"read": True}, synchronize_session=False)
+    db.commit()
+
+
+def _build_digest_body(user_id: str, since: datetime, db: Session) -> str | None:
+    """Build a personalized digest message from friend activity this week."""
+    # Get friend IDs
+    friendships = (
+        db.query(Friendship)
+        .filter(
+            Friendship.status == "accepted",
+            or_(
+                Friendship.requester_id == user_id,
+                Friendship.addressee_id == user_id,
+            ),
+        )
+        .all()
+    )
+    friend_ids = [
+        str(f.addressee_id) if str(f.requester_id) == user_id else str(f.requester_id)
+        for f in friendships
+    ]
+    if not friend_ids:
+        return None
+
+    # Count activity from friends this week
+    activity_count = (
+        db.query(func.count(ActivityFeedItem.id))
+        .filter(
+            ActivityFeedItem.user_id.in_(friend_ids),
+            ActivityFeedItem.created_at >= since,
+        )
+        .scalar()
+        or 0
+    )
+    if activity_count == 0:
+        return None
+
+    # Get distinct friends who were active
+    active_friends = (
+        db.query(Profile.username)
+        .join(ActivityFeedItem, ActivityFeedItem.user_id == Profile.id)
+        .filter(
+            ActivityFeedItem.user_id.in_(friend_ids),
+            ActivityFeedItem.created_at >= since,
+        )
+        .distinct()
+        .limit(3)
+        .all()
+    )
+    names = [row[0] for row in active_friends]
+
+    if len(names) == 1:
+        return f"{names[0]} watched {activity_count} movie{'s' if activity_count != 1 else ''} this week"
+    elif len(names) == 2:
+        return f"{names[0]} and {names[1]} were active this week"
+    else:
+        others = len(names) - 2
+        return f"{names[0]}, {names[1]} and {others} other{'s' if others > 1 else ''} were active this week"
+
+
 async def run_weekly_digest(apns_client: APNs | None) -> None:
     """Send weekly digest push to all eligible users. Idempotent."""
     db = SessionLocal()
@@ -354,19 +517,26 @@ async def run_weekly_digest(apns_client: APNs | None) -> None:
         )
 
         sent_count = 0
+        week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+
         for (user_id,) in eligible_user_ids:
             try:
+                uid = str(user_id)
+                body = _build_digest_body(uid, week_ago, db)
+                if not body:
+                    continue
+
                 count = await send_push(
-                    user_id=str(user_id),
+                    user_id=uid,
                     notification_type="recommendations",
-                    title="Fresh picks this week",
-                    body="See what we found for you",
+                    title="This week on blnd",
+                    body=body,
                     data={"type": "weekly_digest"},
                     db=db,
                     apns_client=apns_client,
                 )
                 if count > 0:
-                    pref = get_or_create_preferences(str(user_id), db)
+                    pref = get_or_create_preferences(uid, db)
                     pref.last_digest_sent_at = datetime.now(timezone.utc)
                     db.commit()
                     sent_count += 1

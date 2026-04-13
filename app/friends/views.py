@@ -1,16 +1,12 @@
-import asyncio
-
 from aioapns import APNs
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.core.rate_limit import LIMIT_DEFAULT, LIMIT_IMPORT, limiter
-from app.database import SessionLocal
 from app.dependencies import get_apns_client, get_current_user, get_db
 from app.friends import schemas, services
-from app.notifications import services as notification_services
-from app.notifications.services import THREAD_FRIEND_REQUESTS
+from app.notifications.services import THREAD_FRIEND_REQUESTS, fire_notification
 
 router = APIRouter()
 
@@ -31,26 +27,16 @@ async def send_friend_request(
     requester_username = result.get("requester", {}).get("username", "")
 
     if addressee_id and requester_username:
-
-        async def _send_friend_request_push() -> None:
-            bg_db = SessionLocal()
-            try:
-                await notification_services.send_push(
-                    user_id=addressee_id,
-                    notification_type="friend_requests",
-                    title="Friend Request",
-                    body=f"{requester_username} sent you a friend request",
-                    data={"type": "friend_request", "user_id": user_id},
-                    db=bg_db,
-                    apns_client=apns_client,
-                    thread_id=THREAD_FRIEND_REQUESTS,
-                )
-            except Exception:
-                pass  # Fire-and-forget; send_push logs its own errors
-            finally:
-                bg_db.close()
-
-        asyncio.ensure_future(_send_friend_request_push())
+        fire_notification(
+            to=addressee_id,
+            from_user=user_id,
+            notification_type="friend_requests",
+            title="Friend Request",
+            body=f"{requester_username} sent you a friend request",
+            data={"type": "friend_request", "user_id": user_id},
+            thread=THREAD_FRIEND_REQUESTS,
+            apns_client=apns_client,
+        )
 
     return result
 
@@ -71,26 +57,16 @@ async def accept_friend_request(
     accepter_username = result.get("addressee", {}).get("username", "")
 
     if requester_id and accepter_username:
-
-        async def _send_accepted_push() -> None:
-            bg_db = SessionLocal()
-            try:
-                await notification_services.send_push(
-                    user_id=requester_id,
-                    notification_type="friend_requests",
-                    title="Friend Request Accepted",
-                    body=f"{accepter_username} accepted your friend request",
-                    data={"type": "friend_accepted", "user_id": user_id},
-                    db=bg_db,
-                    apns_client=apns_client,
-                    thread_id=THREAD_FRIEND_REQUESTS,
-                )
-            except Exception:
-                pass
-            finally:
-                bg_db.close()
-
-        asyncio.ensure_future(_send_accepted_push())
+        fire_notification(
+            to=requester_id,
+            from_user=user_id,
+            notification_type="friend_requests",
+            title="Friend Request Accepted",
+            body=f"{accepter_username} accepted your friend request",
+            data={"type": "friend_accepted", "user_id": user_id},
+            thread=THREAD_FRIEND_REQUESTS,
+            apns_client=apns_client,
+        )
 
     return result
 
