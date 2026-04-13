@@ -150,6 +150,18 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
   - Streaming client lifecycle: httpx.AsyncClient in FastAPI lifespan (RapidAPI key via `X-RapidAPI-Key` header)
   - Attribution required: "Streaming Availability API by Movie of the Night" with link
   - Free tier: 100 requests/day (sufficient with 30-day cache)
+- Notifications domain (app/notifications/): fully implemented
+  - Models: DeviceToken (user_id + token + platform), NotificationPreference (4 toggles + badge_count + daily cap timestamps), NotificationInboxItem (unified feed: type, from_user_id, title, body, data JSONB, read flag)
+  - Two public notification functions in services.py:
+    - `fire_notification()` — send to ONE user. Push + inbox write. Fire-and-forget with background DB session. Called from friends/groups views.
+    - `fire_notification_to_friends()` — fan out to ALL friends. Inbox only, no push. Called from tracking views for friend ratings.
+    - `_send_push()` — private. Writes inbox entry, checks preferences, increments badge, sends APNs push, cleans stale tokens.
+  - Notification types: friend_request, friend_accepted, group_invite, group_watchlist (push+inbox), friend_activity (inbox only), weekly_digest (push+inbox)
+  - 4 preference toggles: friend_requests, group_invites, recommendations, friend_activity
+  - Badge count: incremented per push in _send_push(), reset via POST /notifications/badge/reset
+  - Weekly digest: POST /notifications/send-weekly-digest (API key auth, for cron). Personalized body from friend activity ("jake and sarah were active this week"). 6-day cooldown.
+  - APNs thread grouping: friend_requests, group_invites, friend_activity, group_activity
+  - Views: POST/DELETE /notifications/device, GET/PATCH /notifications/preferences, GET /notifications/inbox, POST /notifications/inbox/read, POST /notifications/badge/reset, POST /notifications/send-weekly-digest
 - Test suite: tests/test_auth_public_profile.py (public profile endpoint tests)
 
 ### Recommendation Architecture
@@ -226,6 +238,14 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [x] Fix reset_password parameter name (access_token → user_id)
 - [x] Pass profile to compute_taste_embeddings() to avoid duplicate fetch
 - [x] Missing indexes: hidden_movies(user_id), watchlist_movies(tmdb_id), friendships(requester_id)
+- [x] Notifications: APNs push via aioapns, device token CRUD, preference toggles, badge count management
+- [x] Notification inbox: unified feed (notification_inbox table) — all events write here, GET /notifications/inbox returns chronological feed with sender profile
+- [x] fire_notification() centralized helper — replaced scattered inline bg_db + ensure_future boilerplate
+- [x] Friend request accepted push notification
+- [x] Blend watchlist add push notification to other members
+- [x] Personalized weekly digest ("jake and sarah were active this week")
+- [x] Filter Music + Documentary genres from recommendations (EXCLUDED_GENRES in pipeline.py)
+- [x] Activity feed: friend ratings write to notification_inbox via fire_notification_to_friends()
 
 ---
 - **Rating scale**: 0.5–5.0 in 0.5 increments (enforced by DB check constraint on watched_movies)
@@ -244,7 +264,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 cp .env.production .env    # switch to prod
 cp .env.development .env   # switch back to test
 
-*Last updated: 2026-04-02*
+*Last updated: 2026-04-13*
 
 ## graphify
 
