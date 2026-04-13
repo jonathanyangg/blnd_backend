@@ -65,11 +65,13 @@ async def track_movie(
 
         background_tasks.add_task(_rebuild)
 
-    # Record to activity feed
+    # Write to friends' inboxes
+    from app.notifications.services import write_activity_to_inbox
+
     if body.rating is not None:
-        services.record_activity(user_id, "rated", body.tmdb_id, db, rating=body.rating)
+        write_activity_to_inbox(user_id, "rated", body.tmdb_id, db, rating=body.rating)
     else:
-        services.record_activity(user_id, "watched", body.tmdb_id, db)
+        write_activity_to_inbox(user_id, "watched", body.tmdb_id, db)
 
     # Only notify on NEW trackings with rating >= 4.0 (not upserts)
     if not was_already_tracked and body.rating is not None and body.rating >= 4.0:
@@ -187,19 +189,3 @@ async def delete_watched_movie(
     db: Session = Depends(get_db),
 ):
     services.delete_watched_movie(user_id, tmdb_id, db)
-
-
-# --- Activity Feed ---
-
-
-@router.get("/feed", response_model=schemas.ActivityFeedResponse)
-@limiter.limit(LIMIT_DEFAULT)
-async def get_feed(
-    request: Request,
-    user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
-    limit: int = Query(default=50, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
-):
-    """Get activity feed from friends."""
-    return services.get_friend_feed(user_id, db, limit, offset)

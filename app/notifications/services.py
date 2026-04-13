@@ -252,6 +252,60 @@ async def notify_friend_activity(
     return count
 
 
+def write_activity_to_inbox(
+    user_id: str, action: str, tmdb_id: int, db: Session, rating: float | None = None
+) -> None:
+    """Write a friend activity event to all friends' inboxes (no push, just inbox).
+
+    Used for watches and low ratings that don't warrant a push notification
+    but should still appear in the unified feed.
+    """
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if not profile:
+        return
+    movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+    movie_title = movie.title if movie else "a movie"
+
+    if action == "rated" and rating:
+        formatted = f"{rating:.1f}".rstrip("0").rstrip(".")
+        body_text = f"{profile.username} rated {movie_title} ★ {formatted}"
+    elif action == "watched":
+        body_text = f"{profile.username} watched {movie_title}"
+    elif action == "watchlisted":
+        body_text = f"{profile.username} added {movie_title} to watchlist"
+    else:
+        body_text = f"{profile.username} {action} {movie_title}"
+
+    friendships = (
+        db.query(Friendship)
+        .filter(
+            Friendship.status == "accepted",
+            or_(
+                Friendship.requester_id == user_id,
+                Friendship.addressee_id == user_id,
+            ),
+        )
+        .all()
+    )
+    friend_ids = [
+        str(f.addressee_id) if str(f.requester_id) == user_id else str(f.requester_id)
+        for f in friendships
+    ]
+
+    for fid in friend_ids:
+        db.add(
+            NotificationInboxItem(
+                user_id=fid,
+                type="friend_activity",
+                from_user_id=user_id,
+                title="Friend Activity",
+                body=body_text,
+                data={"type": "friend_activity", "tmdb_id": str(tmdb_id)},
+            )
+        )
+    db.commit()
+
+
 async def notify_friends_of_rating(
     user_id: str,
     rating: float,
@@ -336,15 +390,27 @@ async def notify_friends_of_rating(
         if not tokens:
             continue
 
-        # Increment badge
+        # Increment badge + write to inbox
         if pref is None:
             pref = get_or_create_preferences(fid, db)
         pref.badge_count = (pref.badge_count or 0) + 1
 
+        body_text = f"{profile.username} loved {movie.title}"
+        db.add(
+            NotificationInboxItem(
+                user_id=fid,
+                type="friend_activity",
+                from_user_id=user_id,
+                title="Friend Activity",
+                body=body_text,
+                data={"type": "friend_activity", "tmdb_id": str(tmdb_id)},
+            )
+        )
+
         aps: dict[str, object] = {
             "alert": {
                 "title": "Friend Activity",
-                "body": f"{profile.username} loved {movie.title}",
+                "body": body_text,
             },
             "sound": "default",
             "badge": pref.badge_count,
