@@ -1,4 +1,4 @@
-"""Notification domain services: device CRUD, preference CRUD, send_push, digest, event helpers."""
+"""Notification domain services: device CRUD, preference CRUD, fire_notification, digest."""
 
 import asyncio
 import logging
@@ -49,7 +49,7 @@ def fire_notification(
     async def _dispatch() -> None:
         bg_db = SessionLocal()
         try:
-            await send_push(
+            await _send_push(
                 user_id=to,
                 notification_type=notification_type,
                 title=title,
@@ -126,7 +126,7 @@ def update_preferences(
     return pref
 
 
-async def send_push(
+async def _send_push(
     user_id: str,
     notification_type: str,
     title: str,
@@ -214,7 +214,7 @@ async def send_push(
     return sent
 
 
-def write_activity_to_inbox(
+def fire_notification_to_friends(
     user_id: str, action: str, tmdb_id: int, db: Session, rating: float | None = None
 ) -> None:
     """Write a friend activity event to all friends' inboxes (no push, just inbox).
@@ -411,7 +411,7 @@ async def run_weekly_digest(apns_client: APNs | None) -> None:
                 if not body:
                     continue
 
-                count = await send_push(
+                count = await _send_push(
                     user_id=uid,
                     notification_type="recommendations",
                     title="This week on blnd",

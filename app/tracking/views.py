@@ -53,9 +53,11 @@ async def track_movie(
 
     # Write to friends' inboxes (ratings only)
     if body.rating is not None:
-        from app.notifications.services import write_activity_to_inbox
+        from app.notifications.services import fire_notification_to_friends
 
-        write_activity_to_inbox(user_id, "rated", body.tmdb_id, db, rating=body.rating)
+        fire_notification_to_friends(
+            user_id, "rated", body.tmdb_id, db, rating=body.rating
+        )
 
     return result
 
