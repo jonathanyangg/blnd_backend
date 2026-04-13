@@ -17,7 +17,6 @@ from app.notifications.services import (
 )
 from app.tracking import schemas as tracking_schemas
 from app.tracking import services as watchlist_services
-from app.notifications.services import write_activity_to_inbox
 
 router = APIRouter()
 
@@ -222,9 +221,6 @@ async def add_to_group_watchlist(
     result = await watchlist_services.add_to_watchlist(
         group.watchlist_id, body.tmdb_id, user_id, db, tmdb_client, body.source
     )
-
-    # Write to friends' inboxes
-    write_activity_to_inbox(user_id, "watchlisted", body.tmdb_id, db)
 
     # Notify other group members
     adder_profile = db.query(Profile).filter(Profile.id == user_id).first()

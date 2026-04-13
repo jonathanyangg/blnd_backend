@@ -51,13 +51,11 @@ async def track_movie(
 
         background_tasks.add_task(_rebuild)
 
-    # Write to friends' inboxes (no push — just feed)
-    from app.notifications.services import write_activity_to_inbox
-
+    # Write to friends' inboxes (ratings only)
     if body.rating is not None:
+        from app.notifications.services import write_activity_to_inbox
+
         write_activity_to_inbox(user_id, "rated", body.tmdb_id, db, rating=body.rating)
-    else:
-        write_activity_to_inbox(user_id, "watched", body.tmdb_id, db)
 
     return result
 
