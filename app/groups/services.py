@@ -25,7 +25,7 @@ from app.tracking.models import Watchlist, WatchedMovie, WatchlistMovie
 
 logger = logging.getLogger(__name__)
 
-MAX_GROUP_MEMBERS = 8
+MAX_GROUP_MEMBERS = 12
 
 
 def create_group(user_id: str, name: str, db: Session) -> dict:

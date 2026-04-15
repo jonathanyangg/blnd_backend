@@ -120,7 +120,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Groups domain: fully implemented
   - Models: Group (id, name, created_by, watchlist_id), GroupMember (composite PK: group_id + user_id)
   - Schemas: CreateGroupRequest, UpdateGroupRequest, AddMemberRequest, GroupMemberResponse, GroupResponse, GroupDetailResponse, GroupListResponse, GroupRecMovieResponse, GroupRecommendationsResponse
-  - Services: create_group (with linked watchlist), list_groups, get_group, update_group (creator only), add_member (by username, 8-member cap), kick_member (can't kick owner), leave_group (transfers ownership), delete_group (creator only, cascade)
+  - Services: create_group (with linked watchlist), list_groups, get_group, update_group (creator only), add_member (by username, 12-member cap), kick_member (can't kick owner), leave_group (transfers ownership), delete_group (creator only, cascade)
   - Views: POST /groups/, GET /groups/, GET /groups/{id}, PATCH /groups/{id} (update name, creator only), DELETE /groups/{id}, POST /groups/{id}/members, POST /groups/{id}/members/{uid}/kick, POST /groups/{id}/leave, GET /groups/{id}/recommendations, GET/POST/DELETE /groups/{id}/watchlist
   - Group recommendations: uses shared 4-step pipeline — averages members' positive + negative embeddings, excludes union of all members' watched + hidden movies, combined genre watch counts for exploration
 - Recommendations domain: fully implemented
@@ -229,7 +229,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [x] Mutual friends: GET /friends/{id}/mutuals
 - [x] Change password: POST /auth/change-password (verifies current password)
 - [x] Public profile stats without friendship requirement (watched movies still gated)
-- [x] Group member cap reduced from 10 to 8
+- [x] Group member cap set to 12 (will become tier-based once premium lands)
 - [x] Fix N+1 queries in list_groups() and compute_group_match_scores() (batch fetch members + rated movies)
 - [x] DB pool_size=20, max_overflow=10 on SQLAlchemy engine
 - [x] Null checks for supabase_admin in auth services (guard critical ops, skip best-effort)
@@ -264,7 +264,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 cp .env.production .env    # switch to prod
 cp .env.development .env   # switch back to test
 
-*Last updated: 2026-04-13*
+*Last updated: 2026-04-15*
 
 ## graphify
 
