@@ -245,6 +245,59 @@ async def discover_movies_by_genres(
     return await fetch_and_sample(fetch_page, exclude=exclude)
 
 
+async def search_people(query: str, page: int, tmdb_client: httpx.AsyncClient) -> dict:
+    """Search TMDB for people. Filters to actors only."""
+    response = await tmdb_client.get(
+        "/search/person", params={"query": query, "page": page}
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    results = []
+    for item in data.get("results", []):
+        if item.get("known_for_department") != "Acting":
+            continue
+        results.append(
+            {
+                "id": item["id"],
+                "name": item["name"],
+                "profile_path": item.get("profile_path"),
+                "known_for_department": item.get("known_for_department"),
+            }
+        )
+
+    return {"results": results, "total_results": len(results)}
+
+
+async def discover_movies_by_actor(
+    person_id: int,
+    tmdb_client: httpx.AsyncClient,
+    exclude: set[int] | None = None,
+) -> dict:
+    """Discover movies featuring a specific actor with probabilistic sampling."""
+    from app.movies.sampling import SAMPLE_SIZE, fetch_and_sample
+
+    async def fetch_page(page: int) -> list[dict]:
+        response = await tmdb_client.get(
+            "/discover/movie",
+            params={
+                "with_cast": person_id,
+                "sort_by": "vote_count.desc",
+                "vote_average.gte": 5.0,
+                "page": page,
+            },
+        )
+        response.raise_for_status()
+        return _parse_tmdb_results(response.json())
+
+    # Probe first page to determine filmography size
+    first_page = await fetch_page(1)
+    pool_estimate = len(first_page)
+    pages = 3 if pool_estimate < SAMPLE_SIZE else 5
+
+    return await fetch_and_sample(fetch_page, pages=pages, exclude=exclude)
+
+
 async def get_top_rated_movies(
     tmdb_client: httpx.AsyncClient, exclude: set[int] | None = None
 ) -> dict:

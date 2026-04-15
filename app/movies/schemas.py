@@ -30,3 +30,15 @@ class MovieResponse(BaseModel):
 class MovieSearchResult(BaseModel):
     results: list[MovieResponse]
     total_results: int
+
+
+class PersonResult(BaseModel):
+    id: int  # TMDB person ID
+    name: str
+    profile_path: str | None = None
+    known_for_department: str | None = None
+
+
+class PersonSearchResult(BaseModel):
+    results: list[PersonResult]
+    total_results: int

@@ -81,12 +81,27 @@ async def get_top_rated_movies(
     return data
 
 
+@router.get("/search/person", response_model=schemas.PersonSearchResult)
+@limiter.limit(LIMIT_SEARCH)
+async def search_person(
+    request: Request,
+    query: str = Query(min_length=1),
+    _user_id: str = Depends(get_current_user),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+):
+    try:
+        return await services.search_people(query, 1, tmdb_client)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
+
+
 @router.get("/discover", response_model=schemas.MovieSearchResult)
 @limiter.limit(LIMIT_SEARCH)
 async def discover_movies(
     request: Request,
     background_tasks: BackgroundTasks,
-    genres: str = Query(description="Comma-separated genre names"),
+    genres: str = Query(default="", description="Comma-separated genre names"),
+    with_cast: int | None = Query(default=None, description="TMDB person ID"),
     exclude: str = Query(default="", description="Comma-separated tmdb_ids to exclude"),
     user_id: str | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
@@ -94,10 +109,21 @@ async def discover_movies(
 ):
     genre_list = [g.strip() for g in genres.split(",") if g.strip()]
     exclude_ids = _parse_exclude(exclude)
-    try:
-        data = await services.discover_movies_by_genres(
-            genre_list, tmdb_client, exclude=exclude_ids
+
+    if not genre_list and with_cast is None:
+        raise HTTPException(
+            status_code=400, detail="Either genres or with_cast is required"
         )
+
+    try:
+        if with_cast is not None:
+            data = await services.discover_movies_by_actor(
+                with_cast, tmdb_client, exclude=exclude_ids
+            )
+        else:
+            data = await services.discover_movies_by_genres(
+                genre_list, tmdb_client, exclude=exclude_ids
+            )
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
 
