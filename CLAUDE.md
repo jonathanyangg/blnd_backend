@@ -120,7 +120,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - Groups domain: fully implemented
   - Models: Group (id, name, created_by, watchlist_id), GroupMember (composite PK: group_id + user_id)
   - Schemas: CreateGroupRequest, UpdateGroupRequest, AddMemberRequest, GroupMemberResponse, GroupResponse, GroupDetailResponse, GroupListResponse, GroupRecMovieResponse, GroupRecommendationsResponse
-  - Services: create_group (with linked watchlist), list_groups, get_group, update_group (creator only), add_member (by username, 12-member cap), kick_member (can't kick owner), leave_group (transfers ownership), delete_group (creator only, cascade)
+  - Services: create_group (with linked watchlist), list_groups, get_group, update_group (creator only), add_member (by username, tier-based cap: 8 free / 25 premium via `_group_cap()` — group tier = max member tier), kick_member (can't kick owner), leave_group (transfers ownership), delete_group (creator only, cascade)
   - Views: POST /groups/, GET /groups/, GET /groups/{id}, PATCH /groups/{id} (update name, creator only), DELETE /groups/{id}, POST /groups/{id}/members, POST /groups/{id}/members/{uid}/kick, POST /groups/{id}/leave, GET /groups/{id}/recommendations, GET/POST/DELETE /groups/{id}/watchlist
   - Group recommendations: uses shared 4-step pipeline — averages members' positive + negative embeddings, excludes union of all members' watched + hidden movies, combined genre watch counts for exploration
 - Recommendations domain: fully implemented
@@ -246,6 +246,14 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [x] Personalized weekly digest ("jake and sarah were active this week")
 - [x] Filter Music + Documentary genres from recommendations (EXCLUDED_GENRES in pipeline.py)
 - [x] Activity feed: friend ratings write to notification_inbox via fire_notification_to_friends()
+- [x] Subscriptions domain (app/subscriptions/): RevenueCat webhook + admin grant. Profile gains subscription_tier ('free'|'premium'), subscription_expires_at, subscription_source ('apple'|'stripe'|'admin'), subscription_original_transaction_id. `is_premium(profile)` checks tier + expiry (admin grants with no expiry are perpetual). POST /webhooks/revenuecat validates shared-secret Authorization header (hmac.compare_digest), applies state from RC event types (INITIAL_PURCHASE / RENEWAL / UNCANCELLATION / PRODUCT_CHANGE / NON_RENEWING_PURCHASE / TEMPORARY_ENTITLEMENT_GRANT grant; EXPIRATION / REFUND revoke; CANCELLATION + BILLING_ISSUE are no-ops — access persists until EXPIRATION fires). POST /admin/subscriptions/{user_id}/grant for comping (default 365 days). UserResponse exposes subscription_tier + subscription_expires_at so iOS can render paywall state.
+- [x] Tier-based group cap: FREE_GROUP_CAP=8, PREMIUM_GROUP_CAP=25. Group tier = max(member tiers) — any premium member unlocks the premium cap for the group. On downgrade/refund, nobody is kicked; over-cap groups just can't grow via add_member until someone upgrades or members leave.
+
+### In Flight (feature/premium-subscriptions branch)
+- [ ] Semantic discover backend pipeline — new `POST /recommendations/semantic-discover` (premium-gated, 402 otherwise). Takes query text, embeds via OpenAI text-embedding-3-small, blends with user's positive taste embedding (query dominates, taste nudges), runs existing 4-step pipeline using the blended vector as positive, then Claude/GPT agent rerank on top ~50 results to catch intent that embeddings miss (e.g. "like Parasite but funnier").
+- [ ] iOS: "Search with AI" button on Discover page — tapping routes premium users into a text input → calls /recommendations/semantic-discover. Non-premium users hit the paywall.
+- [ ] iOS: Paywall UI/UX — RevenueCat `PaywallView` rendering `default` offering (product `blnd_premium_monthly`, entitlement `premium`). Configure `Purchases.configure(withAPIKey:"appl_...", appUserID:supabaseUserId)` so RC webhook's `app_user_id` matches our profile IDs. Premium badges / lock icons on gated features (larger group cap, AI search).
+- [ ] RevenueCat setup status: project `blnd movies`, entitlement `premium` (display "BLND More"), product `blnd_premium_monthly` imported + attached to entitlement, offering `default` with Monthly package, webhook `BLND Backend` → `/webhooks/revenuecat` (shared secret in `REVENUECAT_WEBHOOK_SECRET` env var).
 
 ---
 - **Rating scale**: 0.5–5.0 in 0.5 increments (enforced by DB check constraint on watched_movies)
@@ -264,7 +272,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 cp .env.production .env    # switch to prod
 cp .env.development .env   # switch back to test
 
-*Last updated: 2026-04-15*
+*Last updated: 2026-04-16*
 
 ## graphify
 

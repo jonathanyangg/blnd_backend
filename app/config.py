@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     apns_use_sandbox: str = ""
     digest_api_key: str = ""
     rapidapi_key: str = ""
+    revenuecat_webhook_secret: str = ""
 
     model_config = {"env_file": ".env"}
 
