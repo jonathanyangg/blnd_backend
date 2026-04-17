@@ -273,19 +273,30 @@ async def discover_movies_by_actor(
     person_id: int,
     tmdb_client: httpx.AsyncClient,
     exclude: set[int] | None = None,
+    genre_names: list[str] | None = None,
 ) -> dict:
     """Discover movies featuring a specific actor with probabilistic sampling."""
     from app.movies.sampling import SAMPLE_SIZE, fetch_and_sample
 
+    params: dict[str, str | int | float] = {
+        "with_cast": person_id,
+        "sort_by": "vote_count.desc",
+        "vote_average.gte": 5.0,
+    }
+
+    if genre_names:
+        genre_ids = [
+            str(TMDB_GENRE_MAP[n.lower()])
+            for n in genre_names
+            if n.lower() in TMDB_GENRE_MAP
+        ]
+        if genre_ids:
+            params["with_genres"] = "|".join(genre_ids)
+
     async def fetch_page(page: int) -> list[dict]:
         response = await tmdb_client.get(
             "/discover/movie",
-            params={
-                "with_cast": person_id,
-                "sort_by": "vote_count.desc",
-                "vote_average.gte": 5.0,
-                "page": page,
-            },
+            params={**params, "page": page},
         )
         response.raise_for_status()
         return _parse_tmdb_results(response.json())

@@ -118,7 +118,10 @@ async def discover_movies(
     try:
         if with_cast is not None:
             data = await services.discover_movies_by_actor(
-                with_cast, tmdb_client, exclude=exclude_ids
+                with_cast,
+                tmdb_client,
+                exclude=exclude_ids,
+                genre_names=genre_list or None,
             )
         else:
             data = await services.discover_movies_by_genres(
