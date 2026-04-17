@@ -95,6 +95,38 @@ async def search_person(
         raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
 
 
+@router.get("/person/{person_id}/credits", response_model=schemas.MovieSearchResult)
+@limiter.limit(LIMIT_DEFAULT)
+async def get_person_credits(
+    request: Request,
+    person_id: int,
+    background_tasks: BackgroundTasks,
+    exclude: str = Query(default="", description="Comma-separated tmdb_ids to exclude"),
+    user_id: str | None = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+):
+    exclude_ids = _parse_exclude(exclude)
+    try:
+        data = await services.discover_movies_by_actor(
+            person_id, tmdb_client, exclude=exclude_ids
+        )
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
+
+    data["results"], uncached = services.enrich_from_cache(data["results"], db)
+    if uncached:
+        background_tasks.add_task(services.cache_movies_in_background, uncached)
+
+    if user_id:
+        tmdb_ids = [r["tmdb_id"] for r in data["results"]]
+        scores = services.compute_match_scores(tmdb_ids, user_id, db)
+        for r in data["results"]:
+            r["match_score"] = scores.get(r["tmdb_id"])
+
+    return data
+
+
 @router.get("/discover", response_model=schemas.MovieSearchResult)
 @limiter.limit(LIMIT_SEARCH)
 async def discover_movies(

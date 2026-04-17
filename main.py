@@ -12,6 +12,7 @@ from pythonjsonlogger.json import JsonFormatter  # pyright: ignore[reportMissing
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from app.actors.views import router as actors_router
 from app.auth.views import router as auth_router
 from app.config import settings
 from app.core.rate_limit import limiter
@@ -95,6 +96,7 @@ app.add_middleware(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
+app.include_router(actors_router, prefix="/actors", tags=["actors"])
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(movies_router, prefix="/movies", tags=["movies"])
 app.include_router(tracking_router, prefix="/tracking", tags=["tracking"])

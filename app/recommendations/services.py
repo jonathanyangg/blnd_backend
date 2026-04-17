@@ -109,6 +109,11 @@ def get_user_signal_context(
             if name:
                 top_cast.add(name.lower())
 
+    # Merge liked actors into cast signal
+    from app.actors.services import get_liked_actor_names
+
+    top_cast |= get_liked_actor_names(user_id, db)
+
     return favorite_genres, top_directors, top_cast
 
 
