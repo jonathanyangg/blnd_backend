@@ -1,5 +1,3 @@
-import asyncio
-
 import httpx
 from aioapns import APNs
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -8,13 +6,15 @@ from starlette.requests import Request
 
 from app.auth.models import Profile
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
-from app.database import SessionLocal
 from app.dependencies import get_apns_client, get_current_user, get_db, get_tmdb_client
 from app.groups import schemas, services
 from app.groups.models import Group, GroupMember
 from app.movies.models import Movie
-from app.notifications import services as notification_services
-from app.notifications.services import THREAD_GROUP_ACTIVITY, THREAD_GROUP_INVITES
+from app.notifications.services import (
+    THREAD_GROUP_ACTIVITY,
+    THREAD_GROUP_INVITES,
+    fire_notification,
+)
 from app.tracking import schemas as tracking_schemas
 from app.tracking import services as watchlist_services
 
@@ -98,26 +98,16 @@ async def add_member(
     if target_profile and adder_profile:
         target_id = str(target_profile.id)
         adder_username = adder_profile.username or "Someone"
-
-        async def _send_group_invite_push() -> None:
-            bg_db = SessionLocal()
-            try:
-                await notification_services.send_push(
-                    user_id=target_id,
-                    notification_type="group_invites",
-                    title="Added to Group",
-                    body=f"{adder_username} added you to {group_name}",
-                    data={"type": "group_invite", "group_id": str(group_id)},
-                    db=bg_db,
-                    apns_client=apns_client,
-                    thread_id=THREAD_GROUP_INVITES,
-                )
-            except Exception:
-                pass  # Fire-and-forget; send_push logs its own errors
-            finally:
-                bg_db.close()
-
-        asyncio.ensure_future(_send_group_invite_push())
+        fire_notification(
+            to=target_id,
+            from_user=user_id,
+            notification_type="group_invites",
+            title="Added to Blend",
+            body=f"{adder_username} added you to {group_name}",
+            data={"type": "group_invite", "group_id": str(group_id)},
+            thread=THREAD_GROUP_INVITES,
+            apns_client=apns_client,
+        )
 
     return result
 
@@ -245,32 +235,21 @@ async def add_to_group_watchlist(
         if str(m.user_id) != user_id
     ]
 
-    if member_ids:
-
-        async def _send_watchlist_push() -> None:
-            bg_db = SessionLocal()
-            try:
-                for mid in member_ids:
-                    await notification_services.send_push(
-                        user_id=mid,
-                        notification_type="group_invites",
-                        title=group_name,
-                        body=f"{adder_name} added {movie_title} to the watchlist",
-                        data={
-                            "type": "group_watchlist",
-                            "group_id": str(group_id),
-                            "tmdb_id": str(body.tmdb_id),
-                        },
-                        db=bg_db,
-                        apns_client=apns_client,
-                        thread_id=THREAD_GROUP_ACTIVITY,
-                    )
-            except Exception:
-                pass
-            finally:
-                bg_db.close()
-
-        asyncio.ensure_future(_send_watchlist_push())
+    for mid in member_ids:
+        fire_notification(
+            to=mid,
+            from_user=user_id,
+            notification_type="group_invites",
+            title=group_name,
+            body=f"{adder_name} added {movie_title} to the watchlist",
+            data={
+                "type": "group_watchlist",
+                "group_id": str(group_id),
+                "tmdb_id": str(body.tmdb_id),
+            },
+            thread=THREAD_GROUP_ACTIVITY,
+            apns_client=apns_client,
+        )
 
     return result
 

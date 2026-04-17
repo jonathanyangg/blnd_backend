@@ -73,6 +73,29 @@ async def update_preferences(
     )
 
 
+@router.get("/inbox", response_model=schemas.InboxResponse)
+@limiter.limit(LIMIT_DEFAULT)
+async def get_inbox(
+    request: Request,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    limit: int = 30,
+    offset: int = 0,
+) -> dict:
+    return services.get_inbox(user_id, db, limit, offset)
+
+
+@router.post("/inbox/read", response_model=schemas.MessageResponse)
+@limiter.limit(LIMIT_DEFAULT)
+async def mark_inbox_read(
+    request: Request,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.MessageResponse:
+    services.mark_inbox_read(user_id, db)
+    return schemas.MessageResponse(message="Inbox marked as read")
+
+
 @router.post("/badge/reset", response_model=schemas.MessageResponse)
 @limiter.limit(LIMIT_DEFAULT)
 async def reset_badge(

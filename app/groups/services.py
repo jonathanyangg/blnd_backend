@@ -21,11 +21,29 @@ from app.recommendations.pipeline import (
     RecommendationContext,
     run_recommendation_pipeline,
 )
+from app.subscriptions.services import is_premium
 from app.tracking.models import Watchlist, WatchedMovie, WatchlistMovie
 
 logger = logging.getLogger(__name__)
 
-MAX_GROUP_MEMBERS = 8
+FREE_GROUP_CAP = 8
+PREMIUM_GROUP_CAP = 25
+
+
+def _group_cap(group_id: int, db: Session) -> int:
+    """Group tier is the max of any member's tier -- one premium member
+    unlocks the premium cap for the whole group."""
+    has_premium = (
+        db.query(Profile)
+        .join(GroupMember, GroupMember.user_id == Profile.id)
+        .filter(GroupMember.group_id == group_id)
+        .filter(Profile.subscription_tier == "premium")
+        .limit(1)
+        .first()
+    )
+    if has_premium and is_premium(has_premium):
+        return PREMIUM_GROUP_CAP
+    return FREE_GROUP_CAP
 
 
 def create_group(user_id: str, name: str, db: Session) -> dict:
@@ -153,10 +171,11 @@ def add_member(group_id: int, user_id: str, username: str, db: Session) -> dict:
         .filter(GroupMember.group_id == group_id)
         .scalar()
     )
-    if (count or 0) >= MAX_GROUP_MEMBERS:
+    cap = _group_cap(group_id, db)
+    if (count or 0) >= cap:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Group cannot exceed {MAX_GROUP_MEMBERS} members",
+            detail=f"Group cannot exceed {cap} members",
         )
 
     member = GroupMember(group_id=group_id, user_id=target.id)

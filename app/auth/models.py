@@ -26,6 +26,16 @@ class Profile(Base):
         BigInteger, nullable=False, default=0, server_default="0"
     )
     watchlist_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    subscription_tier: Mapped[str] = mapped_column(
+        String, nullable=False, default="free", server_default="free"
+    )
+    subscription_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    subscription_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    subscription_original_transaction_id: Mapped[str | None] = mapped_column(
+        String, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

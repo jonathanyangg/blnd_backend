@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -90,6 +91,8 @@ class UserResponse(BaseModel):
     taste_bio: str | None = None
     favorite_genres: list[str] = []
     phone_number: str | None = None
+    subscription_tier: str = "free"
+    subscription_expires_at: datetime | None = None
 
 
 class UserSearchResponse(BaseModel):

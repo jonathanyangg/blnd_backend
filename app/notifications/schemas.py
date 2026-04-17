@@ -26,3 +26,23 @@ class UpdatePreferencesRequest(BaseModel):
 
 class DigestStatusResponse(BaseModel):
     status: str
+
+
+# --- Inbox ---
+
+
+class InboxItemResponse(BaseModel):
+    id: int
+    type: str
+    from_username: str | None = None
+    from_avatar_url: str | None = None
+    title: str
+    body: str
+    data: dict = {}
+    read: bool
+    created_at: str
+
+
+class InboxResponse(BaseModel):
+    results: list[InboxItemResponse]
+    unread_count: int

@@ -187,6 +187,8 @@ def me(
         taste_bio=profile.taste_bio,
         favorite_genres=profile.favorite_genres or [],
         phone_number=profile.phone_number,
+        subscription_tier=profile.subscription_tier,
+        subscription_expires_at=profile.subscription_expires_at,
     )
 
 
@@ -242,6 +244,8 @@ def update_profile(
         taste_bio=profile.taste_bio,
         favorite_genres=profile.favorite_genres or [],
         phone_number=profile.phone_number,
+        subscription_tier=profile.subscription_tier,
+        subscription_expires_at=profile.subscription_expires_at,
     )
 
 
