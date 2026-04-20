@@ -263,9 +263,11 @@ async def search_people(query: str, page: int, tmdb_client: httpx.AsyncClient) -
                 "name": item["name"],
                 "profile_path": item.get("profile_path"),
                 "known_for_department": item.get("known_for_department"),
+                "popularity": item.get("popularity"),
             }
         )
 
+    results.sort(key=lambda x: x.get("popularity") or 0, reverse=True)
     return {"results": results, "total_results": len(results)}
 
 

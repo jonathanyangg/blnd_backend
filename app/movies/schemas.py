@@ -37,6 +37,7 @@ class PersonResult(BaseModel):
     name: str
     profile_path: str | None = None
     known_for_department: str | None = None
+    popularity: float | None = None
 
 
 class PersonSearchResult(BaseModel):
