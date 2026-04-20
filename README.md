@@ -1,4 +1,4 @@
-# BLND Backend
+# blnd Backend
 
 Movie tracking app with AI-powered recommendations and social features. Like Letterboxd, but with personalized and group recommendations.
 

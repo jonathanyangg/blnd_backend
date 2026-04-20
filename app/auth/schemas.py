@@ -184,6 +184,7 @@ class PublicProfileResponse(BaseModel):
     friendship_status: str | None = None
     friendship_id: int | None = None
     is_blocked: bool = False
+    subscription_tier: str = "free"
 
 
 class PublicWatchedMovieResponse(BaseModel):

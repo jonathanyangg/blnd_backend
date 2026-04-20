@@ -26,8 +26,8 @@ from app.tracking.models import Watchlist, WatchedMovie, WatchlistMovie
 
 logger = logging.getLogger(__name__)
 
-FREE_GROUP_CAP = 8
-PREMIUM_GROUP_CAP = 25
+FREE_GROUP_CAP = 4
+PREMIUM_GROUP_CAP = 12
 
 
 def _group_cap(group_id: int, db: Session) -> int:
@@ -173,9 +173,26 @@ def add_member(group_id: int, user_id: str, username: str, db: Session) -> dict:
     )
     cap = _group_cap(group_id, db)
     if (count or 0) >= cap:
+        if cap == FREE_GROUP_CAP:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    "code": "free_group_cap",
+                    "cap": FREE_GROUP_CAP,
+                    "premium_cap": PREMIUM_GROUP_CAP,
+                    "message": (
+                        f"Free groups are limited to {FREE_GROUP_CAP} members. "
+                        f"Upgrade to blnd+ for groups up to {PREMIUM_GROUP_CAP}."
+                    ),
+                },
+            )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Group cannot exceed {cap} members",
+            detail={
+                "code": "group_full",
+                "cap": cap,
+                "message": f"Group is full ({cap} members max).",
+            },
         )
 
     member = GroupMember(group_id=group_id, user_id=target.id)

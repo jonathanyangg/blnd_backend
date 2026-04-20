@@ -419,6 +419,7 @@ def get_public_profile(caller_id: str, target_id: str, db: Session) -> dict:
         "friendship_status": friendship.status if friendship else None,
         "friendship_id": friendship.id if friendship else None,
         "is_blocked": is_blocked_by_me,
+        "subscription_tier": profile.subscription_tier,
     }
 
 
@@ -603,7 +604,7 @@ async def oauth_login(
     db: Session,
     authorization_code: str | None = None,
 ) -> dict:
-    """Exchange an OAuth provider token for BLND session tokens via Supabase."""
+    """Exchange an OAuth provider token for blnd session tokens via Supabase."""
     credentials: dict[str, str] = {"provider": provider, "token": id_token}
     if nonce is not None:
         credentials["nonce"] = nonce

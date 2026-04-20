@@ -25,7 +25,7 @@ from app.recommendations.ranking import (
 
 CANDIDATE_POOL_SIZE = 500
 EXPLORE_POOL_SIZE = 500
-ALGO_RATIO = 0.92  # 92% algo, 8% exploration
+ALGO_RATIO = 0.95  # 95% algo, 5% exploration
 EXCLUDED_GENRES = {"music", "documentary"}
 
 
@@ -67,7 +67,6 @@ def run_recommendation_pipeline(
     main_tmdb_ids = {c["tmdb_id"] for c in main_sampled}
     explore_sampled = _run_exploration(ctx, db, main_tmdb_ids)
 
-    # Blend: 85% algo, 15% exploration
     algo_count = round(limit * ALGO_RATIO)
     explore_count = limit - algo_count
 
