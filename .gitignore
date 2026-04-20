@@ -1,5 +1,7 @@
 # Claude Code
 .mcp.json
+.claude/scheduled_tasks.lock
+.playwright-mcp/
 
 # Test files
 /tests
