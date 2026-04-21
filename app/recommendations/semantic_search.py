@@ -16,7 +16,6 @@ from app.config import settings
 from app.movies.models import Movie
 from app.recommendations.ranking import to_match_percentage
 from app.recommendations.services import get_hidden_movie_ids, get_top_rated_movies
-from app.tracking.models import WatchedMovie, WatchlistMovie
 
 logger = logging.getLogger(__name__)
 
@@ -272,23 +271,11 @@ def run_semantic_discover(
     qhash = query_hash(query)
     exclude_set = set(exclude_ids or [])
 
-    # Build user exclusion set (watched + hidden + watchlist)
-    watched_ids = {
-        row[0]
-        for row in db.query(WatchedMovie.tmdb_id)
-        .filter(WatchedMovie.user_id == user_id)
-        .all()
-    }
+    # Only exclude hidden movies + client-provided exclude list.
+    # Watched and watchlisted movies are NOT excluded — semantic search
+    # is intent-based, so showing known-good matches is expected.
     hidden_ids = set(get_hidden_movie_ids(user_id, db))
-    watchlist_ids = set()
-    if profile.watchlist_id:
-        watchlist_ids = {
-            row[0]
-            for row in db.query(WatchlistMovie.tmdb_id)
-            .filter(WatchlistMovie.watchlist_id == profile.watchlist_id)
-            .all()
-        }
-    all_exclude = exclude_set | watched_ids | hidden_ids | watchlist_ids
+    all_exclude = exclude_set | hidden_ids
 
     # 1. Check cache
     cached = get_cached_result(user_id, qhash, db)
