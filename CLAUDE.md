@@ -249,11 +249,9 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 - [x] Subscriptions domain (app/subscriptions/): RevenueCat webhook + admin grant. Profile gains subscription_tier ('free'|'premium'), subscription_expires_at, subscription_source ('apple'|'stripe'|'admin'), subscription_original_transaction_id. `is_premium(profile)` checks tier + expiry (admin grants with no expiry are perpetual). POST /webhooks/revenuecat validates shared-secret Authorization header (hmac.compare_digest), applies state from RC event types (INITIAL_PURCHASE / RENEWAL / UNCANCELLATION / PRODUCT_CHANGE / NON_RENEWING_PURCHASE / TEMPORARY_ENTITLEMENT_GRANT grant; EXPIRATION / REFUND revoke; CANCELLATION + BILLING_ISSUE are no-ops — access persists until EXPIRATION fires). POST /admin/subscriptions/{user_id}/grant for comping (default 365 days). UserResponse exposes subscription_tier + subscription_expires_at so iOS can render paywall state.
 - [x] Tier-based group cap: FREE_GROUP_CAP=4, PREMIUM_GROUP_CAP=12. Group tier = max(member tiers) — any premium member unlocks the premium cap for the group. On downgrade/refund, nobody is kicked; over-cap groups just can't grow via add_member until someone upgrades or members leave.
 
-### In Flight (feature/premium-subscriptions branch)
-- [ ] Semantic discover backend pipeline — new `POST /recommendations/semantic-discover` (premium-gated, 402 otherwise). Takes query text, embeds via OpenAI text-embedding-3-small, blends with user's positive taste embedding (query dominates, taste nudges), runs existing 4-step pipeline using the blended vector as positive, then Claude/GPT agent rerank on top ~50 results to catch intent that embeddings miss (e.g. "like Parasite but funnier").
-- [ ] iOS: "Search with AI" button on Discover page — tapping routes premium users into a text input → calls /recommendations/semantic-discover. Non-premium users hit the paywall.
-- [ ] iOS: Paywall UI/UX — RevenueCat `PaywallView` rendering `default` offering (product `blnd_premium_monthly`, entitlement `premium`). Configure `Purchases.configure(withAPIKey:"appl_...", appUserID:supabaseUserId)` so RC webhook's `app_user_id` matches our profile IDs. Premium badges / lock icons on gated features (larger group cap, AI search).
-- [ ] RevenueCat setup status: project `blnd movies`, entitlement `premium` (display "blnd+"), product `blnd_premium_monthly` imported + attached to entitlement, offering `default` with Monthly package, webhook `blnd Backend` → `/webhooks/revenuecat` (shared secret in `REVENUECAT_WEBHOOK_SECRET` env var).
+- [x] Semantic discover: POST /recommendations/semantic-discover (premium-gated, 402 for free). LLM-titles pipeline: GPT-4o-mini generates 30 titles → batched DB lookup (case-insensitive, ±1 year) → 24h per-user cache (semantic_search_cache table) → personalization rerank → exclusions (watched/hidden/watchlist/client exclude). Rate limited 20/hour. Full spec in features/semantic-discover-2026-04-20.md.
+- [x] RevenueCat setup: project `blnd movies`, entitlement `premium` (display "blnd+"), product `blnd_premium_monthly`, offering `default` with Monthly package, webhook `BLND Backend` → `/webhooks/revenuecat`.
+- [x] Anthropic API key configured (`anthropic_api_key` in config.py) but account has no credits — currently using OpenAI GPT-4o-mini. Switch to Haiku 4.5 when Anthropic credits added.
 
 ---
 - **Rating scale**: 0.5–5.0 in 0.5 increments (enforced by DB check constraint on watched_movies)
@@ -272,7 +270,7 @@ Each domain folder (`app/auth/`, `app/movies/`, etc.) contains:
 cp .env.production .env    # switch to prod
 cp .env.development .env   # switch back to test
 
-*Last updated: 2026-04-19*
+*Last updated: 2026-04-21*
 
 ## graphify
 

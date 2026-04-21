@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     digest_api_key: str = ""
     rapidapi_key: str = ""
     revenuecat_webhook_secret: str = ""
+    anthropic_api_key: str = ""
 
     model_config = {"env_file": ".env"}
 

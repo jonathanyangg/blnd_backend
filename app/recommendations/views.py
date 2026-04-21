@@ -3,9 +3,10 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.auth.models import Profile
-from app.core.rate_limit import LIMIT_DEFAULT, LIMIT_REFRESH, limiter
+from app.core.rate_limit import LIMIT_AI_SEARCH, LIMIT_DEFAULT, LIMIT_REFRESH, limiter
 from app.database import SessionLocal
 from app.dependencies import get_current_user, get_db, openai_client
+from app.subscriptions.services import is_premium
 from app.movies.models import Movie
 from app.recommendations import schemas, services
 from app.recommendations.services import increment_action_counter
@@ -187,3 +188,33 @@ def list_hidden_movies(
     offset: int = Query(default=0, ge=0),
 ):
     return services.get_hidden_movies(user_id, db, limit, offset)
+
+
+# --- Semantic Discover ---
+
+
+@router.post("/semantic-discover", response_model=schemas.SemanticSearchResponse)
+@limiter.limit(LIMIT_AI_SEARCH)
+def semantic_discover(
+    request: Request,
+    body: schemas.SemanticSearchRequest,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """AI-powered semantic movie search. Premium only."""
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    if not is_premium(profile):
+        raise HTTPException(status_code=402, detail="Premium required")
+
+    from app.recommendations.semantic_search import run_semantic_discover
+
+    return run_semantic_discover(
+        query=body.query,
+        user_id=user_id,
+        profile=profile,
+        db=db,
+        exclude_ids=body.exclude,
+        limit=body.limit,
+    )
