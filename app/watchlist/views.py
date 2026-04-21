@@ -21,11 +21,15 @@ async def get_watchlist(
     db: Session = Depends(get_db),
     limit: int = Query(default=20, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    q: str | None = Query(default=None, max_length=100),
+    sort: str | None = Query(default=None),
 ):
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile or not profile.watchlist_id:
         return {"results": [], "total": 0}
-    return services.get_watchlist(profile.watchlist_id, db, limit, offset)
+    return services.get_watchlist(
+        profile.watchlist_id, db, limit, offset, q=q, sort=sort
+    )
 
 
 @router.get("/status/{tmdb_id}", response_model=schemas.WatchlistStatusResponse)

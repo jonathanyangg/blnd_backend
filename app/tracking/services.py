@@ -71,29 +71,61 @@ async def track_movie(
     return _to_response(entry, movie)
 
 
-def get_watch_history(user_id: str, limit: int, offset: int, db: Session) -> dict:
-    """Get paginated watch history for a user."""
-    total = (
-        db.query(func.count(WatchedMovie.id))
-        .filter(WatchedMovie.user_id == user_id)
-        .scalar()
-    )
-
-    rows = (
+def get_watch_history(
+    user_id: str,
+    limit: int,
+    offset: int,
+    db: Session,
+    q: str | None = None,
+    sort: str | None = None,
+) -> dict:
+    """Get paginated watch history for a user, with optional title filter + sort."""
+    base = (
         db.query(WatchedMovie, Movie)
         .join(Movie, WatchedMovie.tmdb_id == Movie.tmdb_id)
         .filter(WatchedMovie.user_id == user_id)
-        .order_by(
-            WatchedMovie.watched_date.desc().nulls_last(),
-            WatchedMovie.created_at.desc(),
-        )
-        .offset(offset)
-        .limit(limit)
-        .all()
     )
+    if q:
+        base = base.filter(Movie.title.ilike(f"%{q}%"))
+
+    total = base.with_entities(func.count(WatchedMovie.id)).scalar() or 0
+
+    rows = base.order_by(*_watched_order_by(sort)).offset(offset).limit(limit).all()
 
     results = [_to_response(entry, movie) for entry, movie in rows]
-    return {"results": results, "total": total or 0}
+    return {"results": results, "total": total}
+
+
+def _watched_order_by(sort: str | None):
+    """SQL ORDER BY clause for watched movies, based on sort key."""
+    if sort == "date_asc":
+        return (
+            WatchedMovie.watched_date.asc().nulls_first(),
+            WatchedMovie.created_at.asc(),
+        )
+    if sort == "rating_desc":
+        return (
+            WatchedMovie.rating.desc().nulls_last(),
+            WatchedMovie.watched_date.desc().nulls_last(),
+        )
+    if sort == "rating_asc":
+        return (
+            WatchedMovie.rating.asc().nulls_last(),
+            WatchedMovie.watched_date.desc().nulls_last(),
+        )
+    if sort == "title_asc":
+        return (Movie.title.asc(),)
+    if sort == "title_desc":
+        return (Movie.title.desc(),)
+    if sort == "year_desc":
+        return (Movie.year.desc().nulls_last(), Movie.title.asc())
+    if sort == "year_asc":
+        return (Movie.year.asc().nulls_last(), Movie.title.asc())
+    # default: date_desc (prior behavior)
+    return (
+        WatchedMovie.watched_date.desc().nulls_last(),
+        WatchedMovie.created_at.desc(),
+    )
 
 
 def get_watched_movie(user_id: str, tmdb_id: int, db: Session) -> dict | None:
@@ -154,27 +186,44 @@ def delete_watched_movie(user_id: str, tmdb_id: int, db: Session) -> None:
 
 
 def get_watchlist(
-    watchlist_id: int, db: Session, limit: int = 20, offset: int = 0
+    watchlist_id: int,
+    db: Session,
+    limit: int = 20,
+    offset: int = 0,
+    q: str | None = None,
+    sort: str | None = None,
 ) -> dict:
-    """Get paginated watchlist movies."""
-    total = (
-        db.query(func.count(WatchlistMovie.id))
-        .filter(WatchlistMovie.watchlist_id == watchlist_id)
-        .scalar()
-    )
-
-    rows = (
+    """Get paginated watchlist movies, with optional title filter + sort."""
+    base = (
         db.query(WatchlistMovie, Movie)
         .join(Movie, WatchlistMovie.tmdb_id == Movie.tmdb_id)
         .filter(WatchlistMovie.watchlist_id == watchlist_id)
-        .order_by(WatchlistMovie.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
     )
+    if q:
+        base = base.filter(Movie.title.ilike(f"%{q}%"))
+
+    total = base.with_entities(func.count(WatchlistMovie.id)).scalar() or 0
+
+    rows = base.order_by(*_watchlist_order_by(sort)).offset(offset).limit(limit).all()
 
     results = [_watchlist_to_response(entry, movie) for entry, movie in rows]
-    return {"results": results, "total": total or 0}
+    return {"results": results, "total": total}
+
+
+def _watchlist_order_by(sort: str | None):
+    """SQL ORDER BY for watchlist. Rating sorts are meaningless here and ignored."""
+    if sort == "date_asc":
+        return (WatchlistMovie.created_at.asc(),)
+    if sort == "title_asc":
+        return (Movie.title.asc(),)
+    if sort == "title_desc":
+        return (Movie.title.desc(),)
+    if sort == "year_desc":
+        return (Movie.year.desc().nulls_last(), Movie.title.asc())
+    if sort == "year_asc":
+        return (Movie.year.asc().nulls_last(), Movie.title.asc())
+    # default: date_desc (prior behavior)
+    return (WatchlistMovie.created_at.desc(),)
 
 
 async def add_to_watchlist(

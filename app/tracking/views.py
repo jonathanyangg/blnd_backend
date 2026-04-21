@@ -70,8 +70,10 @@ async def get_watch_history(
     db: Session = Depends(get_db),
     limit: int = Query(default=20, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    q: str | None = Query(default=None, max_length=100),
+    sort: str | None = Query(default=None),
 ):
-    return services.get_watch_history(user_id, limit, offset, db)
+    return services.get_watch_history(user_id, limit, offset, db, q=q, sort=sort)
 
 
 @router.get("/{tmdb_id}/friends", response_model=schemas.FriendsWhoWatchedResponse)

@@ -277,10 +277,12 @@ def get_user_watched(
     id: str,
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    q: str | None = Query(default=None, max_length=100),
+    sort: str | None = Query(default=None),
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return services.get_public_watched(user_id, id, limit, offset, db)
+    return services.get_public_watched(user_id, id, limit, offset, db, q=q, sort=sort)
 
 
 @router.get("/users/{id}/friends", response_model=schemas.PublicFriendsListResponse)
@@ -292,3 +294,14 @@ def get_user_friends(
     db: Session = Depends(get_db),
 ):
     return services.get_public_friends(user_id, id, db)
+
+
+@router.get("/users/{id}/taste", response_model=schemas.GenreTasteResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def get_user_taste(
+    request: Request,
+    id: str,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return services.get_public_taste(user_id, id, db)

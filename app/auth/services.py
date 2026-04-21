@@ -423,31 +423,37 @@ def get_public_profile(caller_id: str, target_id: str, db: Session) -> dict:
     }
 
 
+def get_public_taste(caller_id: str, target_id: str, db: Session) -> dict:
+    """Get genre taste for another user. Requires friendship."""
+    assert_are_friends(caller_id, target_id, db)
+    return get_genre_taste(target_id, db)
+
+
 def get_public_watched(
-    caller_id: str, target_id: str, limit: int, offset: int, db: Session
+    caller_id: str,
+    target_id: str,
+    limit: int,
+    offset: int,
+    db: Session,
+    q: str | None = None,
+    sort: str | None = None,
 ) -> dict:
     """Get paginated watched movies for another user. Requires friendship."""
+    from app.tracking.services import _watched_order_by
+
     assert_are_friends(caller_id, target_id, db)
 
-    total = (
-        db.query(func.count(WatchedMovie.id))
-        .filter(WatchedMovie.user_id == target_id)
-        .scalar()
-        or 0
-    )
-
-    rows = (
+    base = (
         db.query(WatchedMovie, Movie)
         .join(Movie, WatchedMovie.tmdb_id == Movie.tmdb_id)
         .filter(WatchedMovie.user_id == target_id)
-        .order_by(
-            WatchedMovie.watched_date.desc().nulls_last(),
-            WatchedMovie.created_at.desc(),
-        )
-        .offset(offset)
-        .limit(limit)
-        .all()
     )
+    if q:
+        base = base.filter(Movie.title.ilike(f"%{q}%"))
+
+    total = base.with_entities(func.count(WatchedMovie.id)).scalar() or 0
+
+    rows = base.order_by(*_watched_order_by(sort)).offset(offset).limit(limit).all()
 
     results = [
         {
