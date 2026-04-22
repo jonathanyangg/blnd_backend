@@ -24,8 +24,8 @@ limiter = Limiter(
 
 # Rate limit constants
 LIMIT_HEAVY = "1/day"
-LIMIT_IMPORT = "3/hour"
-LIMIT_REFRESH = "5/hour"
+LIMIT_IMPORT = "10/hour"
+LIMIT_REFRESH = "20/hour"
 LIMIT_SEARCH = "30/minute"
 LIMIT_AI_SEARCH = "20/hour"
 LIMIT_DEFAULT = "60/minute"
