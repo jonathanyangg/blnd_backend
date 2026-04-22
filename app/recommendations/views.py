@@ -3,7 +3,13 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.auth.models import Profile
-from app.core.rate_limit import LIMIT_AI_SEARCH, LIMIT_DEFAULT, LIMIT_REFRESH, limiter
+from app.core.rate_limit import (
+    LIMIT_AI_SEARCH,
+    LIMIT_DEFAULT,
+    LIMIT_REFRESH,
+    check_free_ai_search,
+    limiter,
+)
 from app.database import SessionLocal
 from app.dependencies import get_current_user, get_db, openai_client
 from app.subscriptions.services import is_premium
@@ -201,12 +207,15 @@ def semantic_discover(
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """AI-powered semantic movie search. Premium only."""
+    """AI-powered semantic movie search. Free: 2/day, Premium: 50/day."""
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
-    if not is_premium(profile):
-        raise HTTPException(status_code=402, detail="Premium required")
+    if not is_premium(profile) and not check_free_ai_search(user_id):
+        raise HTTPException(
+            status_code=429,
+            detail="Free tier limit reached (2 AI searches/day). Upgrade to premium for 50/day.",
+        )
 
     from app.recommendations.semantic_search import run_semantic_discover
 
