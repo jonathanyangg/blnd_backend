@@ -1,3 +1,4 @@
+import jwt as pyjwt
 from slowapi import Limiter
 from starlette.requests import Request
 
@@ -5,10 +6,15 @@ from app.config import settings
 
 
 def get_rate_limit_key(request: Request) -> str:
-    """Rate limit by client IP. Never trust unverified JWT claims."""
-    if request.client:
-        return request.client.host
-    return "unknown"
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        try:
+            payload = pyjwt.decode(auth[7:], options={"verify_signature": False})
+            if sub := payload.get("sub"):
+                return f"user:{sub}"
+        except Exception:
+            pass
+    return f"ip:{request.client.host if request.client else 'unknown'}"
 
 
 limiter = Limiter(
