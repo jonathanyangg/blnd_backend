@@ -3,11 +3,11 @@ from datetime import datetime, timezone
 from fastapi import HTTPException
 from sqlalchemy import func, update
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
 from app.comments.models import CommentLike, MovieComment
-from app.friends.services import get_friends
 from app.tracking.models import WatchedMovie
 
 
@@ -118,13 +118,12 @@ def get_comments(
     user_id: str, tmdb_id: int, limit: int, offset: int, db: Session
 ) -> dict:
     """Get paginated top-level comments with nested replies and enrichment."""
-    # (a) Count non-deleted top-level comments for pagination
+    # (a) Count all top-level comments (including deleted tombstones) for pagination
     total = (
         db.query(func.count(MovieComment.id))
         .filter(
             MovieComment.tmdb_id == tmdb_id,
             MovieComment.parent_id.is_(None),
-            MovieComment.deleted == False,  # noqa: E712
         )
         .scalar()
         or 0
@@ -236,12 +235,33 @@ def get_comments(
             )
         )
 
-    # (l) Friend-first sort
-    friend_data = get_friends(user_id, db)
-    friend_ids = {f["id"] for f in friend_data["friends"]}
+    # (l) Friend-first sort — fetch only friend IDs (not full profiles)
+    from sqlalchemy import or_
 
-    friend_comments = [c for c in assembled if c["user_id"] in friend_ids]
-    other_comments = [c for c in assembled if c["user_id"] not in friend_ids]
+    from app.friends.models import Friendship
+
+    friendships = (
+        db.query(Friendship)
+        .filter(
+            Friendship.status == "accepted",
+            or_(
+                Friendship.requester_id == user_id,
+                Friendship.addressee_id == user_id,
+            ),
+        )
+        .all()
+    )
+    friend_ids = {
+        str(f.addressee_id) if str(f.requester_id) == user_id else str(f.requester_id)
+        for f in friendships
+    }
+
+    friend_comments = [
+        c for c in assembled if c["user_id"] is not None and c["user_id"] in friend_ids
+    ]
+    other_comments = [
+        c for c in assembled if c["user_id"] is None or c["user_id"] not in friend_ids
+    ]
 
     friend_comments.sort(key=lambda c: c["like_count"], reverse=True)
     other_comments.sort(key=lambda c: c["like_count"], reverse=True)
@@ -270,6 +290,8 @@ def edit_comment(user_id: str, comment_id: int, body: str, db: Session) -> dict:
         )
 
     comment = db.query(MovieComment).filter(MovieComment.id == comment_id).first()
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
 
     profile = db.query(Profile).filter(Profile.id == user_id).first()
 
@@ -298,7 +320,7 @@ def edit_comment(user_id: str, comment_id: int, body: str, db: Session) -> dict:
     commenter_rating = rating_row.rating if rating_row else None
 
     return _assemble_comment(
-        comment,  # type: ignore[arg-type]
+        comment,
         profile,
         like_count,
         liked_by_me,
@@ -332,16 +354,12 @@ def like_comment(user_id: str, comment_id: int, db: Session) -> dict:
     if not comment:
         raise HTTPException(status_code=404, detail="Comment not found")
 
-    existing = (
-        db.query(CommentLike)
-        .filter(CommentLike.user_id == user_id, CommentLike.comment_id == comment_id)
-        .first()
-    )
-    if existing:
+    try:
+        db.add(CommentLike(comment_id=comment_id, user_id=user_id))
+        db.commit()
+    except IntegrityError:
+        db.rollback()
         raise HTTPException(status_code=400, detail="Already liked")
-
-    db.add(CommentLike(comment_id=comment_id, user_id=user_id))
-    db.commit()
 
     new_count = (
         db.query(func.count(CommentLike.id))

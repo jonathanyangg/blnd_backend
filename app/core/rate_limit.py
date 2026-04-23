@@ -7,6 +7,7 @@ from app.config import settings
 
 
 def get_rate_limit_key(request: Request) -> str:
+    """Rate limit by JWT sub claim, fallback to client IP."""
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         try:
