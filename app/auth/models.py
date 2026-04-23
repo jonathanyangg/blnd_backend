@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, DateTime, String, Text
+from sqlalchemy import BigInteger, DateTime, Float, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -20,6 +20,7 @@ class Profile(Base):
     favorite_genres: Mapped[list | None] = mapped_column(JSONB, default=list)
     taste_embedding = mapped_column(Vector(1536), nullable=True)
     negative_embedding = mapped_column(Vector(1536), nullable=True)
+    taste_sum_weights: Mapped[float | None] = mapped_column(Float, nullable=True)
     phone_number: Mapped[str | None] = mapped_column(String, nullable=True)
     apple_refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     actions_since_rebuild: Mapped[int] = mapped_column(

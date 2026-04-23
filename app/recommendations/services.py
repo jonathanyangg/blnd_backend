@@ -187,7 +187,7 @@ EMBEDDING_STRATEGY = "average"
 
 def compute_taste_embeddings(
     user_id: str, db: Session, profile: Profile | None = None
-) -> tuple[list[float] | None, list[float] | None]:
+) -> tuple[list[float] | None, list[float] | None, float | None]:
     """Compute taste embeddings using rating-weighted average.
 
     Positive embedding: weighted average of movies at or above the user's 20th
@@ -200,7 +200,9 @@ def compute_taste_embeddings(
 
     If user has <10 rated movies, no rating-derived negatives (sample too small).
 
-    Returns (positive_embedding, negative_embedding).
+    Returns (positive_embedding, negative_embedding, sum_weights). sum_weights is
+    the denominator of the weighted average (Σ ratings of positive-tier movies +
+    WATCHLIST_WEIGHT × watchlist count) — needed by match-score leave-one-out.
     """
     rows = (
         db.query(WatchedMovie.tmdb_id, WatchedMovie.rating, MovieEmbedding.embedding)
@@ -209,7 +211,7 @@ def compute_taste_embeddings(
         .all()
     )
     if not rows:
-        return None, None
+        return None, None, None
 
     ratings = np.array([float(r) for _, r, _ in rows])
     embeddings = np.array([e for _, _, e in rows])
@@ -227,8 +229,10 @@ def compute_taste_embeddings(
     pos_embeddings = embeddings[pos_mask]
     pos_ratings = ratings[pos_mask]
     if len(pos_embeddings) == 0:
-        return None, None
+        return None, None, None
     positive_emb = np.average(pos_embeddings, axis=0, weights=pos_ratings)
+    rated_total_weight = float(pos_ratings.sum())
+    sum_weights = rated_total_weight
 
     # Blend watchlist movie embeddings as soft positive signal
     if profile is None:
@@ -244,12 +248,12 @@ def compute_taste_embeddings(
             wl_embeddings = np.array([e for (e,) in wl_rows])
             wl_avg = np.mean(wl_embeddings, axis=0)
             # Weighted merge: rated movies total weight vs watchlist total weight
-            rated_total_weight = float(pos_ratings.sum())
             wl_total_weight = len(wl_rows) * WATCHLIST_WEIGHT
             total = rated_total_weight + wl_total_weight
             positive_emb = (
                 positive_emb * rated_total_weight + wl_avg * wl_total_weight
             ) / total
+            sum_weights = total
 
     positive_emb = positive_emb.tolist()
 
@@ -281,7 +285,7 @@ def compute_taste_embeddings(
         all_neg_w = np.concatenate(neg_weights)
         negative_emb = np.average(all_neg_emb, axis=0, weights=all_neg_w).tolist()
 
-    return positive_emb, negative_emb
+    return positive_emb, negative_emb, sum_weights
 
 
 GENRE_SEED_TOP_N = 20
@@ -376,7 +380,7 @@ def rebuild_taste_profile(
 
     # Taste embedding: switch between strategies
     if EMBEDDING_STRATEGY == "average":
-        positive_emb, negative_emb = compute_taste_embeddings(
+        positive_emb, negative_emb, sum_weights = compute_taste_embeddings(
             user_id, db, profile=profile
         )
         if not positive_emb:
@@ -386,6 +390,7 @@ def rebuild_taste_profile(
                 return profile  # No movies embedded yet, nothing to seed from
             profile.taste_embedding = seed
             profile.negative_embedding = None
+            profile.taste_sum_weights = None
             db.commit()
             db.refresh(profile)
             logger.info(
@@ -396,6 +401,7 @@ def rebuild_taste_profile(
             return profile
         profile.taste_embedding = positive_emb
         profile.negative_embedding = negative_emb
+        profile.taste_sum_weights = sum_weights
     else:
         # LLM strategy: embed the generated taste bio
         prompt = build_taste_prompt(profile.favorite_genres, movies)
@@ -406,8 +412,11 @@ def rebuild_taste_profile(
         profile.taste_bio = taste_bio
         profile.taste_embedding = taste_embedding
         # Still compute negative for LLM strategy
-        _, negative_emb = compute_taste_embeddings(user_id, db, profile=profile)
+        _, negative_emb, _ = compute_taste_embeddings(user_id, db, profile=profile)
         profile.negative_embedding = negative_emb
+        # LLM-strategy taste embedding is not a weighted sum of movies, so
+        # leave-one-out doesn't apply — clear sum_weights.
+        profile.taste_sum_weights = None
 
     db.commit()
     db.refresh(profile)

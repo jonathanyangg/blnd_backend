@@ -1,6 +1,7 @@
 import logging
 
 import httpx
+import numpy as np
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
@@ -20,7 +21,13 @@ from app.recommendations.ranking import (
     _genre_overlap,
     to_match_percentage,
 )
-from app.recommendations.services import get_user_signal_context
+from app.recommendations.services import (
+    NEGATIVE_RATING_MIN_MOVIES,
+    NEGATIVE_RATING_PERCENTILE,
+    WATCHLIST_WEIGHT,
+    get_user_signal_context,
+)
+from app.tracking.models import WatchedMovie, WatchlistMovie
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +55,53 @@ def _compute_score(
     return round(max(score, 0.0), 4)
 
 
+def _contribution_weights(
+    tmdb_ids: list[int], user_id: str, profile: Profile, db: Session
+) -> dict[int, float]:
+    """Return {tmdb_id: weight} for any scored movie that contributed to the
+    user's positive taste embedding — rated at/above the 20th-percentile
+    threshold (weight = rating) or currently in the user's watchlist
+    (weight = WATCHLIST_WEIGHT). Movies not in the map contributed 0.
+    """
+    weights: dict[int, float] = {}
+
+    # Fetch all user's ratings once so we can compute the same percentile
+    # threshold that compute_taste_embeddings uses.
+    all_ratings_rows = (
+        db.query(WatchedMovie.tmdb_id, WatchedMovie.rating)
+        .filter(WatchedMovie.user_id == user_id, WatchedMovie.rating.isnot(None))
+        .all()
+    )
+    if all_ratings_rows:
+        all_ratings = np.array([float(r) for _, r in all_ratings_rows])
+        if len(all_ratings) >= NEGATIVE_RATING_MIN_MOVIES:
+            threshold = float(np.percentile(all_ratings, NEGATIVE_RATING_PERCENTILE))
+        else:
+            threshold = 0.0  # <10 ratings: every rated movie is positive
+        scored_set = set(tmdb_ids)
+        for tid, rating in all_ratings_rows:
+            if tid in scored_set:
+                r = float(rating)
+                if r >= threshold:
+                    weights[tid] = r
+
+    if profile.watchlist_id:
+        wl_rows = (
+            db.query(WatchlistMovie.tmdb_id)
+            .filter(
+                WatchlistMovie.watchlist_id == profile.watchlist_id,
+                WatchlistMovie.tmdb_id.in_(tmdb_ids),
+            )
+            .all()
+        )
+        for (tid,) in wl_rows:
+            # Rated movies are auto-removed from watchlist, so no overlap —
+            # but defensively take the max if somehow both apply.
+            weights[tid] = max(weights.get(tid, 0.0), WATCHLIST_WEIGHT)
+
+    return weights
+
+
 def compute_match_scores(
     tmdb_ids: list[int], user_id: str, db: Session
 ) -> dict[int, float]:
@@ -57,17 +111,22 @@ def compute_match_scores(
     When a movie has no embedding, falls back to a genre+consensus-only score
     (cosine similarity term becomes 0, remaining signals renormalized so the
     fallback can still reach ~100%).
+
+    For movies that contributed to the user's taste embedding (rated positive or
+    currently in watchlist), we apply a leave-one-out adjustment so a movie isn't
+    being compared against a taste vector that contains itself.
     """
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile or profile.taste_embedding is None:
         return {}
 
-    taste_emb = list(profile.taste_embedding)
+    taste_emb = np.array(profile.taste_embedding, dtype=np.float64)
     negative_emb = (
         list(profile.negative_embedding)
         if profile.negative_embedding is not None
         else None
     )
+    sum_weights = profile.taste_sum_weights
 
     # Batch-fetch embeddings
     embeddings = (
@@ -81,6 +140,14 @@ def compute_match_scores(
 
     user_genres, top_directors, top_cast = get_user_signal_context(user_id, db)
 
+    # Per-movie contribution weights for leave-one-out (only when sum_weights
+    # is present — LLM-strategy taste embeddings don't support this).
+    contrib_weights = (
+        _contribution_weights(tmdb_ids, user_id, profile, db)
+        if sum_weights and sum_weights > 0
+        else {}
+    )
+
     # Renormalization factor for fallback (drops W_SIMILARITY and W_NEGATIVE)
     fallback_denom = W_GENRE + W_CONSENSUS + W_DIRECTOR + W_CAST
 
@@ -91,7 +158,18 @@ def compute_match_scores(
             continue
         movie_emb = emb_map.get(tid)
         if movie_emb:
-            similarity = _cosine_sim(taste_emb, movie_emb)
+            movie_weight = contrib_weights.get(tid, 0.0)
+            if movie_weight > 0 and sum_weights and sum_weights > movie_weight:
+                # Leave-one-out: reconstruct the taste vector without this
+                # movie's own contribution before taking cosine similarity.
+                adjusted_denom = sum_weights - movie_weight
+                adjusted_taste = (
+                    taste_emb * sum_weights
+                    - movie_weight * np.array(movie_emb, dtype=np.float64)
+                ) / adjusted_denom
+                similarity = _cosine_sim(adjusted_taste.tolist(), movie_emb)
+            else:
+                similarity = _cosine_sim(taste_emb.tolist(), movie_emb)
             neg_sim = _cosine_sim(movie_emb, negative_emb) if negative_emb else 0.0
             raw = _compute_score(
                 movie, similarity, user_genres, top_directors, top_cast, neg_sim
