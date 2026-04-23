@@ -9,7 +9,9 @@ from app.dependencies import get_current_user, get_db
 router = APIRouter()
 
 
-@router.post("/", response_model=schemas.CommentResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/", response_model=schemas.CommentResponse, status_code=status.HTTP_201_CREATED
+)
 @limiter.limit(LIMIT_COMMENT)
 async def create_comment(
     request: Request,

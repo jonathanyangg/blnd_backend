@@ -61,11 +61,15 @@ def _comment_dict(
 
 
 @patch("app.comments.views.services.create_comment")
-def test_create_comment(mock_create: MagicMock, app_client: MagicMock, mock_db: MagicMock) -> None:
+def test_create_comment(
+    mock_create: MagicMock, app_client: MagicMock, mock_db: MagicMock
+) -> None:
     """POST /comments/ creates a top-level comment and returns 201."""
     mock_create.return_value = _comment_dict()
 
-    response = app_client.post("/comments/", json={"tmdb_id": 550, "body": "Great movie!"})
+    response = app_client.post(
+        "/comments/", json={"tmdb_id": 550, "body": "Great movie!"}
+    )
 
     assert response.status_code == 201
     data = response.json()
@@ -75,7 +79,9 @@ def test_create_comment(mock_create: MagicMock, app_client: MagicMock, mock_db: 
     mock_create.assert_called_once()
 
 
-def test_create_comment_body_too_long(app_client: MagicMock, mock_db: MagicMock) -> None:
+def test_create_comment_body_too_long(
+    app_client: MagicMock, mock_db: MagicMock
+) -> None:
     """POST /comments/ with 1001-char body returns 422."""
     response = app_client.post("/comments/", json={"tmdb_id": 550, "body": "x" * 1001})
     assert response.status_code == 422
@@ -88,7 +94,9 @@ def test_create_comment_empty_body(app_client: MagicMock, mock_db: MagicMock) ->
 
 
 @patch("app.comments.views.services.get_comments")
-def test_list_comments(mock_get: MagicMock, app_client: MagicMock, mock_db: MagicMock) -> None:
+def test_list_comments(
+    mock_get: MagicMock, app_client: MagicMock, mock_db: MagicMock
+) -> None:
     """GET /comments/?tmdb_id=550 returns 200 with results and total."""
     mock_get.return_value = {"results": [_comment_dict()], "total": 1}
 
@@ -104,7 +112,9 @@ def test_list_comments(mock_get: MagicMock, app_client: MagicMock, mock_db: Magi
 
 
 @patch("app.comments.views.services.create_reply")
-def test_create_reply(mock_reply: MagicMock, app_client: MagicMock, mock_db: MagicMock) -> None:
+def test_create_reply(
+    mock_reply: MagicMock, app_client: MagicMock, mock_db: MagicMock
+) -> None:
     """POST /comments/1/reply returns 201 with parent_id=1."""
     mock_reply.return_value = _comment_dict(comment_id=2, parent_id=1, body="I agree!")
 
@@ -117,9 +127,13 @@ def test_create_reply(mock_reply: MagicMock, app_client: MagicMock, mock_db: Mag
 
 
 @patch("app.comments.views.services.create_reply")
-def test_reply_to_reply_returns_400(mock_reply: MagicMock, app_client: MagicMock, mock_db: MagicMock) -> None:
+def test_reply_to_reply_returns_400(
+    mock_reply: MagicMock, app_client: MagicMock, mock_db: MagicMock
+) -> None:
     """POST /comments/2/reply returns 400 when replying to a reply."""
-    mock_reply.side_effect = HTTPException(status_code=400, detail="Cannot reply to a reply")
+    mock_reply.side_effect = HTTPException(
+        status_code=400, detail="Cannot reply to a reply"
+    )
 
     response = app_client.post("/comments/2/reply", json={"body": "Nested"})
 
@@ -127,7 +141,9 @@ def test_reply_to_reply_returns_400(mock_reply: MagicMock, app_client: MagicMock
 
 
 @patch("app.comments.views.services.edit_comment")
-def test_edit_comment(mock_edit: MagicMock, app_client: MagicMock, mock_db: MagicMock) -> None:
+def test_edit_comment(
+    mock_edit: MagicMock, app_client: MagicMock, mock_db: MagicMock
+) -> None:
     """PATCH /comments/1 returns 200 with updated body and is_edited=True."""
     mock_edit.return_value = _comment_dict(body="Updated text", is_edited=True)
 
@@ -141,7 +157,9 @@ def test_edit_comment(mock_edit: MagicMock, app_client: MagicMock, mock_db: Magi
 
 
 @patch("app.comments.views.services.edit_comment")
-def test_edit_comment_forbidden(mock_edit: MagicMock, app_client: MagicMock, mock_db: MagicMock) -> None:
+def test_edit_comment_forbidden(
+    mock_edit: MagicMock, app_client: MagicMock, mock_db: MagicMock
+) -> None:
     """PATCH /comments/1 returns 403 when user is not the owner."""
     mock_edit.side_effect = HTTPException(
         status_code=403, detail="Not authorized or comment not found"
@@ -153,7 +171,9 @@ def test_edit_comment_forbidden(mock_edit: MagicMock, app_client: MagicMock, moc
 
 
 @patch("app.comments.views.services.delete_comment")
-def test_soft_delete_comment(mock_delete: MagicMock, app_client: MagicMock, mock_db: MagicMock) -> None:
+def test_soft_delete_comment(
+    mock_delete: MagicMock, app_client: MagicMock, mock_db: MagicMock
+) -> None:
     """DELETE /comments/1 returns 204 on success."""
     mock_delete.return_value = None
 
@@ -164,7 +184,9 @@ def test_soft_delete_comment(mock_delete: MagicMock, app_client: MagicMock, mock
 
 
 @patch("app.comments.views.services.delete_comment")
-def test_delete_comment_forbidden(mock_delete: MagicMock, app_client: MagicMock, mock_db: MagicMock) -> None:
+def test_delete_comment_forbidden(
+    mock_delete: MagicMock, app_client: MagicMock, mock_db: MagicMock
+) -> None:
     """DELETE /comments/1 returns 403 when user is not the owner."""
     mock_delete.side_effect = HTTPException(
         status_code=403, detail="Not authorized or comment not found"
@@ -176,7 +198,9 @@ def test_delete_comment_forbidden(mock_delete: MagicMock, app_client: MagicMock,
 
 
 @patch("app.comments.views.services.like_comment")
-def test_like_comment(mock_like: MagicMock, app_client: MagicMock, mock_db: MagicMock) -> None:
+def test_like_comment(
+    mock_like: MagicMock, app_client: MagicMock, mock_db: MagicMock
+) -> None:
     """POST /comments/1/like returns 200 with updated like_count and liked_by_me=True."""
     mock_like.return_value = {"like_count": 1, "liked_by_me": True}
 
@@ -190,7 +214,9 @@ def test_like_comment(mock_like: MagicMock, app_client: MagicMock, mock_db: Magi
 
 
 @patch("app.comments.views.services.like_comment")
-def test_like_comment_duplicate(mock_like: MagicMock, app_client: MagicMock, mock_db: MagicMock) -> None:
+def test_like_comment_duplicate(
+    mock_like: MagicMock, app_client: MagicMock, mock_db: MagicMock
+) -> None:
     """POST /comments/1/like returns 400 when already liked."""
     mock_like.side_effect = HTTPException(status_code=400, detail="Already liked")
 
@@ -200,7 +226,9 @@ def test_like_comment_duplicate(mock_like: MagicMock, app_client: MagicMock, moc
 
 
 @patch("app.comments.views.services.unlike_comment")
-def test_unlike_comment(mock_unlike: MagicMock, app_client: MagicMock, mock_db: MagicMock) -> None:
+def test_unlike_comment(
+    mock_unlike: MagicMock, app_client: MagicMock, mock_db: MagicMock
+) -> None:
     """DELETE /comments/1/like returns 200 with like_count=0 and liked_by_me=False."""
     mock_unlike.return_value = {"like_count": 0, "liked_by_me": False}
 
@@ -214,7 +242,9 @@ def test_unlike_comment(mock_unlike: MagicMock, app_client: MagicMock, mock_db: 
 
 
 @patch("app.comments.views.services.unlike_comment")
-def test_unlike_comment_not_found(mock_unlike: MagicMock, app_client: MagicMock, mock_db: MagicMock) -> None:
+def test_unlike_comment_not_found(
+    mock_unlike: MagicMock, app_client: MagicMock, mock_db: MagicMock
+) -> None:
     """DELETE /comments/1/like returns 404 when like not found."""
     mock_unlike.side_effect = HTTPException(status_code=404, detail="Like not found")
 
