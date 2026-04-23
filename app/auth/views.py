@@ -57,6 +57,12 @@ def signup(
 def login(request: Request, body: schemas.LoginRequest):
     try:
         return services.login(body.email, body.password)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code >= 500:
+            raise HTTPException(
+                status_code=503, detail="Auth service unavailable, try again"
+            )
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -121,6 +127,12 @@ async def oauth_login_view(
         raise HTTPException(status_code=401, detail="Invalid or expired provider token")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code >= 500:
+            raise HTTPException(
+                status_code=503, detail="Auth service unavailable, try again"
+            )
+        raise HTTPException(status_code=400, detail="OAuth login failed")
     except Exception:
         raise HTTPException(status_code=400, detail="OAuth login failed")
 
