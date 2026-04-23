@@ -25,6 +25,7 @@ class MovieResponse(BaseModel):
     backdrop_path: str | None = None
     imdb_id: str | None = None
     match_score: float | None = None
+    comment_count: int = 0
 
 
 class MovieSearchResult(BaseModel):

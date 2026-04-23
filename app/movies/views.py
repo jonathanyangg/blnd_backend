@@ -10,6 +10,7 @@ from app.dependencies import (
     get_optional_user,
     get_tmdb_client,
 )
+from app.comments.services import get_comment_count
 from app.movies import schemas, services
 
 router = APIRouter()
@@ -208,6 +209,7 @@ async def get_movie(
         raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
 
     scores = services.compute_match_scores([tmdb_id], user_id, db)
+    comment_count = get_comment_count(tmdb_id, db)
 
     # Backfill missing embedding asynchronously so next view gets a real score
     from app.import_data.models import MovieEmbedding
@@ -237,4 +239,5 @@ async def get_movie(
         backdrop_path=movie.backdrop_path,
         imdb_id=movie.imdb_id,
         match_score=scores.get(tmdb_id),
+        comment_count=comment_count,
     )

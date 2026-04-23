@@ -30,6 +30,7 @@ LIMIT_REFRESH = "20/hour"
 LIMIT_SEARCH = "30/minute"
 LIMIT_AI_SEARCH = "50/day"  # premium cap applied via decorator
 LIMIT_AI_SEARCH_FREE = "2/day"  # free-tier cap enforced in-handler
+LIMIT_COMMENT = "20/minute"
 LIMIT_DEFAULT = "60/minute"
 
 _FREE_AI_SEARCH_ITEM = parse_limit(LIMIT_AI_SEARCH_FREE)
