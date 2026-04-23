@@ -53,6 +53,7 @@ async def get_preferences(
         group_invites=pref.group_invites,
         recommendations=pref.recommendations,
         friend_activity=pref.friend_activity,
+        comment_replies=pref.comment_replies,
     )
 
 
@@ -70,6 +71,7 @@ async def update_preferences(
         group_invites=pref.group_invites,
         recommendations=pref.recommendations,
         friend_activity=pref.friend_activity,
+        comment_replies=pref.comment_replies,
     )
 
 
