@@ -91,3 +91,4 @@ wrapt==2.1.2
 yarl==1.23.0
 zstandard==0.25.0
 anthropic==0.96.0
+posthog==3.24.0

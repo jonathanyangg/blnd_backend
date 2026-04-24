@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 from supabase_auth.errors import AuthApiError
 
+from app.analytics import Event, track
 from app.auth import schemas, services
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.database import SessionLocal
@@ -34,7 +35,7 @@ def signup(
     request: Request, body: schemas.SignupRequest, db: Session = Depends(get_db)
 ):
     try:
-        return services.signup(
+        result = services.signup(
             body.email,
             body.password,
             body.username,
@@ -50,13 +51,15 @@ def signup(
     except Exception as e:
         logger.warning("Signup failed: %s", e)
         raise HTTPException(status_code=400, detail="Signup failed")
+    track(result["user_id"], Event.SIGNUP_COMPLETED)
+    return result
 
 
 @router.post("/login", response_model=schemas.LoginResponse)
 @limiter.limit(LIMIT_DEFAULT)
 def login(request: Request, body: schemas.LoginRequest):
     try:
-        return services.login(body.email, body.password)
+        result = services.login(body.email, body.password)
     except httpx.HTTPStatusError as e:
         if e.response.status_code >= 500:
             raise HTTPException(
@@ -65,6 +68,8 @@ def login(request: Request, body: schemas.LoginRequest):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    track(result["user_id"], Event.LOGIN_COMPLETED)
+    return result
 
 
 @router.post("/refresh", response_model=schemas.LoginResponse)
@@ -178,6 +183,7 @@ async def complete_onboarding_view(
         # they interact. Rollback any partial profile changes so signup succeeds.
         db.rollback()
 
+    track(user_id, Event.ONBOARDING_COMPLETED)
     return result
 
 
@@ -268,6 +274,7 @@ def delete_account(
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    track(user_id, Event.ACCOUNT_DELETED)
     services.delete_account(user_id, db)
 
 

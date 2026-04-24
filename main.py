@@ -13,6 +13,7 @@ from pythonjsonlogger.json import JsonFormatter  # pyright: ignore[reportMissing
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from app import analytics
 from app.actors.views import router as actors_router
 from app.auth.views import router as auth_router
 from app.config import settings
@@ -74,7 +75,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         timeout=15,
         limits=httpx.Limits(max_connections=20, max_keepalive_connections=5),
     )
+    analytics.init()
     yield
+    analytics.shutdown()
     await app.state.tmdb_client.aclose()
     await app.state.streaming_client.aclose()
     engine.dispose()

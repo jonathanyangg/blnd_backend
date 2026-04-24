@@ -11,6 +11,7 @@ from app.dependencies import (
     get_tmdb_client,
     openai_client,
 )
+from app.analytics import Event, track
 from app.recommendations.services import increment_action_counter, rebuild_taste_profile
 from app.tracking import schemas, services
 
@@ -36,6 +37,11 @@ async def track_movie(
         db=db,
         tmdb_client=tmdb_client,
         source=body.source,
+    )
+    track(
+        user_id,
+        Event.MOVIE_RATED,
+        {"tmdb_id": body.tmdb_id, "rating": body.rating, "source": body.source},
     )
     if increment_action_counter(user_id, db):
 

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
+from app.analytics import Event, track
 from app.auth.models import Profile
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.dependencies import get_apns_client, get_current_user, get_db, get_tmdb_client
@@ -29,7 +30,9 @@ async def create_group(
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return services.create_group(user_id, body.name, db)
+    result = services.create_group(user_id, body.name, db)
+    track(user_id, Event.GROUP_CREATED)
+    return result
 
 
 @router.get("/", response_model=schemas.GroupListResponse)

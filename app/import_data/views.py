@@ -15,6 +15,7 @@ from fastapi import (
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
+from app.analytics import Event, track
 from app.core.rate_limit import LIMIT_HEAVY, LIMIT_IMPORT, limiter
 from app.dependencies import (
     get_current_user,
@@ -96,4 +97,10 @@ async def import_letterboxd(
 
     workflows.validate_zip(file_bytes)
 
-    return await workflows.run_letterboxd_import(user_id, file_bytes, db, tmdb_client)
+    result = await workflows.run_letterboxd_import(user_id, file_bytes, db, tmdb_client)
+    track(
+        user_id,
+        Event.LETTERBOXD_IMPORTED,
+        {"movies_imported": result.imported},
+    )
+    return result

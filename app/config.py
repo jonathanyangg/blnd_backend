@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     rapidapi_key: str = ""
     revenuecat_webhook_secret: str = ""
     anthropic_api_key: str = ""
+    posthog_api_key: str = ""
+    posthog_host: str = ""
 
     model_config = {"env_file": ".env"}
 

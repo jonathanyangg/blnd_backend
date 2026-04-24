@@ -2,6 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, s
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
+from app.analytics import Event, track
 from app.auth.models import Profile
 from app.core.rate_limit import (
     LIMIT_AI_SEARCH,
@@ -146,6 +147,7 @@ def hide_movie(
     db: Session = Depends(get_db),
 ):
     hidden = services.hide_movie(user_id, tmdb_id, db)
+    track(user_id, Event.MOVIE_HIDDEN, {"tmdb_id": tmdb_id})
 
     if increment_action_counter(user_id, db):
 
@@ -216,6 +218,8 @@ def semantic_discover(
             status_code=429,
             detail="Free tier limit reached (2 AI searches/day). Upgrade to premium for 50/day.",
         )
+
+    track(user_id, Event.SEMANTIC_DISCOVER_USED, {"query": body.query})
 
     from app.recommendations.semantic_search import run_semantic_discover
 

@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
+from app.analytics import Event, track
 from app.core.rate_limit import LIMIT_DEFAULT, LIMIT_IMPORT, limiter
 from app.dependencies import get_apns_client, get_current_user, get_db
 from app.friends import schemas, services
@@ -21,6 +22,7 @@ async def send_friend_request(
     apns_client: APNs | None = Depends(get_apns_client),
 ):
     result = services.send_friend_request(user_id, body.addressee_username, db)
+    track(user_id, Event.FRIEND_REQUEST_SENT)
 
     # Gather data for notification (must happen before response returns)
     addressee_id = result.get("addressee", {}).get("id", "")
@@ -51,6 +53,7 @@ async def accept_friend_request(
     apns_client: APNs | None = Depends(get_apns_client),
 ):
     result = services.accept_friend_request(user_id, friendship_id, db)
+    track(user_id, Event.FRIEND_REQUEST_ACCEPTED)
 
     # Notify the requester that their request was accepted
     requester_id = result.get("requester", {}).get("id", "")

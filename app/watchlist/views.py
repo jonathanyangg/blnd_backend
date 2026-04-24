@@ -3,6 +3,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
+from app.analytics import Event, track
 from app.auth.models import Profile
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.database import SessionLocal
@@ -62,6 +63,11 @@ async def add_to_watchlist(
         return Response(status_code=status.HTTP_404_NOT_FOUND)
     result = await services.add_to_watchlist(
         profile.watchlist_id, body.tmdb_id, user_id, db, tmdb_client, body.source
+    )
+    track(
+        user_id,
+        Event.WATCHLIST_ADDED,
+        {"tmdb_id": body.tmdb_id, "source": body.source},
     )
     if increment_action_counter(user_id, db):
 
