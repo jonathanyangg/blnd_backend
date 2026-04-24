@@ -19,7 +19,7 @@ from app.recommendations.services import get_hidden_movie_ids, get_top_rated_mov
 
 logger = logging.getLogger(__name__)
 
-LLM_MODEL = "gpt-4.1-mini"
+LLM_MODEL = "gpt-4.1-nano"
 LLM_MAX_TITLES = 30
 
 SYSTEM_PROMPT = """You are a film curator with encyclopedic movie knowledge. Given a user's \
