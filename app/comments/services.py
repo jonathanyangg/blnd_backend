@@ -79,7 +79,9 @@ def create_comment(user_id: str, tmdb_id: int, body: str, db: Session) -> dict:
     )
 
 
-def create_reply(user_id: str, parent_id: int, body: str, db: Session) -> dict:
+def create_reply(
+    user_id: str, parent_id: int, body: str, db: Session, apns_client: "APNs | None" = None
+) -> dict:
     """Create a reply to a top-level comment (one level deep only)."""
     parent = db.query(MovieComment).filter(MovieComment.id == parent_id).first()
     if not parent:
@@ -103,6 +105,33 @@ def create_reply(user_id: str, parent_id: int, body: str, db: Session) -> dict:
         .first()
     )
     rating = rating_row.rating if rating_row else None
+
+    # Fire notification to parent author (not self-replies, not deleted parents)
+    if str(parent.user_id) != user_id and not parent.deleted:
+        from app.movies.models import Movie
+        from app.notifications.services import THREAD_COMMENT_REPLIES, fire_notification
+
+        replier_name = profile.username if profile else "Someone"
+        movie = db.query(Movie).filter(Movie.tmdb_id == parent.tmdb_id).first()
+        movie_title = movie.title if movie else "a movie"
+        parent_user_id = str(parent.user_id)
+        parent_tmdb_id = parent.tmdb_id
+        parent_comment_id = parent.id
+
+        fire_notification(
+            to=parent_user_id,
+            from_user=user_id,
+            notification_type="comment_replies",
+            title="New Reply",
+            body=f"{replier_name} replied to your comment on {movie_title}",
+            data={
+                "type": "comment_reply",
+                "tmdb_id": str(parent_tmdb_id),
+                "comment_id": str(parent_comment_id),
+            },
+            thread=THREAD_COMMENT_REPLIES,
+            apns_client=apns_client,
+        )
 
     return _assemble_comment(
         reply,

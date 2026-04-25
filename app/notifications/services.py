@@ -28,6 +28,7 @@ THREAD_FRIEND_REQUESTS = "friend_requests"
 THREAD_GROUP_INVITES = "group_invites"
 THREAD_FRIEND_ACTIVITY = "friend_activity"
 THREAD_GROUP_ACTIVITY = "group_activity"
+THREAD_COMMENT_REPLIES = "comment_replies"
 
 
 def fire_notification(

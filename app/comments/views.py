@@ -1,10 +1,11 @@
+from aioapns import APNs
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.comments import schemas, services
 from app.core.rate_limit import LIMIT_COMMENT, LIMIT_DEFAULT, limiter
-from app.dependencies import get_current_user, get_db
+from app.dependencies import get_apns_client, get_current_user, get_db
 
 router = APIRouter()
 
@@ -47,8 +48,9 @@ async def create_reply(
     body: schemas.CreateReplyRequest,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
+    apns_client: APNs | None = Depends(get_apns_client),
 ):
-    return services.create_reply(user_id, comment_id, body.body, db)
+    return services.create_reply(user_id, comment_id, body.body, db, apns_client)
 
 
 @router.patch("/{comment_id}", response_model=schemas.CommentResponse)
