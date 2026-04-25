@@ -251,3 +251,42 @@ def test_unlike_comment_not_found(
     response = app_client.delete("/comments/1/like")
 
     assert response.status_code == 404
+
+
+@patch("app.comments.views.services.create_reply")
+def test_create_reply_passes_apns_client(
+    mock_reply: MagicMock, app_client: MagicMock, mock_db: MagicMock
+) -> None:
+    """POST /comments/1/reply passes apns_client as 5th arg to services.create_reply."""
+    mock_reply.return_value = _comment_dict(comment_id=2, parent_id=1, body="I agree!")
+
+    response = app_client.post("/comments/1/reply", json={"body": "I agree!"})
+
+    assert response.status_code == 201
+    mock_reply.assert_called_once()
+    call_args = mock_reply.call_args
+    # View passes: services.create_reply(user_id, comment_id, body.body, db, apns_client)
+    # apns_client is the 5th positional argument (index 4)
+    assert len(call_args.args) == 5, f"Expected 5 positional args, got {len(call_args.args)}"
+
+
+@patch("app.comments.views.services.create_reply")
+def test_create_reply_apns_client_is_none_in_test(
+    mock_reply: MagicMock, app_client: MagicMock, mock_db: MagicMock
+) -> None:
+    """In test env, apns_client resolves to None (no app.state.apns_client set).
+
+    This confirms get_apns_client dependency is wired and resolves without error.
+    The service receives None, which fire_notification handles gracefully
+    (writes inbox but skips APNs push).
+    """
+    mock_reply.return_value = _comment_dict(comment_id=2, parent_id=1, body="reply")
+
+    response = app_client.post("/comments/1/reply", json={"body": "reply"})
+
+    assert response.status_code == 201
+    mock_reply.assert_called_once()
+    # The 5th positional arg (apns_client) should be None in test environment
+    call_args = mock_reply.call_args
+    apns_client_arg = call_args.args[4]
+    assert apns_client_arg is None, f"Expected None apns_client in test, got {apns_client_arg}"
