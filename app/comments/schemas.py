@@ -5,21 +5,23 @@ from pydantic import BaseModel, Field
 
 class CreateCommentRequest(BaseModel):
     tmdb_id: int
-    body: str = Field(min_length=1, max_length=1000)
+    body: str = Field(min_length=1, max_length=250)
 
 
 class CreateReplyRequest(BaseModel):
-    body: str = Field(min_length=1, max_length=1000)
+    body: str = Field(min_length=1, max_length=250)
 
 
 class EditCommentRequest(BaseModel):
-    body: str = Field(min_length=1, max_length=1000)
+    body: str = Field(min_length=1, max_length=250)
 
 
 class CommentResponse(BaseModel):
     id: int
     tmdb_id: int
     parent_id: int | None = None
+    reply_to_user_id: str | None = None
+    reply_to_username: str | None = None
     user_id: str | None = None
     username: str | None = None
     avatar_url: str | None = None

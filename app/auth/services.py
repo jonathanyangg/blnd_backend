@@ -355,6 +355,14 @@ def assert_are_friends(caller_id: str, target_id: str, db: Session) -> None:
         )
 
 
+def get_public_profile_by_username(caller_id: str, username: str, db: Session) -> dict:
+    """Resolve a username to a public profile (for tappable @mentions)."""
+    profile = db.query(Profile).filter(Profile.username == username.lower()).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail="User not found")
+    return get_public_profile(caller_id, str(profile.id), db)
+
+
 def get_public_profile(caller_id: str, target_id: str, db: Session) -> dict:
     """Get public profile stats for another user. No friendship required."""
     from app.friends.services import get_block_state

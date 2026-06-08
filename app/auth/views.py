@@ -29,6 +29,19 @@ def search_users(
     return {"results": results}
 
 
+@router.get(
+    "/users/by-username/{username}", response_model=schemas.PublicProfileResponse
+)
+@limiter.limit(LIMIT_DEFAULT)
+def get_user_profile_by_username(
+    request: Request,
+    username: str,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return services.get_public_profile_by_username(user_id, username, db)
+
+
 @router.post("/signup", response_model=schemas.LoginResponse)
 @limiter.limit(LIMIT_DEFAULT)
 def signup(

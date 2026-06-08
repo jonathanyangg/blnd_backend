@@ -19,8 +19,9 @@ async def create_comment(
     body: schemas.CreateCommentRequest,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
+    apns_client: APNs | None = Depends(get_apns_client),
 ):
-    return services.create_comment(user_id, body.tmdb_id, body.body, db)
+    return services.create_comment(user_id, body.tmdb_id, body.body, db, apns_client)
 
 
 @router.get("/", response_model=schemas.CommentsListResponse)

@@ -42,11 +42,15 @@ def _comment_dict(
     parent_id: int | None = None,
     body: str = "Great movie!",
     is_edited: bool = False,
+    reply_to_user_id: str | None = None,
+    reply_to_username: str | None = None,
 ) -> dict:
     return {
         "id": comment_id,
         "tmdb_id": tmdb_id,
         "parent_id": parent_id,
+        "reply_to_user_id": reply_to_user_id,
+        "reply_to_username": reply_to_username,
         "user_id": CALLER_ID,
         "username": "testuser",
         "avatar_url": "https://example.com/avatar.jpg",
@@ -127,17 +131,25 @@ def test_create_reply(
 
 
 @patch("app.comments.views.services.create_reply")
-def test_reply_to_reply_returns_400(
+def test_reply_to_reply_succeeds(
     mock_reply: MagicMock, app_client: MagicMock, mock_db: MagicMock
 ) -> None:
-    """POST /comments/2/reply returns 400 when replying to a reply."""
-    mock_reply.side_effect = HTTPException(
-        status_code=400, detail="Cannot reply to a reply"
+    """Replying to a reply succeeds: it attaches to its direct parent and carries
+    reply_to_username for the @mention chip."""
+    mock_reply.return_value = _comment_dict(
+        comment_id=3,
+        parent_id=2,
+        body="Nested",
+        reply_to_user_id=CALLER_ID,
+        reply_to_username="alice",
     )
 
     response = app_client.post("/comments/2/reply", json={"body": "Nested"})
 
-    assert response.status_code == 400
+    assert response.status_code == 201
+    data = response.json()
+    assert data["parent_id"] == 2
+    assert data["reply_to_username"] == "alice"
 
 
 @patch("app.comments.views.services.edit_comment")
@@ -267,7 +279,9 @@ def test_create_reply_passes_apns_client(
     call_args = mock_reply.call_args
     # View passes: services.create_reply(user_id, comment_id, body.body, db, apns_client)
     # apns_client is the 5th positional argument (index 4)
-    assert len(call_args.args) == 5, f"Expected 5 positional args, got {len(call_args.args)}"
+    assert len(call_args.args) == 5, (
+        f"Expected 5 positional args, got {len(call_args.args)}"
+    )
 
 
 @patch("app.comments.views.services.create_reply")
@@ -289,4 +303,6 @@ def test_create_reply_apns_client_is_none_in_test(
     # The 5th positional arg (apns_client) should be None in test environment
     call_args = mock_reply.call_args
     apns_client_arg = call_args.args[4]
-    assert apns_client_arg is None, f"Expected None apns_client in test, got {apns_client_arg}"
+    assert apns_client_arg is None, (
+        f"Expected None apns_client in test, got {apns_client_arg}"
+    )
