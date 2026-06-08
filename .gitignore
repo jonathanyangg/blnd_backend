@@ -223,6 +223,3 @@ __marimo__/
 
 # APNs keys
 *.p8
-
-# Graphify
-graphify-out/
