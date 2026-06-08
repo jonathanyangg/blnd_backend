@@ -1,6 +1,6 @@
 alter table "public"."hidden_movies" enable row level security;
 
-alter table "public"."movies" add column "vote_count" integer default 0;
+alter table "public"."movies" add column if not exists "vote_count" integer default 0;
 
 alter table "public"."sync_state" enable row level security;
 

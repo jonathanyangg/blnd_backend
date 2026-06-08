@@ -342,12 +342,12 @@ def test_complete_onboarding_endpoint_duplicate_400(mock_onboarding, app_client)
     app.dependency_overrides.pop(get_tmdb_client, None)
 
 
-@patch("app.auth.views.BackgroundTasks.add_task")
+@patch("app.recommendations.services.rebuild_taste_profile")
 @patch("app.auth.services.complete_onboarding", new_callable=AsyncMock)
 def test_complete_onboarding_endpoint_triggers_taste_rebuild(
-    mock_onboarding, mock_add_task, app_client
+    mock_onboarding, mock_rebuild, app_client
 ):
-    """Onboarding with rated_movies triggers background taste rebuild."""
+    """Onboarding seeds a taste profile via a synchronous rebuild."""
     from app.dependencies import get_tmdb_client
     from main import app
 
@@ -367,7 +367,7 @@ def test_complete_onboarding_endpoint_triggers_taste_rebuild(
     )
     assert resp.status_code == 200
 
-    # Background task should have been called for taste rebuild
-    mock_add_task.assert_called_once()
+    # Taste profile is rebuilt synchronously during onboarding
+    mock_rebuild.assert_called_once()
 
     app.dependency_overrides.pop(get_tmdb_client, None)
