@@ -1,0 +1,49 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python --version && .venv/bin/pip list 2>&1 | head -30)",
+      "WebSearch",
+      "WebFetch(domain:supabase.com)",
+      "Bash(.venv/bin/python -c \"from main import app; print\\('App loads OK'\\)\")",
+      "Bash(pre-commit run --all-files 2>&1)",
+      "Bash(find /Users/jonathanyang/Desktop/Github/blnd/blnd_backend -name *.json -o -name *.toml -o -name *.yml -o -name *.yaml)",
+      "Read(//Users/jonathanyang/Desktop/Github/blnd/blnd_ios/**)",
+      "Bash(xcodebuild -scheme blnd_ios -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build)",
+      "Bash(git fetch:*)",
+      "mcp__context7__resolve-library-id",
+      "WebFetch(domain:docs.movieofthenight.com)",
+      "WebFetch(domain:rapidapi.com)",
+      "WebFetch(domain:www.movieofthenight.com)",
+      "Bash(git checkout:*)",
+      "mcp__supabase__apply_migration",
+      "Bash(pre-commit run:*)",
+      "Bash(xcodebuild -project blnd_ios.xcodeproj -scheme blnd_ios -destination 'platform=iOS Simulator,name=iPhone 16 Pro' build)",
+      "Bash(supabase projects:*)",
+      "Bash(/Users/jonathanyang/Desktop/Github/blnd/blnd_backend/.venv/bin/python:*)",
+      "Bash(.venv/bin/python:*)",
+      "mcp__render__list_services",
+      "mcp__youtube-mcp__search_youtube",
+      "mcp__youtube-mcp__get_transcripts",
+      "Bash(supabase migration:*)",
+      "Bash(PYTHONPATH=. .venv/bin/python scripts/test_semantic_search.py)",
+      "Bash(.venv/bin/pip install:*)",
+      "Bash(supabase db:*)",
+      "Read(//Users/jonathanyang/Desktop/Github/blnd/**)",
+      "mcp__supabase__execute_sql",
+      "Bash(.venv/bin/ruff check *)",
+      "Bash(.venv/bin/ruff format *)",
+      "Bash(command -v ruff)",
+      "Bash(ruff check *)",
+      "Bash(ruff format *)",
+      "Bash(python3 *)",
+      "Bash(docker info *)",
+      "Bash(supabase status *)",
+      "Bash(sed -n '1,40p' tests/test_auth.py)",
+      "Bash(sed -n '1,55p' tests/test_auth_public_profile.py)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "supabase"
+  ]
+}
