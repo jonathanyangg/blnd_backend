@@ -9,6 +9,12 @@ from sqlalchemy.orm import Session
 
 os.environ["BLND_DISABLE_RATE_LIMITS"] = "true"
 
+# The Supabase client is built at import time in app.dependencies; tests always
+# override it via dependency_overrides, but it still needs a non-empty URL/key to
+# construct. Supply placeholders so the suite runs without a real .env (e.g. CI).
+os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
+os.environ.setdefault("SUPABASE_KEY", "test-anon-key")
+
 # Tests run against the local Supabase Postgres (supabase start). Override the
 # default to point elsewhere, but it must stay local — we refuse remote/prod.
 TEST_DATABASE_URL = os.environ.get(
