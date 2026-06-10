@@ -21,6 +21,7 @@ class RecommendedMovieResponse(BaseModel):
     tagline: str | None = None
     backdrop_path: str | None = None
     match_score: float
+    comment_count: int = 0
 
 
 class RecommendationsResponse(BaseModel):

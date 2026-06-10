@@ -207,6 +207,13 @@ def get_watchlist(
     rows = base.order_by(*_watchlist_order_by(sort)).offset(offset).limit(limit).all()
 
     results = [_watchlist_to_response(entry, movie) for entry, movie in rows]
+
+    from app.comments.services import get_comment_counts
+
+    counts = get_comment_counts([r["tmdb_id"] for r in results], db)
+    for r in results:
+        r["comment_count"] = counts.get(r["tmdb_id"], 0)
+
     return {"results": results, "total": total}
 
 

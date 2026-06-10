@@ -59,6 +59,7 @@ class WatchlistMovieResponse(BaseModel):
     added_date: date | None = None
     created_at: datetime
     match_score: float | None = None
+    comment_count: int = 0
 
 
 class WatchlistResponse(BaseModel):

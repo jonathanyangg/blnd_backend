@@ -90,8 +90,14 @@ def run_recommendation_pipeline(
     combined = main_page + explore_page
     random.shuffle(combined)
 
-    # Format results
-    return [_format_candidate(c) for c in combined]
+    # Format results + attach comment counts (batched single query)
+    from app.comments.services import get_comment_counts
+
+    formatted = [_format_candidate(c) for c in combined]
+    counts = get_comment_counts([m["tmdb_id"] for m in formatted], db)
+    for m in formatted:
+        m["comment_count"] = counts.get(m["tmdb_id"], 0)
+    return formatted
 
 
 def _run_main_algorithm(ctx: RecommendationContext, db: Session) -> list[dict]:

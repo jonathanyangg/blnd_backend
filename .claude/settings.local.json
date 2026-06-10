@@ -39,7 +39,8 @@
       "Bash(docker info *)",
       "Bash(supabase status *)",
       "Bash(sed -n '1,40p' tests/test_auth.py)",
-      "Bash(sed -n '1,55p' tests/test_auth_public_profile.py)"
+      "Bash(sed -n '1,55p' tests/test_auth_public_profile.py)",
+      "Bash(ipconfig getifaddr *)"
     ]
   },
   "enableAllProjectMcpServers": true,

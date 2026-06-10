@@ -604,3 +604,16 @@ def get_comment_count(tmdb_id: int, db: Session) -> int:
         .scalar()
         or 0
     )
+
+
+def get_comment_counts(tmdb_ids: list[int], db: Session) -> dict[int, int]:
+    """Return {tmdb_id: count} of non-deleted comments for the given movies."""
+    if not tmdb_ids:
+        return {}
+    rows = (
+        db.query(MovieComment.tmdb_id, func.count(MovieComment.id))
+        .filter(MovieComment.tmdb_id.in_(tmdb_ids), MovieComment.deleted == False)  # noqa: E712
+        .group_by(MovieComment.tmdb_id)
+        .all()
+    )
+    return {tmdb_id: count for tmdb_id, count in rows}
