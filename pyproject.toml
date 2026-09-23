@@ -1,3 +1,40 @@
+[project]
+name = "blnd-backend"
+version = "0.1.0"
+description = "Backend API for blnd"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "aioapns>=4.0",
+    "fastapi>=0.135.1",
+    "httpx>=0.28.1",
+    "limits>=5.8.0",
+    "numpy>=2.4.2",
+    "openai>=2.24.0",
+    "pgvector>=0.4.2",
+    "posthog>=3.24.0",
+    "psycopg2-binary>=2.9.11",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.13.1",
+    "pyjwt[crypto]>=2.11.0",
+    "python-json-logger>=4.0.0",
+    "python-multipart>=0.0.22",
+    "slowapi>=0.1.9",
+    "sqlalchemy>=2.0.47",
+    "starlette>=0.52.1",
+    "supabase>=2.28.0",
+    "supabase-auth>=2.28.0",
+    "uvicorn[standard]>=0.41.0",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.5.1",
+    "pyright>=1.1.408",
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.25.3",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

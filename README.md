@@ -8,12 +8,8 @@ FastAPI / SQLAlchemy / Supabase (Postgres + pgvector + Auth) / TMDB API / OpenAI
 ## Setup
 
 ```bash
-# Create and activate virtual environment
-python -m venv .venv
-source .venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
+# Install Python and all locked dependencies
+uv sync --all-groups
 
 # Copy env template and fill in your keys
 cp .env.example .env
@@ -22,11 +18,16 @@ cp .env.example .env
 # See sql/pgvector_setup.sql
 
 # Run migrations
-alembic upgrade head
+supabase db reset --local
 
 # Start dev server
-uvicorn main:app --reload
+uv run uvicorn main:app --reload
 ```
+
+Run the test suite with `make test` or `uv run pytest`.
+
+For Render, use `uv sync --locked --no-dev` as the build command and
+`uv run --locked --no-dev uvicorn main:app --host 0.0.0.0 --port $PORT` as the start command.
 
 ## Project Structure
 ```
