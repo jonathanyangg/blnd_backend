@@ -65,6 +65,7 @@ def _build_user_context(
         top_cast=top_cast,
         genre_watch_counts=genre_counts,
         total_watches=total_watches,
+        cf_user_ids=[user_id],
     )
 
 

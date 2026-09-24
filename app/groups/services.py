@@ -448,6 +448,7 @@ def get_group_recommendations(
         top_cast=all_cast,
         genre_watch_counts=combined_counts,
         total_watches=combined_total,
+        cf_user_ids=[str(mid) for mid in member_ids],
     )
 
     results = run_recommendation_pipeline(ctx, db, limit, offset)
