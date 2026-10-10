@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.groups.models import Group, GroupMember
+from app.tracking.models import Watchlist
 from tests.conftest import TEST_USER_ID, TEST_USER_ID_2
 from tests.factories import make_group, make_profile
 
@@ -113,6 +114,22 @@ def test_leave_group_transfers_ownership(client: TestClient, db: Session) -> Non
     updated_group = db.query(Group).filter(Group.id == group.id).first()
     assert updated_group is not None
     assert str(updated_group.created_by) == TEST_USER_ID_2
+
+
+def test_last_member_leave_deletes_group_and_watchlist(
+    client: TestClient, db: Session
+) -> None:
+    make_profile(db, user_id=TEST_USER_ID, username="user1")
+    group, _ = make_group(db, name="Solo", created_by=TEST_USER_ID)
+    watchlist_id = group.watchlist_id
+    assert watchlist_id is not None
+
+    resp = client.post(f"/groups/{group.id}/leave")
+    assert resp.status_code == 204
+
+    db.expire_all()
+    assert db.query(Group).filter(Group.id == group.id).first() is None
+    assert db.query(Watchlist).filter(Watchlist.id == watchlist_id).first() is None
 
 
 # --- Delete group ---

@@ -582,7 +582,9 @@ def _maybe_cleanup_group(group: Group, db: Session) -> None:
         .scalar()
     )
     if (count or 0) == 0:
-        if group.watchlist_id:
-            db.query(Watchlist).filter(Watchlist.id == group.watchlist_id).delete()
+        watchlist_id = group.watchlist_id
         db.delete(group)
+        db.flush()
+        if watchlist_id:
+            db.query(Watchlist).filter(Watchlist.id == watchlist_id).delete()
         db.commit()
