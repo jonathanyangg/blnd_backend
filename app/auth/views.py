@@ -90,6 +90,27 @@ def login(request: Request, body: schemas.LoginRequest):
 def refresh(request: Request, body: schemas.RefreshRequest):
     try:
         return services.refresh_session(body.refresh_token)
+    except AuthApiError as e:
+        # Supabase rejected the call: 4xx = bad/expired refresh token (the
+        # session is truly dead), 5xx = Supabase itself is having issues
+        # (transient - the client must not treat it as a logout).
+        if (getattr(e, "status", None) or 400) >= 500:
+            raise HTTPException(
+                status_code=503, detail="Auth service unavailable, try again"
+            )
+        raise HTTPException(status_code=401, detail="Session refresh failed")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code >= 500:
+            raise HTTPException(
+                status_code=503, detail="Auth service unavailable, try again"
+            )
+        raise HTTPException(status_code=401, detail="Session refresh failed")
+    except httpx.RequestError:
+        # Network-level failure reaching Supabase (cold start, timeout, DNS).
+        # Transient: report 503 so clients keep the session and retry.
+        raise HTTPException(
+            status_code=503, detail="Auth service unavailable, try again"
+        )
     except Exception:
         raise HTTPException(status_code=401, detail="Session refresh failed")
 
