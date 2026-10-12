@@ -105,6 +105,7 @@ def test_tv_search_uses_tmdb_tv_search(
     assert result["results"][0]["tmdb_id"] == 1399
     assert result["results"][0]["title"] == "Game of Thrones"
     assert result["results"][0]["year"] == 2011
+    assert result["results"][0]["media_type"] == "tv"
 
 
 def test_track_tv_show_does_not_collide_with_movie_id(
