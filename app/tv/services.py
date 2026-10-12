@@ -15,6 +15,7 @@ def _parse_tv_result(item: dict) -> dict:
     return {
         "tmdb_id": item["id"],
         "title": item["name"],
+        "media_type": "tv",
         "year": year,
         "overview": item.get("overview"),
         "poster_path": item.get("poster_path"),

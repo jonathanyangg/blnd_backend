@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 class TVShowResponse(BaseModel):
     tmdb_id: int
     title: str
+    media_type: str = "tv"
     year: int | None = None
     overview: str | None = None
     poster_path: str | None = None
