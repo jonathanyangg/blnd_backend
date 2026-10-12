@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     posthog_api_key: str = ""
     posthog_host: str = ""
+    cf_enabled: bool = True
+    cf_blend_weight: float = 1.0
 
     model_config = {"env_file": ".env"}
 

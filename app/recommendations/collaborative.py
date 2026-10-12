@@ -14,12 +14,22 @@ the caller can fall back to embedding cosine similarity.
 import numpy as np
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.tracking.models import WatchedMovie
 
 MIN_PROFILE_RATINGS = 5  # below this, the target profile has too little signal
 MIN_CO_RATERS = 3  # a candidate needs this many co-raters on some rated movie
 SHRINKAGE = 10.0  # co-rater count at which a similarity keeps half its value
 MAX_RATING = 5.0
+MAX_NEIGHBOURS = 1000
+
+
+def blend_cf_similarity(cf_score: float, embedding_score: float | None) -> float:
+    """Blend CF with the embedding score, preserving CF by default."""
+    weight = min(max(settings.cf_blend_weight, 0.0), 1.0)
+    if embedding_score is None:
+        return cf_score * weight
+    return weight * cf_score + (1.0 - weight) * embedding_score
 
 
 def compute_cf_scores(
@@ -34,6 +44,8 @@ def compute_cf_scores(
     co-rating support get a score.
     """
     if not user_ids or not candidate_tmdb_ids:
+        return {}
+    if not settings.cf_enabled:
         return {}
 
     profile_ratings = _profile_ratings(user_ids, db)
@@ -124,6 +136,8 @@ def _centered_rating_matrix(
             WatchedMovie.user_id.notin_(user_ids),
         )
         .distinct()
+        .order_by(WatchedMovie.user_id)
+        .limit(MAX_NEIGHBOURS)
         .subquery()
     )
     rows = (

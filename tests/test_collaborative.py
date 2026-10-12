@@ -4,6 +4,8 @@ import numpy as np
 import pytest
 from sqlalchemy.orm import Session
 
+from app.config import settings
+from app.recommendations import collaborative
 from app.recommendations.collaborative import (
     MIN_CO_RATERS,
     MIN_PROFILE_RATINGS,
@@ -108,6 +110,32 @@ def test_predicts_from_neighbour_ratings(db: Session) -> None:
     assert set(scores) == set(CANDIDATES)
     assert scores[LIKED_CANDIDATE] == 1.0
     assert scores[DISLIKED_CANDIDATE] == 0.2
+
+
+def test_cf_kill_switch_returns_no_scores(db: Session, monkeypatch) -> None:
+    """CF_ENABLED=false makes supported candidates fall back to embeddings."""
+    _make_movies(db, LIKED + DISLIKED + CANDIDATES)
+    user_id = _make_user(db, "user")
+    _rate(db, user_id, _target_ratings())
+    _make_neighbours(db, MIN_CO_RATERS + 1)
+    monkeypatch.setattr(settings, "cf_enabled", False)
+
+    scores = compute_cf_scores([user_id], CANDIDATES, db)
+
+    assert scores == {}
+
+
+def test_neighbour_fan_out_cap(db: Session, monkeypatch) -> None:
+    """Only the capped number of neighbours can contribute CF evidence."""
+    _make_movies(db, LIKED + DISLIKED + CANDIDATES)
+    user_id = _make_user(db, "user")
+    _rate(db, user_id, _target_ratings())
+    _make_neighbours(db, MIN_CO_RATERS + 1)
+    monkeypatch.setattr(collaborative, "MAX_NEIGHBOURS", 1)
+
+    scores = compute_cf_scores([user_id], CANDIDATES, db)
+
+    assert scores == {}
 
 
 def test_scores_stay_in_unit_range(db: Session) -> None:

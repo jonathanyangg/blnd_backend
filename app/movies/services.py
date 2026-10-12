@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.auth.models import Profile
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
+from app.recommendations.collaborative import blend_cf_similarity
 from app.recommendations.collaborative import compute_cf_scores
 from app.recommendations.ranking import (
     W_CAST,
@@ -175,6 +176,11 @@ def compute_match_scores(
                 similarity = _cosine_sim(adjusted_taste.tolist(), movie_emb)
             else:
                 similarity = _cosine_sim(taste_emb.tolist(), movie_emb)
+        elif similarity is not None:
+            embedding_similarity = (
+                _cosine_sim(taste_emb.tolist(), movie_emb) if movie_emb else None
+            )
+            similarity = blend_cf_similarity(similarity, embedding_similarity)
 
         if similarity is not None:
             neg_sim = (
