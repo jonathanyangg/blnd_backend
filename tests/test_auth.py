@@ -178,7 +178,6 @@ def test_user_search_no_results(client: TestClient, db: Session) -> None:
     assert resp.json()["results"] == []
 
 
-
 # --- POST /auth/refresh error mapping ---
 
 
@@ -202,7 +201,7 @@ def test_refresh_invalid_token_returns_401(
     from supabase_auth.errors import AuthApiError
 
     def _raise(refresh_token: str) -> None:
-        raise AuthApiError("Invalid Refresh Token", 400)
+        raise AuthApiError("Invalid Refresh Token", 400, None)
 
     monkeypatch.setattr("app.auth.services.refresh_session", _raise)
     resp = client.post("/auth/refresh", json={"refresh_token": "bad"})
@@ -226,7 +225,7 @@ def test_refresh_supabase_5xx_returns_503(
     from supabase_auth.errors import AuthApiError
 
     def _raise(refresh_token: str) -> None:
-        raise AuthApiError("Internal Server Error", 500)
+        raise AuthApiError("Internal Server Error", 500, None)
 
     monkeypatch.setattr("app.auth.services.refresh_session", _raise)
     resp = client.post("/auth/refresh", json={"refresh_token": "any"})
