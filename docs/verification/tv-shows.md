@@ -14,6 +14,7 @@ existing `tmdb_id`-based movie pipeline.
 | TV support is disabled by default | `test_tv_support_defaults_off` | PROVEN locally for the configured settings object |
 | TV search is unavailable while disabled | `test_tv_search_is_disabled_by_default` | PROVEN for the `/tv/search` endpoint |
 | Enabled TV search calls mocked TMDB `/search/tv` | `test_tv_search_uses_tmdb_tv_search` | PROVEN with mocked TMDB |
+| TV search results are marked `media_type: tv` for iOS decoding | Same focused test asserts the field | PROVEN with mocked TMDB |
 | A same-numeric TV and movie ID remain distinct when tracking TV | `test_track_tv_show_does_not_collide_with_movie_id` | PROVEN with mocked TMDB and the local schema |
 | Local migration builds the isolated TV schema | `make test-reset ARGS="tests/test_tv_shows.py -q"` applied `20261012000000_tv_shows.sql`, then 4 focused tests passed | PROVEN locally |
 | Production migration safety and rollback | Not tested in this PR | NOT_PROVEN |
@@ -45,6 +46,19 @@ exit 0, `4 passed in 0.56s`.
 
 The OpenAI value is a test-only local string; no production credential or
 external OpenAI request was used.
+
+### Follow-up media-type red/green
+
+After adding `media_type` to the Swift contract, the backend assertion was
+committed first. `OPENAI_API_KEY=test-only-local
+make test-reset ARGS="tests/test_tv_shows.py -q"` failed once with
+`KeyError: 'media_type'`; implementation then produced exit 0, `4 passed in
+0.44s`. Broader checks remained green:
+
+- `uv run ruff check .` — exit 0.
+- `uv run pyright` — exit 0, 0 errors.
+- `OPENAI_API_KEY=test-only-local make test ARGS=-q` — exit 0,
+  `150 passed in 1.00s`.
 
 ## Limitations
 
