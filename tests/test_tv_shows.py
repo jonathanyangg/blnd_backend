@@ -1,6 +1,5 @@
 """Feature-flagged, show-level TV support tests."""
 
-import httpx
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -8,7 +7,9 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.dependencies import get_current_user, get_db, get_tmdb_client
 from app.tracking.models import WatchedMovie
+from main import app
 from tests.conftest import TEST_USER_ID
+from tests.factories import make_profile
 
 
 class _FakeTVResponse:
@@ -93,7 +94,7 @@ def test_tv_search_uses_tmdb_tv_search(
 ) -> None:
     monkeypatch.setattr(settings, "tv_support_enabled", True)
     fake = _FakeTVTMDBClient()
-    client_with_tmdb.app.dependency_overrides[get_tmdb_client] = lambda: fake
+    app.dependency_overrides[get_tmdb_client] = lambda: fake
 
     response = client_with_tmdb.get("/tv/search", params={"query": "Thrones"})
 
@@ -112,6 +113,9 @@ def test_track_tv_show_does_not_collide_with_movie_id(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(settings, "tv_support_enabled", True)
+    fake = _FakeTVTMDBClient()
+    app.dependency_overrides[get_tmdb_client] = lambda: fake
+    make_profile(db, user_id=TEST_USER_ID)
     db.execute(
         text(
             "INSERT INTO movies (tmdb_id, title) VALUES (1399, 'Movie 1399') "
