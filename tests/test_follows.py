@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.dependencies import get_current_user
 from app.friends.models import Follow, Friendship
 from main import app
-from tests.conftest import CALLER_ID, TARGET_ID
+from tests.conftest import CALLER_ID, TARGET_ID, assert_error
 from tests.factories import make_follow, make_profile
 
 USER_A = "33333333-3333-3333-3333-333333333333"
@@ -59,19 +59,18 @@ def test_follow_and_unfollow_are_idempotent(
 def test_self_follow_rejected(client: TestClient, db: Session) -> None:
     make_profile(db, user_id=CALLER_ID, username="caller")
     resp = client.post(f"/auth/users/{CALLER_ID}/follow")
-    assert resp.status_code == 400
-    assert resp.json()["detail"] == "Cannot follow yourself"
+    assert_error(resp, status=400, code="BAD_REQUEST", message="Cannot follow yourself")
     # UUID letter case is still the same account. The check constraint would
     # reject the row; the API should 400 before that.
     resp = client.post(f"/auth/users/{CALLER_ID.upper()}/follow")
-    assert resp.status_code == 400
+    assert_error(resp, status=400, code="BAD_REQUEST", message="Cannot follow yourself")
     assert db.query(Follow).filter(Follow.follower_id == CALLER_ID).count() == 0
 
 
 def test_follow_missing_user(client: TestClient, db: Session) -> None:
     make_profile(db, user_id=CALLER_ID, username="caller")
     resp = client.post(f"/auth/users/{TARGET_ID}/follow")
-    assert resp.status_code == 404
+    assert_error(resp, status=404, code="NOT_FOUND", message="User not found")
 
 
 def test_counts_on_profile_and_me(client: TestClient, db: Session, monkeypatch) -> None:
@@ -134,10 +133,20 @@ def test_followers_and_following_pagination_and_flags(
     assert len(ids) == len(set(ids)) == 3
 
     # No friendship required: lists are public. Profiles have no private flag.
-    assert db.query(Friendship).count() == 0
+    # Seed data may contain other friendships; none of these users are in one.
+    involved = [CALLER_ID, TARGET_ID, USER_A, USER_B, USER_C]
+    assert (
+        db.query(Friendship)
+        .filter(
+            Friendship.requester_id.in_(involved)
+            | Friendship.addressee_id.in_(involved)
+        )
+        .count()
+        == 0
+    )
 
     bad = client.get(f"/auth/users/{TARGET_ID}/followers?cursor=nope")
-    assert bad.status_code == 400
+    assert_error(bad, status=400, code="BAD_REQUEST", message="Invalid cursor")
 
 
 def test_following_list(client: TestClient, db: Session) -> None:
@@ -184,14 +193,15 @@ def test_blocks_hide_follows(client: TestClient, db: Session, monkeypatch) -> No
 
     assert client.post(f"/friends/blocks/{TARGET_ID}").status_code == 204
     assert db.query(Follow).filter(Follow.follower_id == CALLER_ID).count() == 0
-    assert client.post(f"/auth/users/{TARGET_ID}/follow").status_code == 404
+    blocked = client.post(f"/auth/users/{TARGET_ID}/follow")
+    assert_error(blocked, status=404, code="NOT_FOUND", message="User not found")
 
     # Owner blocked the viewer: their lists are hidden. user_a still follows them.
     _as(TARGET_ID)
     assert client.post(f"/friends/blocks/{CALLER_ID}").status_code == 204
     _as(CALLER_ID)
     hidden = client.get(f"/auth/users/{TARGET_ID}/followers")
-    assert hidden.status_code == 404
+    assert_error(hidden, status=404, code="NOT_FOUND", message="User not found")
 
     # A third party still sees the remaining follower. The blocked caller is omitted.
     _as(USER_A)
@@ -209,7 +219,12 @@ def test_remove_follower_is_owner_only_and_idempotent(
 
     _as(TARGET_ID)
     denied = client.delete(f"/auth/users/{CALLER_ID}/followers/{TARGET_ID}")
-    assert denied.status_code == 403
+    assert_error(
+        denied,
+        status=403,
+        code="FORBIDDEN",
+        message="You can only remove your own followers",
+    )
     rows = db.query(Follow).filter(Follow.followee_id == CALLER_ID)
     assert rows.count() == 1
 

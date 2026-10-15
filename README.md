@@ -20,6 +20,9 @@ cp .env.example .env
 # Run migrations
 supabase db reset --local
 
+# Or Postgres only, on the same port the tests use (127.0.0.1:54322):
+docker compose up -d db
+
 # Start dev server
 uv run uvicorn main:app --reload
 ```

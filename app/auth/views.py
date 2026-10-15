@@ -12,6 +12,7 @@ from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.database import SessionLocal
 from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
 from app.friends.services import follow_counts_by_user
+from app.subscriptions.services import is_premium
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +255,7 @@ def me(
         subscription_expires_at=profile.subscription_expires_at,
         followers_count=followers_count,
         following_count=following_count,
+        is_premium=is_premium(profile),
     )
 
 
@@ -316,6 +318,7 @@ def update_profile(
         subscription_expires_at=profile.subscription_expires_at,
         followers_count=followers_count,
         following_count=following_count,
+        is_premium=is_premium(profile),
     )
 
 

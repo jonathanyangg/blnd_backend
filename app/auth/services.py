@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
 from app.dependencies import supabase, supabase_admin
+from app.subscriptions.services import is_premium
 from app.friends.models import Friendship
 from app.groups.models import Group, GroupMember
 from app.movies.models import Movie
@@ -280,6 +281,8 @@ def search_users(query: str, user_id: str, db: Session, limit: int = 10) -> list
             else None,
             "followers_count": counts.get(str(p.id), (0, 0))[0],
             "following_count": counts.get(str(p.id), (0, 0))[1],
+            "subscription_tier": p.subscription_tier,
+            "is_premium": is_premium(p),
         }
         for p in profiles
     ]

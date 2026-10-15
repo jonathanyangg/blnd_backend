@@ -95,6 +95,7 @@ class UserResponse(BaseModel):
     subscription_expires_at: datetime | None = None
     followers_count: int = 0
     following_count: int = 0
+    is_premium: bool = False
 
 
 class UserSearchResponse(BaseModel):

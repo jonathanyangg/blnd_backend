@@ -1,6 +1,7 @@
 """Test data factory helpers."""
 
 import uuid
+from datetime import date, datetime
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -33,6 +34,9 @@ def make_profile(
     display_name: str | None = None,
     watchlist_id: int | None = None,
     favorite_genres: list[str] | None = None,
+    subscription_tier: str = "free",
+    subscription_expires_at: datetime | None = None,
+    subscription_source: str | None = None,
 ) -> Profile:
     uid = uuid.UUID(user_id) if user_id else uuid.uuid4()
     _ensure_auth_user(db, uid)
@@ -42,6 +46,9 @@ def make_profile(
         display_name=display_name,
         watchlist_id=watchlist_id,
         favorite_genres=favorite_genres,
+        subscription_tier=subscription_tier,
+        subscription_expires_at=subscription_expires_at,
+        subscription_source=subscription_source,
     )
     db.add(profile)
     db.commit()
@@ -60,6 +67,8 @@ def make_movie(
     vote_average: float | None = 8.4,
     director: str | None = "David Fincher",
     cast: list[dict] | None = None,
+    runtime: int | None = None,
+    vote_count: int | None = None,
 ) -> Movie:
     movie = Movie(
         tmdb_id=tmdb_id,
@@ -71,6 +80,8 @@ def make_movie(
         vote_average=vote_average,
         director=director,
         cast=cast or [{"name": "Brad Pitt"}],
+        runtime=runtime,
+        vote_count=vote_count,
     )
     db.add(movie)
     db.commit()
@@ -85,6 +96,9 @@ def make_watched(
     rating: float | None = None,
     review: str | None = None,
     source: str = "manual",
+    watched_date: date | None = None,
+    liked: bool = False,
+    created_at: datetime | None = None,
 ) -> WatchedMovie:
     entry = WatchedMovie(
         user_id=user_id,
@@ -92,6 +106,9 @@ def make_watched(
         rating=rating,
         review=review,
         source=source,
+        watched_date=watched_date,
+        liked=liked,
+        **({"created_at": created_at} if created_at is not None else {}),
     )
     db.add(entry)
     db.commit()
