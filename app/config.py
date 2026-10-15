@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     posthog_api_key: str = ""
     posthog_host: str = ""
     tv_support_enabled: bool = False
+    contact_hash_key: str = ""
 
     model_config = {"env_file": ".env"}
 
