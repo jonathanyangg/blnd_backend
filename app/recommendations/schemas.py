@@ -22,6 +22,7 @@ class RecommendedMovieResponse(BaseModel):
     backdrop_path: str | None = None
     match_score: float
     comment_count: int = 0
+    media_type: str = "movie"
 
 
 class RecommendationsResponse(BaseModel):
@@ -56,6 +57,7 @@ class SemanticSearchResultItem(BaseModel):
     backdrop_path: str | None = None
     match_score: float
     match_reasoning: str = ""
+    media_type: str = "movie"
 
 
 class SemanticSearchResponse(BaseModel):

@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.config import settings
+from app.content_filters import ContentFilters, get_content_filters, year_in_range
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.dependencies import get_current_user, get_db, get_tmdb_client
 from app.tv import schemas, services
@@ -24,9 +25,21 @@ async def search_tv_shows(
     page: int = Query(default=1, ge=1, le=500),
     _user_id: str = Depends(get_current_user),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+    filters: ContentFilters = Depends(get_content_filters),
 ) -> dict:
+    """TV search. A missing media_type still returns shows. media_type=movie is empty."""
     _require_tv_support()
-    return await services.search_tv_shows(query, page, tmdb_client)
+    if filters.media_type == "movie":
+        return {"results": [], "total_results": 0}
+    data = await services.search_tv_shows(query, page, tmdb_client)
+    data["results"] = [
+        row
+        for row in data["results"]
+        if year_in_range(row.get("year"), filters.year_min, filters.year_max)
+    ]
+    if filters.year_min is not None or filters.year_max is not None:
+        data["total_results"] = len(data["results"])
+    return data
 
 
 @router.post(

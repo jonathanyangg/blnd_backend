@@ -21,7 +21,7 @@ from app.recommendations.pipeline import (
     RecommendationContext,
     run_recommendation_pipeline,
 )
-from app.content_filters import ContentFilters, get_content_filters
+from app.content_filters import ContentFilters, get_content_filters, year_in_range
 from app.tracking.models import InterestedMovie, WatchedMovie, WatchlistMovie
 
 router = APIRouter()
@@ -274,8 +274,15 @@ def semantic_discover(
     body: schemas.SemanticSearchRequest,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
+    filters: ContentFilters = Depends(get_content_filters),
 ):
-    """AI-powered semantic movie search. Free: 2/day, Premium: 50/day."""
+    """AI-powered semantic movie search. Free: 2/day, Premium: 50/day.
+
+    The catalog is movies. media_type=tv returns no rows. Year bounds drop
+    titles outside the window. Omitting the params leaves the list unchanged.
+    """
+    if filters.media_type == "tv":
+        return {"query": body.query, "results": []}
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
@@ -289,7 +296,7 @@ def semantic_discover(
 
     from app.recommendations.semantic_search import run_semantic_discover
 
-    return run_semantic_discover(
+    result = run_semantic_discover(
         query=body.query,
         user_id=user_id,
         profile=profile,
@@ -297,3 +304,12 @@ def semantic_discover(
         exclude_ids=body.exclude,
         limit=body.limit,
     )
+    if filters.year_min is not None or filters.year_max is not None:
+        result["results"] = [
+            row
+            for row in result["results"]
+            if year_in_range(row.get("year"), filters.year_min, filters.year_max)
+        ]
+    for row in result["results"]:
+        row["media_type"] = "movie"
+    return result

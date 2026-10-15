@@ -445,11 +445,20 @@ def get_public_watched(
     db: Session,
     q: str | None = None,
     sort: str | None = None,
+    year_min: int | None = None,
+    year_max: int | None = None,
+    media_type: str | None = None,
 ) -> dict:
-    """Get paginated watched movies for another user. Requires friendship."""
+    """Get paginated watched movies for another user. Requires friendship.
+
+    These rows are movies. media_type=tv returns an empty page. Year bounds
+    are inclusive. Omitting them leaves the list unchanged.
+    """
     from app.tracking.services import _watched_order_by
 
     assert_are_friends(caller_id, target_id, db)
+    if media_type == "tv":
+        return {"results": [], "total": 0}
 
     base = (
         db.query(WatchedMovie, Movie)
@@ -458,6 +467,10 @@ def get_public_watched(
     )
     if q:
         base = base.filter(Movie.title.ilike(f"%{q}%"))
+    if year_min is not None:
+        base = base.filter(Movie.year >= year_min)
+    if year_max is not None:
+        base = base.filter(Movie.year <= year_max)
 
     total = base.with_entities(func.count(WatchedMovie.id)).scalar() or 0
 
@@ -469,6 +482,8 @@ def get_public_watched(
             "title": movie.title,
             "poster_path": movie.poster_path,
             "rating": entry.rating,
+            "year": movie.year,
+            "media_type": "movie",
         }
         for entry, movie in rows
     ]

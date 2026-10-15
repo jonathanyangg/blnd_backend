@@ -9,6 +9,7 @@ from supabase_auth.errors import AuthApiError, AuthRetryableError
 from app.analytics import Event, track
 from app.auth import schemas, services
 from app.auth.models import Profile
+from app.content_filters import ContentFilters, get_content_filters
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.subscriptions.services import is_premium as profile_is_premium
 from app.database import SessionLocal
@@ -337,10 +338,22 @@ def get_user_watched(
     offset: int = Query(default=0, ge=0),
     q: str | None = Query(default=None, max_length=100),
     sort: str | None = Query(default=None),
+    filters: ContentFilters = Depends(get_content_filters),
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return services.get_public_watched(user_id, id, limit, offset, db, q=q, sort=sort)
+    return services.get_public_watched(
+        user_id,
+        id,
+        limit,
+        offset,
+        db,
+        q=q,
+        sort=sort,
+        year_min=filters.year_min,
+        year_max=filters.year_max,
+        media_type=filters.media_type,
+    )
 
 
 @router.get("/users/{id}/friends", response_model=schemas.PublicFriendsListResponse)
