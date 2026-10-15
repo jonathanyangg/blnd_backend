@@ -1,0 +1,25 @@
+# Local Postgres for tests and GET /recommendations/now.
+# Listens on 127.0.0.1:54322, the same URL tests/conftest.py uses.
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "54322:5432"
+    volumes:
+      - blnd_pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/apply.sh:/docker-entrypoint-initdb.d/00-apply.sh:ro
+      - ./docker/postgres/stubs.sql:/stubs/stubs.sql:ro
+      - ./docker/postgres/seed.sql:/stubs/seed.sql:ro
+      - ./supabase/migrations:/migrations:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 40
+
+volumes:
+  blnd_pgdata:

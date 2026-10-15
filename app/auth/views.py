@@ -13,6 +13,7 @@ from app.timeline import schemas as timeline_schemas
 from app.timeline import services as timeline_services
 from app.database import SessionLocal
 from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
+from app.subscriptions.services import is_premium
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +251,7 @@ def me(
         phone_number=profile.phone_number,
         subscription_tier=profile.subscription_tier,
         subscription_expires_at=profile.subscription_expires_at,
+        is_premium=is_premium(profile),
     )
 
 
@@ -307,6 +309,7 @@ def update_profile(
         phone_number=profile.phone_number,
         subscription_tier=profile.subscription_tier,
         subscription_expires_at=profile.subscription_expires_at,
+        is_premium=is_premium(profile),
     )
 
 

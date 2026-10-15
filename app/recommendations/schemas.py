@@ -29,6 +29,11 @@ class RecommendationsResponse(BaseModel):
     taste_bio: str | None = None
 
 
+class NowPickResponse(BaseModel):
+    movie: RecommendedMovieResponse
+    reason: str
+
+
 class SemanticSearchRequest(BaseModel):
     query: str = Field(min_length=3, max_length=200)
     limit: int = Field(default=30, ge=10, le=50)
@@ -56,6 +61,22 @@ class SemanticSearchResultItem(BaseModel):
 class SemanticSearchResponse(BaseModel):
     query: str
     results: list[SemanticSearchResultItem]
+
+
+class InterestedMovieResponse(BaseModel):
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    poster_path: str | None = None
+    interested_at: str
+
+
+class NotForMeMovieResponse(BaseModel):
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    poster_path: str | None = None
+    not_for_me_at: str
 
 
 class HiddenMovieResponse(BaseModel):
