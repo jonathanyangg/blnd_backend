@@ -1,3 +1,4 @@
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
@@ -12,9 +13,10 @@ from app.core.rate_limit import (
     limiter,
 )
 from app.database import SessionLocal
-from app.dependencies import get_current_user, get_db, openai_client
+from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
 from app.subscriptions.services import is_premium
 from app.movies.models import Movie
+from app.movies.services import get_movie_details
 from app.recommendations import schemas, services
 from app.recommendations.services import increment_action_counter
 from app.recommendations.pipeline import (
@@ -47,7 +49,10 @@ def _build_user_context(
         if profile.watchlist_id
         else []
     )
-    exclude_ids = list(set(watched_ids + hidden_ids + watchlist_ids))
+    # Swipes leave the personal deck (the card was acted on). They are not
+    # hides: hidden_ids is still only the hard dislike list.
+    swiped_ids = services.get_swiped_movie_ids(user_id, db)
+    exclude_ids = list(set(watched_ids + hidden_ids + watchlist_ids + swiped_ids))
 
     user_genres, top_directors, top_cast = services.get_user_signal_context(
         user_id, db, profile=profile
@@ -132,6 +137,102 @@ def refresh_recommendations(
     ctx = _build_user_context(user_id, profile, db)
     results = run_recommendation_pipeline(ctx, db, limit, 0)
     return {"results": results, "taste_bio": profile.taste_bio}
+
+
+def _signal_response(tmdb_id: int, movie: Movie | None, at: str, at_key: str) -> dict:
+    """Same shape as hide, with the signal's own timestamp field."""
+    return {
+        "tmdb_id": tmdb_id,
+        "title": movie.title if movie else "Unknown",
+        "year": movie.year if movie else None,
+        "poster_path": movie.poster_path if movie else None,
+        at_key: at,
+    }
+
+
+def _schedule_taste_rebuild(
+    background_tasks: BackgroundTasks, user_id: str, db: Session
+) -> None:
+    """Debounced taste rebuild, same trigger hide uses."""
+    if not increment_action_counter(user_id, db):
+        return
+
+    def _rebuild() -> None:
+        bg_db = SessionLocal()
+        try:
+            services.rebuild_taste_profile(user_id, bg_db, openai_client)
+        except Exception:
+            bg_db.rollback()
+            raise
+        finally:
+            bg_db.close()
+
+    background_tasks.add_task(_rebuild)
+
+
+# --- Swipe signals (not hides, not watchlist) ---
+
+
+@router.post("/{tmdb_id}/interested", response_model=schemas.InterestedMovieResponse)
+@limiter.limit(LIMIT_DEFAULT)
+async def mark_interested(
+    request: Request,
+    tmdb_id: int,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+):
+    # movie_interactions.tmdb_id references movies, so cache it first.
+    movie = await get_movie_details(tmdb_id, db, tmdb_client)
+    row = services.record_interaction(user_id, tmdb_id, "interested", db)
+    _schedule_taste_rebuild(background_tasks, user_id, db)
+    return _signal_response(tmdb_id, movie, row.created_at.isoformat(), "interested_at")
+
+
+@router.delete("/{tmdb_id}/interested", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(LIMIT_DEFAULT)
+def unmark_interested(
+    request: Request,
+    tmdb_id: int,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not services.delete_interaction(user_id, tmdb_id, "interested", db):
+        raise HTTPException(status_code=404, detail="Movie not marked interested")
+    _schedule_taste_rebuild(background_tasks, user_id, db)
+
+
+@router.post("/{tmdb_id}/not-for-me", response_model=schemas.NotForMeMovieResponse)
+@limiter.limit(LIMIT_DEFAULT)
+async def mark_not_for_me(
+    request: Request,
+    tmdb_id: int,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+):
+    # movie_interactions.tmdb_id references movies, so cache it first.
+    movie = await get_movie_details(tmdb_id, db, tmdb_client)
+    row = services.record_interaction(user_id, tmdb_id, "not_for_me", db)
+    _schedule_taste_rebuild(background_tasks, user_id, db)
+    return _signal_response(tmdb_id, movie, row.created_at.isoformat(), "not_for_me_at")
+
+
+@router.delete("/{tmdb_id}/not-for-me", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(LIMIT_DEFAULT)
+def unmark_not_for_me(
+    request: Request,
+    tmdb_id: int,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not services.delete_interaction(user_id, tmdb_id, "not_for_me", db):
+        raise HTTPException(status_code=404, detail="Movie not marked not for me")
+    _schedule_taste_rebuild(background_tasks, user_id, db)
 
 
 # --- Hidden Movies ---
