@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class CreateGroupRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=250)
+    name: str | None = Field(default=None, min_length=1, max_length=250)
 
 
 class UpdateGroupRequest(BaseModel):
@@ -24,7 +24,8 @@ class GroupMemberResponse(BaseModel):
 
 class GroupResponse(BaseModel):
     id: int
-    name: str
+    name: str | None
+    display_name: str
     created_by: str
     member_count: int
     member_avatars: list[str | None] = []
@@ -33,7 +34,8 @@ class GroupResponse(BaseModel):
 
 class GroupDetailResponse(BaseModel):
     id: int
-    name: str
+    name: str | None
+    display_name: str
     created_by: str
     members: list[GroupMemberResponse]
     created_at: datetime
