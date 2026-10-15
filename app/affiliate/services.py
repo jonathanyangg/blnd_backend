@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import httpx
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.affiliate.models import AffiliateClick, WatchProviderCache
@@ -132,16 +133,31 @@ async def _load_results(
     if cached:
         cached.results = results
         cached.fetched_at = now
-    else:
-        db.add(
-            WatchProviderCache(
-                media_type=media_type,
-                tmdb_id=tmdb_id,
-                results=results,
-                fetched_at=now,
-            )
+        db.commit()
+        return results
+
+    db.add(
+        WatchProviderCache(
+            media_type=media_type,
+            tmdb_id=tmdb_id,
+            results=results,
+            fetched_at=now,
         )
-    db.commit()
+    )
+    try:
+        db.commit()
+    except IntegrityError:
+        # Another request cached this title first.
+        db.rollback()
+        row = (
+            db.query(WatchProviderCache)
+            .filter(
+                WatchProviderCache.media_type == media_type,
+                WatchProviderCache.tmdb_id == tmdb_id,
+            )
+            .one()
+        )
+        return row.results or {}
     return results
 
 

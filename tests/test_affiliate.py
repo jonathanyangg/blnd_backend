@@ -196,6 +196,18 @@ class FakeStreaming:
 
 
 @pytest.fixture
+def with_tmdb(client: TestClient):
+    """Redirect and TV routes depend on the TMDB client even when they 404."""
+    from app.dependencies import get_tmdb_client
+    from main import app
+
+    fake = FakeTMDB()
+    app.dependency_overrides[get_tmdb_client] = lambda: fake
+    yield client, fake
+    app.dependency_overrides.pop(get_tmdb_client, None)
+
+
+@pytest.fixture
 def streaming_api(client: TestClient):
     from app.dependencies import get_streaming_client, get_tmdb_client
     from main import app
@@ -479,9 +491,18 @@ def test_stale_watch_cache_is_used_when_tmdb_fails(streaming_api, db: Session) -
     )
 
 
-def test_missing_title_falls_back_to_justwatch_link(streaming_api) -> None:
-    client, fake_tmdb = streaming_api
-    fake_tmdb.fail_title = True
+def test_missing_title_falls_back_to_justwatch_link(
+    streaming_api, db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _fake_tmdb = streaming_api
+    make_movie(db)
+
+    def missing(*_args, **_kwargs):
+        request = httpx.Request("GET", "https://api.themoviedb.org/3/movie/550")
+        response = httpx.Response(404, request=request)
+        raise httpx.HTTPStatusError("missing", request=request, response=response)
+
+    monkeypatch.setattr("app.affiliate.services.load_title", missing)
 
     response = client.get("/movies/550/streaming")
 
@@ -493,9 +514,10 @@ def test_missing_title_falls_back_to_justwatch_link(streaming_api) -> None:
 
 
 def test_streaming_options_survive_watch_builder_bug(
-    streaming_api, monkeypatch: pytest.MonkeyPatch
+    streaming_api, db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, _fake = streaming_api
+    make_movie(db)
 
     def boom(*_args, **_kwargs):
         raise RuntimeError("link builder broke")
@@ -508,7 +530,8 @@ def test_streaming_options_survive_watch_builder_bug(
     assert response.json()["where_to_watch"] is None
 
 
-def test_tv_streaming_is_disabled_by_default(client: TestClient) -> None:
+def test_tv_streaming_is_disabled_by_default(with_tmdb) -> None:
+    client, _fake = with_tmdb
     response = client.get("/tv/1399/streaming")
     assert response.status_code == 404
 
@@ -538,8 +561,9 @@ def _seed_redirect(db: Session) -> None:
 
 
 def test_redirect_logs_click_before_302(
-    client: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
+    with_tmdb, db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    client, _fake = with_tmdb
     _seed_redirect(db)
     seen: list[int] = []
     real = RedirectResponse
@@ -571,8 +595,9 @@ def test_redirect_logs_click_before_302(
 
 
 def test_failed_click_log_does_not_redirect(
-    client: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
+    with_tmdb, db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    client, _fake = with_tmdb
     _seed_redirect(db)
     built: list[str] = []
 
@@ -592,7 +617,8 @@ def test_failed_click_log_does_not_redirect(
     assert db.query(AffiliateClick).count() == 0
 
 
-def test_unknown_provider_is_not_a_redirect(client: TestClient, db: Session) -> None:
+def test_unknown_provider_is_not_a_redirect(with_tmdb, db: Session) -> None:
+    client, _fake = with_tmdb
     response = client.get("/out/8/movie/550", follow_redirects=False)
     assert response.status_code == 404
     assert response.json()["detail"] == "Unknown provider"
@@ -601,8 +627,9 @@ def test_unknown_provider_is_not_a_redirect(client: TestClient, db: Session) -> 
 
 
 def test_redirect_rejects_foreign_host_without_click(
-    client: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
+    with_tmdb, db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    client, _fake = with_tmdb
     _seed_redirect(db)
 
     def refuse(*_args, **_kwargs):
@@ -616,21 +643,24 @@ def test_redirect_rejects_foreign_host_without_click(
     assert db.query(AffiliateClick).count() == 0
 
 
-def test_redirect_rejects_bad_media_type(client: TestClient, db: Session) -> None:
+def test_redirect_rejects_bad_media_type(with_tmdb, db: Session) -> None:
+    client, _fake = with_tmdb
     response = client.get("/out/119/podcast/550", follow_redirects=False)
     assert response.status_code == 404
     assert db.query(AffiliateClick).count() == 0
 
 
-def test_tv_redirect_is_disabled_by_default(client: TestClient, db: Session) -> None:
+def test_tv_redirect_is_disabled_by_default(with_tmdb, db: Session) -> None:
+    client, _fake = with_tmdb
     response = client.get("/out/119/tv/1399", follow_redirects=False)
     assert response.status_code == 404
     assert db.query(AffiliateClick).count() == 0
 
 
 def test_tv_redirect_uses_show_title(
-    client: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
+    with_tmdb, db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    client, _fake = with_tmdb
     make_profile(db, user_id=TEST_USER_ID, username="tvredirect")
     db.execute(
         text(
