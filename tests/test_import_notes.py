@@ -188,7 +188,9 @@ def notes_client(db: Session) -> Generator[TestClient, None, None]:
         app.dependency_overrides.pop(dep, None)
 
 
-def test_import_notes_adds_matches(notes_client: TestClient, db: Session) -> None:
+def test_import_notes_returns_candidates_without_writing(
+    notes_client: TestClient, db: Session
+) -> None:
     wl = make_watchlist(db)
     make_profile(db, user_id=TEST_USER_ID, username="user1", watchlist_id=wl.id)
 
@@ -201,84 +203,78 @@ def test_import_notes_adds_matches(notes_client: TestClient, db: Session) -> Non
     resp = notes_client.post("/import/notes", json={"text": text})
     assert resp.status_code == 200
     data = resp.json()
-
     assert data["truncated"] is False
-    assert [m["tmdb_id"] for m in data["added"]] == [238, 438631]
-    godfather = data["added"][0]
+    assert len(data["lines"]) == 3
+    godfather = data["lines"][0]
     assert godfather["title"] == "The Godfather"
     assert godfather["year"] == 1972
-    assert godfather["poster_path"] == "/poster-238.jpg"
-    assert godfather["raw_line"] == "- [x] The Godfather (1972) ⭐"
-    assert data["already_in_watchlist"] == []
-    assert data["unmatched"] == [
-        {
-            "raw_line": "Some totally unknown movie",
-            "cleaned_title": "Some totally unknown movie",
-        }
-    ]
-
-    entries = (
-        db.query(WatchlistMovie).filter(WatchlistMovie.watchlist_id == wl.id).all()
+    assert godfather["candidates"][0]["tmdb_id"] == 238
+    assert godfather["candidates"][0]["confidence"] >= 0.9
+    assert data["lines"][1]["candidates"][0]["tmdb_id"] == 438631
+    assert data["lines"][2]["candidates"] == []
+    assert (
+        db.query(WatchlistMovie).filter(WatchlistMovie.watchlist_id == wl.id).count()
+        == 0
     )
-    assert sorted(e.tmdb_id for e in entries) == [238, 438631]
-    assert all(e.source == "notes_import" for e in entries)
-    assert all(str(e.added_by) == TEST_USER_ID for e in entries)
 
 
-def test_import_notes_already_in_watchlist(
+def test_confirm_notes_adds_to_watchlist(notes_client: TestClient, db: Session) -> None:
+    wl = make_watchlist(db)
+    make_profile(db, user_id=TEST_USER_ID, username="user1", watchlist_id=wl.id)
+    resp = notes_client.post(
+        "/import/notes/confirm",
+        json={
+            "items": [
+                {"tmdb_id": 238, "media_type": "movie", "destination": "watchlist"},
+                {
+                    "tmdb_id": 438631,
+                    "media_type": "movie",
+                    "destination": "watched",
+                    "rating": 4.5,
+                },
+            ]
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["added"] == 2
+    assert resp.json()["failed"] == []
+    saved = db.query(WatchlistMovie).filter(WatchlistMovie.watchlist_id == wl.id).one()
+    assert saved.tmdb_id == 238
+    assert saved.source == "notes_import"
+
+
+def test_confirm_notes_skips_duplicate_watchlist(
     notes_client: TestClient, db: Session
 ) -> None:
     wl = make_watchlist(db)
     make_profile(db, user_id=TEST_USER_ID, username="user1", watchlist_id=wl.id)
-    make_movie(db, tmdb_id=550, title="Fight Club", poster_path="/poster.jpg")
-    make_watchlist_movie(db, watchlist_id=wl.id, tmdb_id=550)
-
-    resp = notes_client.post("/import/notes", json={"text": "- Fight Club"})
-    assert resp.status_code == 200
-    data = resp.json()
-
-    assert data["added"] == []
-    assert len(data["already_in_watchlist"]) == 1
-    assert data["already_in_watchlist"][0]["tmdb_id"] == 550
-    assert data["already_in_watchlist"][0]["raw_line"] == "- Fight Club"
-
-    count = (
-        db.query(WatchlistMovie).filter(WatchlistMovie.watchlist_id == wl.id).count()
+    make_movie(db, tmdb_id=940550, title="Fight Club", poster_path="/poster.jpg")
+    make_watchlist_movie(db, watchlist_id=wl.id, tmdb_id=940550)
+    resp = notes_client.post(
+        "/import/notes/confirm",
+        json={"items": [{"tmdb_id": 940550, "destination": "watchlist"}]},
     )
-    assert count == 1
+    assert resp.status_code == 200
+    assert resp.json()["added"] == 0
+    assert resp.json()["skipped"] == 1
 
 
-def test_import_notes_no_watchlist(notes_client: TestClient, db: Session) -> None:
-    resp = notes_client.post("/import/notes", json={"text": "Dune"})
-    assert resp.status_code == 404
-
-
-def test_import_notes_text_too_long(notes_client: TestClient, db: Session) -> None:
+def test_import_notes_text_too_long(notes_client: TestClient) -> None:
     resp = notes_client.post("/import/notes", json={"text": "a" * 20_001})
     assert resp.status_code == 422
 
 
 def test_import_notes_only_headers(notes_client: TestClient, db: Session) -> None:
-    wl = make_watchlist(db)
-    make_profile(db, user_id=TEST_USER_ID, username="user1", watchlist_id=wl.id)
-
+    make_profile(db, user_id=TEST_USER_ID, username="user1")
     resp = notes_client.post("/import/notes", json={"text": "To watch:\n\n"})
     assert resp.status_code == 200
-    assert resp.json() == {
-        "added": [],
-        "already_in_watchlist": [],
-        "unmatched": [],
-        "truncated": False,
-    }
+    assert resp.json() == {"lines": [], "truncated": False}
 
 
-def test_import_notes_truncates_at_cap(notes_client: TestClient, db: Session) -> None:
-    wl = make_watchlist(db)
-    make_profile(db, user_id=TEST_USER_ID, username="user1", watchlist_id=wl.id)
-
+def test_import_notes_truncates_at_cap(notes_client: TestClient) -> None:
     text = "\n".join(f"Unknown Movie {i}" for i in range(101))
     resp = notes_client.post("/import/notes", json={"text": text})
     assert resp.status_code == 200
     data = resp.json()
     assert data["truncated"] is True
-    assert len(data["unmatched"]) == 100
+    assert len(data["lines"]) == 100

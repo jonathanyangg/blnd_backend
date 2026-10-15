@@ -24,12 +24,13 @@ from app.dependencies import (
     openai_client,
     require_admin,
 )
-from app.auth.models import Profile
 from app.import_data import services, workflows
 from app.import_data.schemas import (
     ImportNotesRequest,
     ImportNotesResponse,
     ImportSummaryResponse,
+    NoteConfirmRequest,
+    NoteConfirmResponse,
     SeedStatusResponse,
 )
 
@@ -118,24 +119,22 @@ async def import_notes(
     request: Request,
     body: ImportNotesRequest,
     user_id: str = Depends(get_current_user),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+):
+    """Parse a Notes list and return ranked matches. Nothing is saved yet."""
+    result = await workflows.run_notes_import(body.text, tmdb_client)
+    track(user_id, Event.NOTES_IMPORTED, {"lines": len(result.lines)})
+    return result
+
+
+@router.post("/notes/confirm", response_model=NoteConfirmResponse)
+@limiter.limit(LIMIT_IMPORT)
+async def confirm_notes(
+    request: Request,
+    body: NoteConfirmRequest,
+    user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
-    """Import a free-form movie list (e.g. from Apple Notes) into the watchlist."""
-    profile = db.query(Profile).filter(Profile.id == user_id).first()
-    if not profile or not profile.watchlist_id:
-        raise HTTPException(status_code=404, detail="No personal watchlist found")
-
-    result = await workflows.run_notes_import(
-        user_id, profile.watchlist_id, body.text, db, tmdb_client
-    )
-    track(
-        user_id,
-        Event.NOTES_IMPORTED,
-        {
-            "movies_added": len(result.added),
-            "already_in_watchlist": len(result.already_in_watchlist),
-            "unmatched": len(result.unmatched),
-        },
-    )
-    return result
+    """Save titles the user confirmed onto the watchlist or watched list."""
+    return await workflows.confirm_notes_import(user_id, body, db, tmdb_client)

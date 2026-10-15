@@ -13,11 +13,13 @@ from sqlalchemy.orm import Session
 from app.auth.models import Profile
 from app.import_data.schemas import (
     FilmRecord,
-    ImportedNoteMovie,
     ImportNotesResponse,
     ImportSummaryResponse,
+    NoteCandidate,
+    NoteConfirmRequest,
+    NoteConfirmResponse,
+    NoteLineMatches,
     ParsedTitle,
-    UnmatchedNoteLine,
 )
 from app.movies.services import get_movie_details
 from app.tracking.models import WatchedMovie, WatchlistMovie
@@ -318,80 +320,204 @@ def parse_note_lines(text: str) -> list[ParsedTitle]:
     return parsed
 
 
+def _result_year(item: dict, media_type: str) -> int | None:
+    raw = (
+        item.get("release_date")
+        if media_type == "movie"
+        else item.get("first_air_date")
+    )
+    if not raw:
+        return None
+    try:
+        return int(str(raw)[:4])
+    except ValueError:
+        return None
+
+
+def _candidate_confidence(
+    query_title: str, query_year: int | None, result_title: str, result_year: int | None
+) -> float:
+    """Score a TMDB hit. Zero means the title does not match closely enough."""
+    if not _title_matches(query_title, result_title):
+        return 0.0
+    exact = query_title.casefold() == result_title.casefold()
+    same_year = query_year is not None and result_year == query_year
+    if exact and same_year:
+        return 0.97
+    if exact and query_year is None:
+        return 0.9
+    if exact and result_year is not None and abs(result_year - (query_year or 0)) <= 1:
+        return 0.75
+    if same_year:
+        return 0.7
+    return 0.55
+
+
+async def _search_candidates(
+    title: str, year: int | None, media_type: str, tmdb_client: httpx.AsyncClient
+) -> list[NoteCandidate]:
+    path = "/search/movie" if media_type == "movie" else "/search/tv"
+    params: dict[str, str] = {"query": title}
+    if year is not None:
+        key = "primary_release_year" if media_type == "movie" else "first_air_date_year"
+        params[key] = str(year)
+    response = await tmdb_client.get(path, params=params)
+    response.raise_for_status()
+    found: list[NoteCandidate] = []
+    for item in response.json().get("results", [])[:8]:
+        result_title = item.get("title") if media_type == "movie" else item.get("name")
+        if not result_title:
+            continue
+        result_year = _result_year(item, media_type)
+        confidence = _candidate_confidence(title, year, result_title, result_year)
+        if confidence <= 0:
+            continue
+        found.append(
+            NoteCandidate(
+                tmdb_id=item["id"],
+                media_type=media_type,
+                title=result_title,
+                year=result_year,
+                poster_path=item.get("poster_path"),
+                confidence=confidence,
+            )
+        )
+    return found
+
+
 async def run_notes_import(
-    user_id: str,
-    watchlist_id: int,
-    text: str,
-    db: Session,
-    tmdb_client: httpx.AsyncClient,
+    text: str, tmdb_client: httpx.AsyncClient
 ) -> ImportNotesResponse:
-    """Parse note text, resolve titles on TMDB, and add matches to the watchlist."""
+    """Parse note text and return ranked TMDB candidates. Does not write."""
+    from app.config import settings
+
     parsed = parse_note_lines(text)
     truncated = len(parsed) > MAX_NOTES_TITLES
     parsed = parsed[:MAX_NOTES_TITLES]
-    logger.info("Parsed %d candidate titles from notes import", len(parsed))
-
-    added: list[ImportedNoteMovie] = []
-    already_in_watchlist: list[ImportedNoteMovie] = []
-    unmatched: list[UnmatchedNoteLine] = []
-
+    lines: list[NoteLineMatches] = []
     for candidate in parsed:
-        try:
-            tmdb_id = await _resolve_tmdb_id(
-                candidate.title, candidate.year, tmdb_client
+        matches = await _search_candidates(
+            candidate.title, candidate.year, "movie", tmdb_client
+        )
+        await asyncio.sleep(TMDB_RATE_LIMIT_DELAY)
+        if settings.tv_support_enabled:
+            matches.extend(
+                await _search_candidates(
+                    candidate.title, candidate.year, "tv", tmdb_client
+                )
             )
             await asyncio.sleep(TMDB_RATE_LIMIT_DELAY)
-            if tmdb_id is None:
-                unmatched.append(
-                    UnmatchedNoteLine(
-                        raw_line=candidate.raw_line, cleaned_title=candidate.title
-                    )
+        matches.sort(key=lambda item: item.confidence, reverse=True)
+        lines.append(
+            NoteLineMatches(
+                raw_line=candidate.raw_line,
+                title=candidate.title,
+                year=candidate.year,
+                candidates=matches[:3],
+            )
+        )
+    return ImportNotesResponse(lines=lines, truncated=truncated)
+
+
+async def confirm_notes_import(
+    user_id: str,
+    body: NoteConfirmRequest,
+    db: Session,
+    tmdb_client: httpx.AsyncClient,
+) -> NoteConfirmResponse:
+    """Save the titles the user confirmed, to the watchlist or watched list."""
+    from app.config import settings
+    from app.tv.models import WatchedTVShow
+    from app.tv.services import get_tv_show_details
+
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    added = 0
+    skipped = 0
+    failed: list[str] = []
+    for item in body.items:
+        try:
+            if item.destination not in ("watchlist", "watched"):
+                failed.append(
+                    f"{item.tmdb_id}: destination must be watchlist or watched"
                 )
                 continue
-
-            movie = await get_movie_details(tmdb_id, db, tmdb_client)
-            await asyncio.sleep(TMDB_RATE_LIMIT_DELAY)
-            item = ImportedNoteMovie(
-                tmdb_id=tmdb_id,
-                title=movie.title,
-                year=movie.year,
-                poster_path=movie.poster_path,
-                raw_line=candidate.raw_line,
+            if item.media_type == "tv":
+                if not settings.tv_support_enabled:
+                    failed.append(f"{item.tmdb_id}: TV support is disabled")
+                    continue
+                if item.destination != "watched":
+                    failed.append(
+                        f"{item.tmdb_id}: TV titles can only be saved as watched"
+                    )
+                    continue
+                await get_tv_show_details(item.tmdb_id, db, tmdb_client)
+                exists = (
+                    db.query(WatchedTVShow)
+                    .filter(
+                        WatchedTVShow.user_id == user_id,
+                        WatchedTVShow.tmdb_id == item.tmdb_id,
+                    )
+                    .first()
+                )
+                if exists:
+                    skipped += 1
+                    continue
+                db.add(
+                    WatchedTVShow(
+                        user_id=user_id,
+                        tmdb_id=item.tmdb_id,
+                        rating=item.rating,
+                        source="notes_import",
+                    )
+                )
+                added += 1
+                continue
+            if item.media_type != "movie":
+                failed.append(f"{item.tmdb_id}: media_type must be movie or tv")
+                continue
+            await get_movie_details(item.tmdb_id, db, tmdb_client)
+            if item.destination == "watchlist":
+                if profile is None or profile.watchlist_id is None:
+                    failed.append(f"{item.tmdb_id}: no watchlist")
+                    continue
+                try:
+                    await add_to_watchlist(
+                        profile.watchlist_id,
+                        item.tmdb_id,
+                        user_id,
+                        db,
+                        tmdb_client,
+                        source="notes_import",
+                    )
+                    added += 1
+                except HTTPException as exc:
+                    if exc.status_code != 400:
+                        raise
+                    skipped += 1
+                continue
+            exists = (
+                db.query(WatchedMovie)
+                .filter(
+                    WatchedMovie.user_id == user_id,
+                    WatchedMovie.tmdb_id == item.tmdb_id,
+                )
+                .first()
             )
-
-            try:
-                await add_to_watchlist(
-                    watchlist_id,
-                    tmdb_id,
-                    user_id,
-                    db,
-                    tmdb_client,
+            if exists:
+                skipped += 1
+                continue
+            db.add(
+                WatchedMovie(
+                    user_id=user_id,
+                    tmdb_id=item.tmdb_id,
+                    rating=item.rating,
                     source="notes_import",
                 )
-                added.append(item)
-            except HTTPException as exc:
-                if exc.status_code != 400:
-                    raise
-                already_in_watchlist.append(item)
-
+            )
+            added += 1
         except Exception:
             db.rollback()
-            logger.warning(
-                "Notes import failed for %r (%s)",
-                candidate.title,
-                candidate.year,
-                exc_info=True,
-            )
-            unmatched.append(
-                UnmatchedNoteLine(
-                    raw_line=candidate.raw_line, cleaned_title=candidate.title
-                )
-            )
-            continue
-
-    return ImportNotesResponse(
-        added=added,
-        already_in_watchlist=already_in_watchlist,
-        unmatched=unmatched,
-        truncated=truncated,
-    )
+            logger.warning("Notes confirm failed for %s", item.tmdb_id, exc_info=True)
+            failed.append(str(item.tmdb_id))
+    db.commit()
+    return NoteConfirmResponse(added=added, skipped=skipped, failed=failed)

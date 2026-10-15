@@ -40,21 +40,39 @@ class ParsedTitle(BaseModel):
     year: int | None = None
 
 
-class ImportedNoteMovie(BaseModel):
+class NoteCandidate(BaseModel):
     tmdb_id: int
+    media_type: str
     title: str
     year: int | None = None
     poster_path: str | None = None
-    raw_line: str
+    confidence: float
 
 
-class UnmatchedNoteLine(BaseModel):
+class NoteLineMatches(BaseModel):
     raw_line: str
-    cleaned_title: str
+    title: str
+    year: int | None = None
+    candidates: list[NoteCandidate]
 
 
 class ImportNotesResponse(BaseModel):
-    added: list[ImportedNoteMovie]
-    already_in_watchlist: list[ImportedNoteMovie]
-    unmatched: list[UnmatchedNoteLine]
+    lines: list[NoteLineMatches]
     truncated: bool = False
+
+
+class NoteConfirmItem(BaseModel):
+    tmdb_id: int = Field(gt=0)
+    media_type: str = "movie"
+    destination: str
+    rating: float | None = Field(default=None, ge=0.5, le=5)
+
+
+class NoteConfirmRequest(BaseModel):
+    items: list[NoteConfirmItem] = Field(min_length=1, max_length=100)
+
+
+class NoteConfirmResponse(BaseModel):
+    added: int
+    skipped: int
+    failed: list[str]
