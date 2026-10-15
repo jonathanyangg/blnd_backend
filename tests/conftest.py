@@ -1,5 +1,6 @@
 import os
 from collections.abc import Generator
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -31,6 +32,32 @@ CALLER_ID = "11111111-1111-1111-1111-111111111111"
 TARGET_ID = "22222222-2222-2222-2222-222222222222"
 TEST_USER_ID = CALLER_ID
 TEST_USER_ID_2 = TARGET_ID
+
+
+def assert_error(
+    response: Any,
+    *,
+    status: int,
+    code: str,
+    message: str | None = None,
+    contains: str | None = None,
+) -> dict[str, Any]:
+    """Assert the shared error envelope and return the JSON body."""
+    assert response.status_code == status
+    body = response.json()
+    assert set(body) == {"error", "detail"}
+    error = body["error"]
+    assert set(error) == {"code", "message", "request_id"}
+    assert error["code"] == code
+    assert isinstance(error["message"], str) and error["message"]
+    assert body["detail"] == error["message"]
+    assert isinstance(error["request_id"], str) and error["request_id"]
+    assert response.headers["x-request-id"] == error["request_id"]
+    if message is not None:
+        assert error["message"] == message
+    if contains is not None:
+        assert contains.lower() in error["message"].lower()
+    return body
 
 
 # --- Real-DB fixtures (integration tests) ---

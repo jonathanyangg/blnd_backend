@@ -21,7 +21,9 @@ from app.recommendations.ranking import (
     _genre_overlap,
     to_match_percentage,
 )
+from app.recommendations.models import HiddenMovie, MovieInteraction
 from app.recommendations.services import (
+    INTERESTED_WEIGHT,
     NEGATIVE_RATING_MIN_MOVIES,
     NEGATIVE_RATING_PERCENTILE,
     WATCHLIST_WEIGHT,
@@ -60,8 +62,10 @@ def _contribution_weights(
 ) -> dict[int, float]:
     """Return {tmdb_id: weight} for any scored movie that contributed to the
     user's positive taste embedding — rated at/above the 20th-percentile
-    threshold (weight = rating) or currently in the user's watchlist
-    (weight = WATCHLIST_WEIGHT). Movies not in the map contributed 0.
+    threshold (weight = rating), currently in the user's watchlist
+    (weight = WATCHLIST_WEIGHT), or swiped interested (weight =
+    INTERESTED_WEIGHT). A rating wins over either softer signal. Movies not
+    in the map contributed 0.
     """
     weights: dict[int, float] = {}
 
@@ -98,6 +102,30 @@ def _contribution_weights(
             # Rated movies are auto-removed from watchlist, so no overlap —
             # but defensively take the max if somehow both apply.
             weights[tid] = max(weights.get(tid, 0.0), WATCHLIST_WEIGHT)
+
+    rated_ids = {tid for tid, _ in all_ratings_rows}
+    hidden_ids = {
+        tid
+        for (tid,) in db.query(HiddenMovie.tmdb_id)
+        .filter(
+            HiddenMovie.user_id == user_id,
+            HiddenMovie.tmdb_id.in_(tmdb_ids),
+        )
+        .all()
+    }
+    interested_rows = (
+        db.query(MovieInteraction.tmdb_id)
+        .filter(
+            MovieInteraction.user_id == user_id,
+            MovieInteraction.interaction_type == "interested",
+            MovieInteraction.tmdb_id.in_(tmdb_ids),
+        )
+        .all()
+    )
+    for (tid,) in interested_rows:
+        if tid in rated_ids or tid in hidden_ids:
+            continue
+        weights[tid] = INTERESTED_WEIGHT
 
     return weights
 
