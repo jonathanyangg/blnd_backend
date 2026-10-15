@@ -1,27 +1,29 @@
-from datetime import date, datetime
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel
 
 
-class TimelinePerson(BaseModel):
-    user_id: str
-    username: str
-    display_name: str | None = None
-    avatar_url: str | None = None
+class MediaRef(BaseModel):
+    tmdb_id: int
+    title: str
+    poster: str | None = None
+    year: int | None = None
+    media_type: Literal["movie", "tv"]
+
+
+class WatchedWithUser(BaseModel):
+    id: str
+    name: str
+    avatar: str | None = None
 
 
 class TimelineItem(BaseModel):
-    media_type: Literal["movie", "tv"]
-    id: int
-    tmdb_id: int
-    title: str
-    poster_path: str | None = None
+    date: date
     rating: float | None = None
-    watched_date: date | None = None
-    created_at: datetime | None = None
-    user: TimelinePerson
-    watched_with: list[TimelinePerson]
+    media: MediaRef
+    user: WatchedWithUser
+    watched_with: list[WatchedWithUser]
 
 
 class TimelineResponse(BaseModel):

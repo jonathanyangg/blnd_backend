@@ -347,17 +347,19 @@ def get_user_watched(
     return services.get_public_watched(user_id, id, limit, offset, db, q=q, sort=sort)
 
 
-@router.get("/users/{id}/timeline", response_model=timeline_schemas.TimelineResponse)
+@router.get(
+    "/users/{user_id}/timeline", response_model=timeline_schemas.TimelineResponse
+)
 @limiter.limit(LIMIT_DEFAULT)
 def get_user_timeline(
     request: Request,
-    id: str,
+    user_id: str,
     cursor: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=50),
-    user_id: str = Depends(get_current_user),
+    caller_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return timeline_services.get_profile_timeline(user_id, id, cursor, limit, db)
+    return timeline_services.get_profile_timeline(caller_id, user_id, cursor, limit, db)
 
 
 @router.get("/users/{id}/friends", response_model=schemas.PublicFriendsListResponse)

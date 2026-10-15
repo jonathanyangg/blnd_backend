@@ -49,7 +49,7 @@ def test_profile_timeline_is_dated_and_includes_companions(
     client: TestClient, db: Session
 ) -> None:
     _people(db)
-    older = _watch(
+    _watch(
         db,
         TEST_USER_ID,
         100,
@@ -79,18 +79,30 @@ def test_profile_timeline_is_dated_and_includes_companions(
     first = client.get("/auth/users/" + TEST_USER_ID + "/timeline", params={"limit": 1})
     assert first.status_code == 200
     body = first.json()
-    assert body["results"][0]["title"] == "Newer"
-    assert body["results"][0]["rating"] == 4.5
-    assert body["results"][0]["watched_date"] == "2026-03-04"
-    assert body["results"][0]["watched_with"][0]["username"] == "tlada"
+    item = body["results"][0]
+    assert item["date"] == "2026-03-04"
+    assert item["rating"] == 4.5
+    assert item["media"]["title"] == "Newer"
+    assert item["media"]["media_type"] == "movie"
+    assert item["media"]["year"] == 1999
+    assert item["media"]["poster"] == "/poster.jpg"
+    assert item["watched_with"] == [
+        {"id": TEST_USER_ID_2, "name": "Ada", "avatar": None}
+    ]
+    assert item["user"]["id"] == TEST_USER_ID
+    assert item["user"]["name"] == "Owner"
     assert body["next_cursor"]
+
+    own = client.get("/tracking/timeline", params={"limit": 1})
+    assert own.status_code == 200
+    assert own.json()["results"][0]["media"]["tmdb_id"] == 101
 
     second = client.get(
         "/auth/users/" + TEST_USER_ID + "/timeline",
         params={"limit": 1, "cursor": body["next_cursor"]},
     )
     assert second.status_code == 200
-    assert [item["id"] for item in second.json()["results"]] == [older]
+    assert [row["media"]["title"] for row in second.json()["results"]] == ["Older"]
     assert second.json()["next_cursor"] is None
 
 
@@ -111,7 +123,7 @@ def test_profile_timeline_privacy(client_user2: TestClient, db: Session) -> None
     make_friendship(db, TEST_USER_ID, TEST_USER_ID_2, status="accepted")
     friend = client_user2.get(f"/auth/users/{TEST_USER_ID}/timeline")
     assert friend.status_code == 200
-    assert friend.json()["results"][0]["title"] == "Mine"
+    assert friend.json()["results"][0]["media"]["title"] == "Mine"
 
     db.add(UserBlock(blocker_id=TEST_USER_ID, blocked_id=TEST_USER_ID_2))
     db.commit()
@@ -165,10 +177,10 @@ def test_blend_timeline_respects_friendship_and_blocks(
 
     resp = client.get(f"/groups/{group.id}/timeline")
     assert resp.status_code == 200
-    titles = [item["title"] for item in resp.json()["results"]]
+    titles = [item["media"]["title"] for item in resp.json()["results"]]
     assert titles == ["Ada", "Mine"]
     assert resp.json()["results"][0]["rating"] == 5.0
-    assert resp.json()["results"][0]["user"]["username"] == "tlada"
+    assert resp.json()["results"][0]["user"]["name"] == "Ada"
 
     missing = client.get("/groups/999999/timeline")
     other, _wl = make_group(db, name="Closed", created_by=STRANGER_ID)
@@ -226,12 +238,16 @@ def test_tv_items_follow_the_flag(client: TestClient, db: Session, monkeypatch) 
 
     off = client.get(f"/auth/users/{TEST_USER_ID}/timeline")
     assert off.status_code == 200
-    assert [item["media_type"] for item in off.json()["results"]] == ["movie"]
+    assert [item["media"]["media_type"] for item in off.json()["results"]] == ["movie"]
 
     monkeypatch.setattr(settings, "tv_support_enabled", True)
     on = client.get(f"/auth/users/{TEST_USER_ID}/timeline")
     assert on.status_code == 200
-    assert [item["title"] for item in on.json()["results"]] == ["Show", "Movie"]
-    assert on.json()["results"][0]["media_type"] == "tv"
+    assert [item["media"]["title"] for item in on.json()["results"]] == [
+        "Show",
+        "Movie",
+    ]
+    assert on.json()["results"][0]["media"]["media_type"] == "tv"
+    assert on.json()["results"][0]["date"] == "2026-04-01"
     assert on.json()["results"][0]["rating"] == 3.5
     assert on.json()["results"][0]["watched_with"] == []

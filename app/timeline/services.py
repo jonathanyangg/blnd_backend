@@ -14,6 +14,7 @@ from app.config import settings
 from app.friends.models import Friendship, UserBlock
 from app.groups.models import Group, GroupMember
 
+
 def get_profile_timeline(
     caller_id: str,
     target_id: str,
@@ -176,6 +177,7 @@ def _page(
                    wt.tmdb_id,
                    t.title,
                    t.poster_path,
+                   t.first_air_year AS year,
                    wt.rating,
                    wt.watched_date,
                    wt.created_at,
@@ -193,7 +195,7 @@ def _page(
 
     sql = f"""
         SELECT media_type, log_id, user_id, username, display_name, avatar_url,
-               tmdb_id, title, poster_path, rating, watched_date, created_at,
+               tmdb_id, title, poster_path, year, rating, watched_date, created_at,
                sort_date, sort_created
         FROM (
             SELECT 'movie' AS media_type,
@@ -205,6 +207,7 @@ def _page(
                    wm.tmdb_id,
                    m.title,
                    m.poster_path,
+                   m.year,
                    wm.rating,
                    wm.watched_date,
                    wm.created_at,
@@ -235,20 +238,21 @@ def _page(
     for row in page:
         results.append(
             {
-                "media_type": row["media_type"],
-                "id": row["log_id"],
-                "tmdb_id": row["tmdb_id"],
-                "title": row["title"],
-                "poster_path": row["poster_path"],
+                "date": row["sort_date"],
                 "rating": row["rating"],
-                "watched_date": row["watched_date"],
-                "created_at": row["created_at"],
-                "user": {
-                    "user_id": row["user_id"],
-                    "username": row["username"],
-                    "display_name": row["display_name"],
-                    "avatar_url": row["avatar_url"],
+                "media": {
+                    "tmdb_id": row["tmdb_id"],
+                    "title": row["title"],
+                    "poster": row["poster_path"],
+                    "year": row["year"],
+                    "media_type": row["media_type"],
                 },
+                "user": _person(
+                    row["user_id"],
+                    row["username"],
+                    row["display_name"],
+                    row["avatar_url"],
+                ),
                 "watched_with": companions.get(row["log_id"], [])
                 if row["media_type"] == "movie"
                 else [],
@@ -297,14 +301,21 @@ def _companions_for(
         if row["user_id"] in blocked:
             continue
         grouped.setdefault(row["log_id"], []).append(
-            {
-                "user_id": row["user_id"],
-                "username": row["username"],
-                "display_name": row["display_name"],
-                "avatar_url": row["avatar_url"],
-            }
+            _person(
+                row["user_id"],
+                row["username"],
+                row["display_name"],
+                row["avatar_url"],
+            )
         )
     return grouped
+
+
+def _person(
+    user_id: str, username: str, display_name: str | None, avatar: str | None
+) -> dict:
+    """iOS user card: id, display name (username if they have none), avatar."""
+    return {"id": user_id, "name": display_name or username, "avatar": avatar}
 
 
 def _in_clause(prefix: str, values: list, cast: str | None = None) -> tuple[str, dict]:
