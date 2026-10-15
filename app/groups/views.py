@@ -7,7 +7,14 @@ from starlette.requests import Request
 from app.analytics import Event, track
 from app.auth.models import Profile
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
-from app.dependencies import get_apns_client, get_current_user, get_db, get_tmdb_client
+from app.dependencies import (
+    get_apns_client,
+    get_current_user,
+    get_db,
+    get_tmdb_client,
+    require_premium,
+)
+from app.groups import picks
 from app.groups import schemas, services
 from app.groups.models import Group, GroupMember
 from app.movies.models import Movie
@@ -183,6 +190,35 @@ async def get_group_feed(
     return services.get_group_recommendations(
         group_id, user_id, db, body.limit, 0, extra_exclude=body.exclude
     )
+
+
+@router.get(
+    "/{group_id}/pick-tonight",
+    response_model=schemas.PickTonightResponse,
+)
+@limiter.limit(LIMIT_DEFAULT)
+async def pick_tonight(
+    request: Request,
+    group_id: int,
+    user_id: str = Depends(require_premium),
+    db: Session = Depends(get_db),
+):
+    return picks.get_or_create_pick(group_id, user_id, db)
+
+
+@router.post(
+    "/{group_id}/pick-tonight/veto",
+    response_model=schemas.PickTonightResponse,
+)
+@limiter.limit(LIMIT_DEFAULT)
+async def veto_tonight(
+    request: Request,
+    group_id: int,
+    body: schemas.VetoRequest,
+    user_id: str = Depends(require_premium),
+    db: Session = Depends(get_db),
+):
+    return picks.veto_tonight(group_id, user_id, body.tmdb_id, body.reason, db)
 
 
 # --- Group Watchlist Endpoints ---

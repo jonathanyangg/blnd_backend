@@ -93,6 +93,7 @@ class UserResponse(BaseModel):
     phone_number: str | None = None
     subscription_tier: str = "free"
     subscription_expires_at: datetime | None = None
+    is_premium: bool = False
 
 
 class UserSearchResponse(BaseModel):
