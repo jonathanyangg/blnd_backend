@@ -50,7 +50,10 @@ def assert_error(
     assert set(error) == {"code", "message", "request_id"}
     assert error["code"] == code
     assert isinstance(error["message"], str) and error["message"]
-    assert body["detail"] == error["message"]
+    if code in {"FREE_GROUP_CAP", "GROUP_FULL"}:
+        assert body["detail"] == {"message": error["message"]}
+    else:
+        assert body["detail"] == error["message"]
     assert isinstance(error["request_id"], str) and error["request_id"]
     assert response.headers["x-request-id"] == error["request_id"]
     if message is not None:
