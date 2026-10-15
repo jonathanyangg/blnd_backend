@@ -17,6 +17,7 @@ from app.dependencies import (
     openai_client,
     require_admin,
 )
+from app.subscriptions.services import is_premium
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +257,7 @@ def me(
         subscription_tier=profile.subscription_tier,
         subscription_expires_at=profile.subscription_expires_at,
         is_discoverable=profile.is_discoverable,
+        is_premium=is_premium(profile),
     )
 
 
@@ -314,6 +316,7 @@ def update_profile(
         subscription_tier=profile.subscription_tier,
         subscription_expires_at=profile.subscription_expires_at,
         is_discoverable=profile.is_discoverable,
+        is_premium=is_premium(profile),
     )
 
 

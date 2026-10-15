@@ -94,6 +94,7 @@ class UserResponse(BaseModel):
     subscription_tier: str = "free"
     subscription_expires_at: datetime | None = None
     is_discoverable: bool = True
+    is_premium: bool = False
 
 
 class UserSearchResponse(BaseModel):

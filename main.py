@@ -10,8 +10,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from pythonjsonlogger.json import JsonFormatter  # pyright: ignore[reportMissingImports]
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
 
 from app import analytics
 from app.actors.views import router as actors_router
@@ -19,6 +17,7 @@ from app.auth.views import admin_router as auth_admin_router
 from app.auth.views import router as auth_router
 from app.comments.views import router as comments_router
 from app.config import settings
+from app.core.errors import RequestIdMiddleware, register_exception_handlers
 from app.core.rate_limit import limiter
 from app.database import engine
 from app.friends.views import router as friends_router
@@ -28,6 +27,7 @@ from app.movies.views import router as movies_router
 from app.notifications.views import router as notifications_router
 from app.recommendations.views import router as recommendations_router
 from app.reports.views import router as reports_router
+from app.stats.views import router as stats_router
 from app.streaming.views import router as streaming_router
 from app.subscriptions.views import router as subscriptions_router
 from app.tracking.views import router as tracking_router
@@ -99,10 +99,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
+app.add_middleware(RequestIdMiddleware)
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
+register_exception_handlers(app)
 
 app.include_router(actors_router, prefix="/actors", tags=["actors"])
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
@@ -124,6 +126,7 @@ app.include_router(
 app.include_router(streaming_router, prefix="/movies", tags=["streaming"])
 app.include_router(reports_router, prefix="/reports", tags=["reports"])
 app.include_router(subscriptions_router, tags=["subscriptions"])
+app.include_router(stats_router, prefix="/stats", tags=["stats"])
 
 
 @app.get("/health")

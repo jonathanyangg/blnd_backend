@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.auth.models import Profile
 from app.auth.visibility import is_hidden_profile, raise_if_hidden_from
 from app.dependencies import supabase, supabase_admin
+from app.subscriptions.services import is_premium
 from app.friends.models import Friendship
 from app.groups.models import Group, GroupMember
 from app.movies.models import Movie
@@ -280,6 +281,8 @@ def search_users(query: str, user_id: str, db: Session, limit: int = 10) -> list
             "friendship_id": friendship_map[str(p.id)][1]
             if str(p.id) in friendship_map
             else None,
+            "subscription_tier": p.subscription_tier,
+            "is_premium": is_premium(p),
         }
         for p in profiles
     ]
