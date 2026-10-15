@@ -24,9 +24,9 @@ The personal deck (`GET /recommendations/me` and the feed) drops swiped titles s
 
 ## Item-item collaborative filtering
 
-There is no item-item model in this repo yet. When one is added, use the same weights and do not invent a second scale.
+Collaborative filtering scores candidates from `watched_movies` ratings. Swipes change the taste embedding (candidate search, and the embedding half of a match score). They are not copied into the rating matrix, and they are not turned into fake star ratings.
 
-- `interested`: positive feedback, weight 1.5, the same as a watchlist save. Do not also write a watchlist co-watch edge. A save and an `interested` swipe on the same title count once.
-- `not_for_me`: do not build "people who skipped this also skipped that". Skips cluster on what is popular, not on taste. Leave the pair out of the co-occurrence matrix. If the model has a separate explicit-negative term, use weight 0.5. Never treat it as a hide.
+- `interested`: positive taste weight 1.5, the same as a watchlist save. Leave-one-out subtracts that weight when the embedding cosine is computed, including when that cosine is blended with a CF score. It is not a co-rating. A save and an `interested` swipe on the same title count once, at 1.5.
+- `not_for_me`: weight 0.5 on the negative taste vector. It is not a co-rating and not a hide. The pair stays out of the item-item matrix.
 - Hide: hard negative, weight 1.0, and the title stays excluded. Not a co-occurrence pair.
-- A rating replaces the swipe and the watchlist weight for that user and title. Do not sum them. The rating's own weight (the stars, or `5 - rating` when it is negative) is the only weight for that pair.
+- A rating replaces the swipe. The stars are the only collaborative-filtering weight for that user and title.

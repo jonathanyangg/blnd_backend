@@ -1,5 +1,5 @@
 from aioapns import APNs
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
@@ -7,7 +7,11 @@ from app.analytics import Event, track
 from app.core.rate_limit import LIMIT_DEFAULT, LIMIT_IMPORT, limiter
 from app.dependencies import get_apns_client, get_current_user, get_db
 from app.friends import schemas, services
-from app.notifications.services import THREAD_FRIEND_REQUESTS, fire_notification
+from app.notifications.services import (
+    THREAD_FRIEND_REQUESTS,
+    THREAD_NEW_FOLLOWERS,
+    fire_notification,
+)
 
 router = APIRouter()
 
@@ -35,7 +39,11 @@ async def send_friend_request(
             notification_type="friend_requests",
             title="Friend Request",
             body=f"{requester_username} sent you a friend request",
-            data={"type": "friend_request", "user_id": user_id},
+            data={
+                "type": "friend_request",
+                "user_id": user_id,
+                "friendship_id": str(result["id"]),
+            },
             thread=THREAD_FRIEND_REQUESTS,
             apns_client=apns_client,
         )
@@ -198,3 +206,94 @@ async def get_mutual_friends(
 ):
     """Get mutual friends between current user and target user."""
     return services.get_mutual_friends(caller_id, user_id, db)
+
+
+# Mounted at /auth so these sit next to /auth/users/{id}/profile.
+user_follows_router = APIRouter()
+
+
+@user_follows_router.post(
+    "/users/{id}/follow", response_model=schemas.FollowStateResponse
+)
+@limiter.limit(LIMIT_DEFAULT)
+async def follow_user(
+    request: Request,
+    id: str,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    apns_client: APNs | None = Depends(get_apns_client),
+):
+    result = services.follow_user(user_id, id, db)
+    if result["created"] and result["follower_username"]:
+        fire_notification(
+            to=id,
+            from_user=user_id,
+            notification_type="new_followers",
+            title="New Follower",
+            body=f"{result['follower_username']} started following you",
+            data={"type": "new_follower", "user_id": user_id},
+            thread=THREAD_NEW_FOLLOWERS,
+            apns_client=apns_client,
+        )
+    return {"following": True}
+
+
+@user_follows_router.delete(
+    "/users/{id}/follow", status_code=status.HTTP_204_NO_CONTENT
+)
+@limiter.limit(LIMIT_DEFAULT)
+async def unfollow_user(
+    request: Request,
+    id: str,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    services.unfollow_user(user_id, id, db)
+
+
+@user_follows_router.get(
+    "/users/{id}/followers", response_model=schemas.FollowListResponse
+)
+@limiter.limit(LIMIT_DEFAULT)
+async def list_followers(
+    request: Request,
+    id: str,
+    limit: int = Query(default=20, ge=1, le=100),
+    cursor: str | None = Query(default=None),
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return services.list_follow_users(
+        user_id, id, db, direction="followers", limit=limit, cursor=cursor
+    )
+
+
+@user_follows_router.get(
+    "/users/{id}/following", response_model=schemas.FollowListResponse
+)
+@limiter.limit(LIMIT_DEFAULT)
+async def list_following(
+    request: Request,
+    id: str,
+    limit: int = Query(default=20, ge=1, le=100),
+    cursor: str | None = Query(default=None),
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return services.list_follow_users(
+        user_id, id, db, direction="following", limit=limit, cursor=cursor
+    )
+
+
+@user_follows_router.delete(
+    "/users/{id}/followers/{follower_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+@limiter.limit(LIMIT_DEFAULT)
+async def remove_follower(
+    request: Request,
+    id: str,
+    follower_id: str,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    services.remove_follower(user_id, id, follower_id, db)

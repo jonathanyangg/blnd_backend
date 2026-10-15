@@ -40,9 +40,17 @@ app/
 ├── tracking/        # Watch history, ratings, reviews
 ├── import_data/     # Letterboxd CSV import
 ├── recommendations/ # AI-powered recommendations
-├── friends/         # Friend requests, friend lists
+├── friends/         # Friend requests, blocks, one-way follows
 └── groups/          # Watch groups, group recommendations
 ```
 
 ## Environment Variables
 See `.env.example` for required variables.
+
+## Follows and friends
+
+Friendships are mutual. `friendships` stores a request from `requester_id` to `addressee_id` until `status` is `accepted`. Either person is then the other's friend.
+
+Follows are one-way and stored in `follows` (`follower_id`, `followee_id`). Following someone does not create a friendship, and accepting a friend request does not create a follow. A pair can have either, both, or neither. The unique pair rejects duplicates, and a check constraint rejects self-follows.
+
+Blocks apply to both. Blocking someone deletes the friendship and any follows in either direction, and neither person can follow the other while the block stands. Profiles have no private flag, so follower and following lists are visible to any signed-in user the owner has not blocked. Counts on a profile are totals. A list hides anyone in a block with the viewer, so a page can be shorter than the count.
