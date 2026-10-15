@@ -480,6 +480,8 @@ def get_public_watched(
             "title": movie.title,
             "poster_path": movie.poster_path,
             "rating": entry.rating,
+            "year": movie.year,
+            "media_type": "movie",
         }
         for entry, movie in rows
     ]

@@ -47,6 +47,8 @@ class WatchedMovieResponse(BaseModel):
     review: str | None = None
     watched_date: date | None = None
     liked: bool = False
+    year: int | None = None
+    media_type: Literal["movie", "tv"] = "movie"
     created_at: datetime
     watched_with: list[WatchedWithUser] = []
 
@@ -81,6 +83,7 @@ class WatchlistMovieResponse(BaseModel):
     created_at: datetime
     match_score: float | None = None
     comment_count: int = 0
+    media_type: Literal["movie", "tv"] = "movie"
 
 
 class WatchlistResponse(BaseModel):
