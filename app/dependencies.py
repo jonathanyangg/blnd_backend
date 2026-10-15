@@ -9,8 +9,10 @@ from openai import OpenAI
 from sqlalchemy.orm import Session
 from supabase import create_client
 
+from app.auth.models import Profile
 from app.config import settings
 from app.database import SessionLocal
+from app.subscriptions.services import is_premium
 
 # Clients
 supabase = create_client(settings.supabase_url, settings.supabase_key)
@@ -91,6 +93,23 @@ async def get_optional_user(request: Request) -> str | None:
         return _decode_jwt(auth[7:])
     except Exception:
         return None
+
+
+def require_premium(
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> str:
+    """Gate blnd+ routes on the same is_premium() result GET /auth/me returns."""
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if profile is None or not is_premium(profile):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "PREMIUM_REQUIRED",
+                "message": "blnd+ is required",
+            },
+        )
+    return user_id
 
 
 async def require_admin(

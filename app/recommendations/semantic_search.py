@@ -274,6 +274,8 @@ def run_semantic_discover(
     # Only exclude hidden movies + client-provided exclude list.
     # Watched and watchlisted movies are NOT excluded — semantic search
     # is intent-based, so showing known-good matches is expected.
+    # Swipe signals are not hides: `not_for_me` stays searchable.
+    # See docs/swipe-signals.md.
     hidden_ids = set(get_hidden_movie_ids(user_id, db))
     all_exclude = exclude_set | hidden_ids
 

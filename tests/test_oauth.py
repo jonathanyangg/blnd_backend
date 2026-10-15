@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 from supabase_auth.errors import AuthApiError
 
-from tests.conftest import CALLER_ID
+from tests.conftest import CALLER_ID, assert_error
 
 # ---------------------------------------------------------------------------
 # Schema validation tests
@@ -293,8 +293,12 @@ def test_oauth_endpoint_invalid_token_401(mock_oauth_login, app_client):
         "/auth/oauth",
         json={"provider": "apple", "id_token": "bad-token"},
     )
-    assert resp.status_code == 401
-    assert "Invalid or expired provider token" in resp.json()["detail"]
+    assert_error(
+        resp,
+        status=401,
+        code="UNAUTHORIZED",
+        message="Invalid or expired provider token",
+    )
 
 
 @patch("app.auth.services.complete_onboarding", new_callable=AsyncMock)
@@ -336,8 +340,7 @@ def test_complete_onboarding_endpoint_duplicate_400(mock_onboarding, app_client)
         "/auth/complete-onboarding",
         json={"username": "existinguser"},
     )
-    assert resp.status_code == 400
-    assert "Profile already exists" in resp.json()["detail"]
+    assert_error(resp, status=400, code="BAD_REQUEST", message="Profile already exists")
 
     app.dependency_overrides.pop(get_tmdb_client, None)
 
