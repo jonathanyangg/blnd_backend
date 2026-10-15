@@ -1,5 +1,4 @@
 from collections.abc import Generator
-from typing import cast
 
 import httpx
 import jwt
@@ -10,17 +9,23 @@ from openai import OpenAI
 from sqlalchemy.orm import Session
 from supabase import Client, create_client
 
-from app.config import settings
+from app.config import settings, validate_required_settings
 from app.database import SessionLocal
 
-# Clients. An empty URL/key is logged at startup; skip construction so a
-# non-strict boot can finish. Call sites still expect a client when configured.
-supabase = cast(
-    Client,
-    create_client(settings.supabase_url, settings.supabase_key)
-    if settings.supabase_url and settings.supabase_key
-    else None,
-)
+
+def build_supabase_client() -> Client:
+    """Build the Supabase client used by auth routes.
+
+    A blank URL or key is logged first. Strict mode stops here. Otherwise the
+    client library still refuses the blank value, so the process does not stay
+    up and look healthy.
+    """
+    if not settings.supabase_url or not settings.supabase_key:
+        validate_required_settings()
+    return create_client(settings.supabase_url, settings.supabase_key)
+
+
+supabase = build_supabase_client()
 openai_client = OpenAI(api_key=settings.openai_api_key)
 
 # Admin client for privileged operations (e.g. account deletion, Apple token revocation)

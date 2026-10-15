@@ -6,7 +6,7 @@ from pathlib import Path
 
 import httpx
 from aioapns import APNs
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
@@ -19,7 +19,7 @@ from app.actors.views import router as actors_router
 from app.auth.views import router as auth_router
 from app.comments.views import router as comments_router
 from app.config import settings, validate_required_settings
-from app.core.rate_limit import limiter
+from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.database import engine, ping_database
 from app.friends.views import router as friends_router
 from app.groups.views import router as groups_router
@@ -131,7 +131,8 @@ async def health():
 
 
 @app.get("/health/deep")
-def health_deep():
+@limiter.limit(LIMIT_DEFAULT)
+def health_deep(request: Request):
     """Readiness probe. Render liveness stays on /health."""
     try:
         ping_database()

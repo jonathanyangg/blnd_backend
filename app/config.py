@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 
 from pydantic_settings import BaseSettings
 
@@ -66,6 +67,13 @@ def validate_required_settings() -> None:
     missing = missing_required_env_vars()
     if not missing:
         return
+    # Import can fail before main.py installs the JSON log handler.
+    if not logging.root.handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(levelname)s %(name)s %(message)s",
+            stream=sys.stderr,
+        )
     logger.error("Missing required environment variables: %s", ", ".join(missing))
     if _strict_env_validation():
         raise RuntimeError(

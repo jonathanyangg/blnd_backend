@@ -1,7 +1,14 @@
 """Liveness and database readiness probes."""
 
+import signal
+import time
+
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import OperationalError
+
+from app.database import ping_database
 
 
 def test_health_is_liveness_only(app_client: TestClient) -> None:
@@ -35,3 +42,28 @@ def test_health_deep_reports_error_class_only(
     }
     assert "super-secret-db-password" not in response.text
     assert secret not in response.text
+
+
+def test_ping_database_connect_timeout(monkeypatch) -> None:
+    """A blackholed database must fail in a few seconds, not hang the worker."""
+
+    def _alarm(_signum, _frame) -> None:
+        raise TimeoutError("database probe hung")
+
+    monkeypatch.setattr(
+        "app.database.engine",
+        type(
+            "Engine",
+            (),
+            {"url": make_url("postgresql://postgres:postgres@192.0.2.1:5432/postgres")},
+        )(),
+    )
+    signal.signal(signal.SIGALRM, _alarm)
+    signal.alarm(5)
+    started = time.monotonic()
+    try:
+        with pytest.raises(OperationalError):
+            ping_database()
+    finally:
+        signal.alarm(0)
+    assert time.monotonic() - started < 5
