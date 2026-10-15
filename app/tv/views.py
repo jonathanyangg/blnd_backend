@@ -3,10 +3,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
+from app.affiliate.services import load_where_to_watch, offer_base
 from app.config import settings
 from app.content_filters import ContentFilters, get_content_filters, year_in_range
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.dependencies import get_current_user, get_db, get_tmdb_client
+from app.streaming.schemas import StreamingAvailabilityResponse
 from app.tv import schemas, services
 
 router = APIRouter()
@@ -40,6 +42,35 @@ async def search_tv_shows(
     if filters.year_min is not None or filters.year_max is not None:
         data["total_results"] = len(data["results"])
     return data
+
+
+@router.get("/tv/{tmdb_id}/streaming", response_model=StreamingAvailabilityResponse)
+@limiter.limit(LIMIT_DEFAULT)
+async def get_tv_streaming(
+    request: Request,
+    tmdb_id: int,
+    country: str = Query(
+        default="us",
+        min_length=2,
+        max_length=2,
+        description="ISO 3166-1 alpha-2 country code",
+    ),
+    _user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+) -> dict:
+    """Same streaming shape as movies. options stays empty; watch data is TMDB."""
+    _require_tv_support()
+    country = country.lower()
+    where = await load_where_to_watch(
+        "tv", tmdb_id, country, db, tmdb_client, offer_base(request)
+    )
+    return {
+        "tmdb_id": tmdb_id,
+        "country": country,
+        "options": [],
+        "where_to_watch": where,
+    }
 
 
 @router.post(

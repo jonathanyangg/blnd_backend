@@ -134,6 +134,4 @@ def test_track_tv_show_does_not_collide_with_movie_id(
     assert data["tmdb_id"] == 1399
     assert data["title"] == "Game of Thrones"
     assert data["rating"] == 4.5
-    assert (
-        db.query(WatchedMovie).filter(WatchedMovie.tmdb_id == 1399).count() == 0
-    )
+    assert db.query(WatchedMovie).filter(WatchedMovie.tmdb_id == 1399).count() == 0

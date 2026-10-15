@@ -221,7 +221,9 @@ def test_refresh_invalid_token_returns_401(
 
     monkeypatch.setattr("app.auth.services.refresh_session", _raise)
     resp = client.post("/auth/refresh", json={"refresh_token": "bad"})
-    assert_error(resp, status=401, code="UNAUTHORIZED", message="Session refresh failed")
+    assert_error(
+        resp, status=401, code="UNAUTHORIZED", message="Session refresh failed"
+    )
     assert "Invalid Refresh Token" not in resp.text
 
 
@@ -233,7 +235,9 @@ def test_refresh_generic_error_returns_401(
 
     monkeypatch.setattr("app.auth.services.refresh_session", _raise)
     resp = client.post("/auth/refresh", json={"refresh_token": "bad"})
-    assert_error(resp, status=401, code="UNAUTHORIZED", message="Session refresh failed")
+    assert_error(
+        resp, status=401, code="UNAUTHORIZED", message="Session refresh failed"
+    )
     assert "Refresh failed" not in resp.text
 
 
@@ -247,9 +251,7 @@ def test_refresh_supabase_5xx_returns_503(
 
     monkeypatch.setattr("app.auth.services.refresh_session", _raise)
     resp = client.post("/auth/refresh", json={"refresh_token": "any"})
-    assert_error(
-        resp, status=503, code="SERVICE_UNAVAILABLE", contains="unavailable"
-    )
+    assert_error(resp, status=503, code="SERVICE_UNAVAILABLE", contains="unavailable")
     assert "Internal Server Error" not in resp.text
 
 
@@ -281,7 +283,5 @@ def test_refresh_network_error_returns_503(
 
     monkeypatch.setattr("app.auth.services.refresh_session", _raise)
     resp = client.post("/auth/refresh", json={"refresh_token": "any"})
-    assert_error(
-        resp, status=503, code="SERVICE_UNAVAILABLE", contains="unavailable"
-    )
+    assert_error(resp, status=503, code="SERVICE_UNAVAILABLE", contains="unavailable")
     assert "connection refused" not in resp.text

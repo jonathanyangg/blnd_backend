@@ -1,14 +1,16 @@
 import logging
+from datetime import datetime, timezone
 
 import numpy as np
 from openai import OpenAI
-from sqlalchemy import text
+from sqlalchemy import case, text
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
-from app.recommendations.models import HiddenMovie
+from app.recommendations.models import HiddenMovie, MovieInteraction
 from app.recommendations.pipeline import _format_candidate, _has_excluded_genre
 from app.recommendations.ranking import rerank_candidates
 from app.tracking.models import InterestedMovie, WatchedMovie, WatchlistMovie
@@ -21,6 +23,12 @@ NEGATIVE_RATING_MIN_MOVIES = 10
 NEGATIVE_RATING_PERCENTILE = 20
 MAX_RATING = 5.0
 WATCHLIST_WEIGHT = 1.5
+# `interested` uses the watchlist weight. It is not a watchlist row.
+# See docs/swipe-signals.md.
+INTERESTED_WEIGHT = WATCHLIST_WEIGHT
+# not_for_me is a weak negative. Hide stays the hard dislike at weight 1.0;
+# a bad rating weighs up to (MAX_RATING - rating) = 4.5.
+NOT_FOR_ME_WEIGHT = 0.5
 
 
 def should_auto_rebuild(user_id: str, db: Session) -> bool:
@@ -194,18 +202,21 @@ def compute_taste_embeddings(
     """Compute taste embeddings using rating-weighted average.
 
     Positive embedding: weighted average of movies at or above the user's 20th
-    percentile rating, weight = rating value (0.5–5.0).
+    percentile rating, weight = rating value (0.5–5.0). Watchlist movies add
+    WATCHLIST_WEIGHT each. `interested` swipes add INTERESTED_WEIGHT each and
+    are not watchlist rows. A rating on the same movie wins; the swipe is skipped.
 
     Negative embedding from ratings: if user has 10+ rated movies, movies below
     the 20th percentile contribute to the negative embedding, weighted by
-    (MAX_RATING - rating) so lower ratings push harder. Merged with hidden
-    movie embeddings (unweighted mean).
+    (MAX_RATING - rating) so lower ratings push harder. Hidden movies add weight
+    1.0 (hard dislike). `not_for_me` swipes add NOT_FOR_ME_WEIGHT and are not
+    hides. A rating or a hide on the same movie wins.
 
     If user has <10 rated movies, no rating-derived negatives (sample too small).
 
     Returns (positive_embedding, negative_embedding, sum_weights). sum_weights is
-    the denominator of the weighted average (Σ ratings of positive-tier movies +
-    WATCHLIST_WEIGHT × watchlist count) — needed by match-score leave-one-out.
+    the denominator of the weighted average (Σ positive weights) — needed by
+    match-score leave-one-out. None when the positive vector is a genre seed.
     """
     rows = (
         db.query(WatchedMovie.tmdb_id, WatchedMovie.rating, MovieEmbedding.embedding)
@@ -213,74 +224,104 @@ def compute_taste_embeddings(
         .filter(WatchedMovie.user_id == user_id, WatchedMovie.rating.isnot(None))
         .all()
     )
-    if not rows:
+    interested_rows = _swipe_embeddings(user_id, "interested", db)
+    not_for_me_rows = _swipe_embeddings(user_id, "not_for_me", db)
+    # Watchlist-only users still take the genre-seed path. Swipes are enough
+    # on their own to build a vector.
+    if not rows and not interested_rows and not not_for_me_rows:
         return None, None, None
 
-    ratings = np.array([float(r) for _, r, _ in rows])
-    embeddings = np.array([e for _, _, e in rows])
-
-    # Split positive/negative based on 20th percentile (only with enough data)
-    if len(rows) >= NEGATIVE_RATING_MIN_MOVIES:
-        threshold = float(np.percentile(ratings, NEGATIVE_RATING_PERCENTILE))
-        pos_mask = ratings >= threshold
-        neg_mask = ~pos_mask
-    else:
-        pos_mask = np.ones(len(ratings), dtype=bool)
-        neg_mask = np.zeros(len(ratings), dtype=bool)
-
-    # Positive: rating-weighted average of movies at/above threshold
-    pos_embeddings = embeddings[pos_mask]
-    pos_ratings = ratings[pos_mask]
-    if len(pos_embeddings) == 0:
-        return None, None, None
-    positive_emb = np.average(pos_embeddings, axis=0, weights=pos_ratings)
-    rated_total_weight = float(pos_ratings.sum())
-    sum_weights = rated_total_weight
-
-    # Blend watchlist movie embeddings as soft positive signal
-    if profile is None:
-        profile = db.query(Profile).filter(Profile.id == user_id).first()
-    if profile and profile.watchlist_id:
-        wl_rows = (
-            db.query(MovieEmbedding.embedding)
-            .join(WatchlistMovie, WatchlistMovie.tmdb_id == MovieEmbedding.tmdb_id)
-            .filter(WatchlistMovie.watchlist_id == profile.watchlist_id)
-            .all()
-        )
-        if wl_rows:
-            wl_embeddings = np.array([e for (e,) in wl_rows])
-            wl_avg = np.mean(wl_embeddings, axis=0)
-            # Weighted merge: rated movies total weight vs watchlist total weight
-            wl_total_weight = len(wl_rows) * WATCHLIST_WEIGHT
-            total = rated_total_weight + wl_total_weight
-            positive_emb = (
-                positive_emb * rated_total_weight + wl_avg * wl_total_weight
-            ) / total
-            sum_weights = total
-
-    positive_emb = positive_emb.tolist()
-
-    # Negative: weighted by (MAX_RATING - rating) so 0.5-star → weight 4.5
+    positive_emb: np.ndarray | None = None
+    sum_weights = 0.0
+    pos_rated_ids: set[int] = set()
+    neg_rated_ids: set[int] = set()
     neg_parts: list[np.ndarray] = []
     neg_weights: list[np.ndarray] = []
 
-    if neg_mask.any():
-        neg_embeddings = embeddings[neg_mask]
-        neg_ratings = ratings[neg_mask]
-        neg_parts.append(neg_embeddings)
-        neg_weights.append(MAX_RATING - neg_ratings)
+    if rows:
+        ratings = np.array([float(r) for _, r, _ in rows])
+        embeddings = np.array([e for _, _, e in rows])
 
-    # Hidden movies: unweighted (uniform weight of 1.0)
+        # Split positive/negative based on 20th percentile (only with enough data)
+        if len(rows) >= NEGATIVE_RATING_MIN_MOVIES:
+            threshold = float(np.percentile(ratings, NEGATIVE_RATING_PERCENTILE))
+            pos_mask = ratings >= threshold
+            neg_mask = ~pos_mask
+        else:
+            pos_mask = np.ones(len(ratings), dtype=bool)
+            neg_mask = np.zeros(len(ratings), dtype=bool)
+
+        pos_embeddings = embeddings[pos_mask]
+        pos_ratings = ratings[pos_mask]
+        if len(pos_embeddings) > 0:
+            positive_emb = np.average(pos_embeddings, axis=0, weights=pos_ratings)
+            sum_weights = float(pos_ratings.sum())
+            pos_rated_ids = {rows[i][0] for i in np.flatnonzero(pos_mask)}
+
+        if neg_mask.any():
+            neg_parts.append(embeddings[neg_mask])
+            neg_weights.append(MAX_RATING - ratings[neg_mask])
+            neg_rated_ids = {rows[i][0] for i in np.flatnonzero(neg_mask)}
+
+    rated_ids = pos_rated_ids | neg_rated_ids
+    # Hidden is the hard dislike. Load it before the positive blend so an
+    # interested swipe on a hidden title does not pull taste both ways.
     hidden_rows = (
-        db.query(MovieEmbedding.embedding)
-        .join(HiddenMovie, HiddenMovie.tmdb_id == MovieEmbedding.tmdb_id)
+        db.query(HiddenMovie.tmdb_id, MovieEmbedding.embedding)
+        .join(MovieEmbedding, HiddenMovie.tmdb_id == MovieEmbedding.tmdb_id)
         .filter(HiddenMovie.user_id == user_id)
         .all()
     )
+    hidden_ids = {tid for tid, _ in hidden_rows}
+    interested_ids = {
+        tid
+        for tid, _ in interested_rows
+        if tid not in rated_ids and tid not in hidden_ids
+    }
+
+    # Watchlist blend. Same merge as before when there is no interested swipe.
+    # An interested swipe on a watchlisted movie replaces the watchlist weight.
+    if profile is None:
+        profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if rows and profile and profile.watchlist_id and positive_emb is not None:
+        wl_query = (
+            db.query(MovieEmbedding.embedding)
+            .join(WatchlistMovie, WatchlistMovie.tmdb_id == MovieEmbedding.tmdb_id)
+            .filter(WatchlistMovie.watchlist_id == profile.watchlist_id)
+        )
+        if interested_ids:
+            wl_query = wl_query.filter(WatchlistMovie.tmdb_id.notin_(interested_ids))
+        wl_rows = wl_query.all()
+        if wl_rows:
+            positive_emb, sum_weights = _merge_positive(
+                positive_emb,
+                sum_weights,
+                np.array([e for (e,) in wl_rows]),
+                WATCHLIST_WEIGHT,
+            )
+
+    interested_embs = [e for tid, e in interested_rows if tid in interested_ids]
+    if interested_embs:
+        positive_emb, sum_weights = _merge_positive(
+            positive_emb,
+            sum_weights,
+            np.array(interested_embs),
+            INTERESTED_WEIGHT,
+        )
+
+    # Hidden movies: uniform weight 1.0. This is the hard dislike, not a swipe.
     if hidden_rows:
-        hidden_embeddings = np.array([e for (e,) in hidden_rows])
-        neg_parts.append(hidden_embeddings)
+        neg_parts.append(np.array([e for _, e in hidden_rows]))
         neg_weights.append(np.ones(len(hidden_rows)))
+
+    not_for_me_embs = [
+        e
+        for tid, e in not_for_me_rows
+        if tid not in rated_ids and tid not in hidden_ids
+    ]
+    if not_for_me_embs:
+        neg_parts.append(np.array(not_for_me_embs))
+        neg_weights.append(np.full(len(not_for_me_embs), NOT_FOR_ME_WEIGHT))
 
     negative_emb = None
     if neg_parts:
@@ -288,7 +329,41 @@ def compute_taste_embeddings(
         all_neg_w = np.concatenate(neg_weights)
         negative_emb = np.average(all_neg_emb, axis=0, weights=all_neg_w).tolist()
 
-    return positive_emb, negative_emb, sum_weights
+    if positive_emb is None:
+        return None, negative_emb, None
+    return positive_emb.tolist(), negative_emb, sum_weights
+
+
+def _swipe_embeddings(
+    user_id: str, interaction_type: str, db: Session
+) -> list[tuple[int, list[float]]]:
+    """Embeddings for one swipe type. Movies without an embedding are skipped."""
+    rows = (
+        db.query(MovieInteraction.tmdb_id, MovieEmbedding.embedding)
+        .join(MovieEmbedding, MovieInteraction.tmdb_id == MovieEmbedding.tmdb_id)
+        .filter(
+            MovieInteraction.user_id == user_id,
+            MovieInteraction.interaction_type == interaction_type,
+        )
+        .all()
+    )
+    return [(tmdb_id, embedding) for tmdb_id, embedding in rows]
+
+
+def _merge_positive(
+    positive_emb: np.ndarray | None,
+    sum_weights: float,
+    embeddings: np.ndarray,
+    each_weight: float,
+) -> tuple[np.ndarray, float]:
+    """Fold a block of equal-weight movies into the positive taste vector."""
+    extra = len(embeddings) * each_weight
+    average = np.mean(embeddings, axis=0)
+    if positive_emb is None or sum_weights <= 0:
+        return average, extra
+    total = sum_weights + extra
+    merged = (positive_emb * sum_weights + average * extra) / total
+    return merged, total
 
 
 GENRE_SEED_TOP_N = 20
@@ -392,7 +467,9 @@ def rebuild_taste_profile(
             if not seed:
                 return profile  # No movies embedded yet, nothing to seed from
             profile.taste_embedding = seed
-            profile.negative_embedding = None
+            # Keep a swipe-only negative (not_for_me). None when there is none,
+            # which is the same as the old cold-start path.
+            profile.negative_embedding = negative_emb
             profile.taste_sum_weights = None
             db.commit()
             db.refresh(profile)
@@ -428,6 +505,75 @@ def rebuild_taste_profile(
         "Rebuilt taste profile for user %s (strategy=%s)", user_id, EMBEDDING_STRATEGY
     )
     return profile
+
+
+# --- Swipe signals ---
+
+
+def record_interaction(
+    user_id: str, tmdb_id: int, interaction_type: str, db: Session
+) -> MovieInteraction:
+    """Store one swipe per user and movie. A new swipe replaces the old one.
+
+    Does not write watchlist_movies or hidden_movies. One statement so two
+    taps at the same time cannot both insert and hit the unique constraint.
+    Repeating the same type keeps the original timestamp.
+    """
+    now = datetime.now(timezone.utc)
+    ins = insert(MovieInteraction)
+    stmt = (
+        ins.values(
+            user_id=user_id,
+            tmdb_id=tmdb_id,
+            interaction_type=interaction_type,
+            created_at=now,
+        )
+        .on_conflict_do_update(
+            index_elements=["user_id", "tmdb_id"],
+            set_={
+                "interaction_type": ins.excluded.interaction_type,
+                "created_at": case(
+                    (
+                        MovieInteraction.interaction_type
+                        == ins.excluded.interaction_type,
+                        MovieInteraction.created_at,
+                    ),
+                    else_=now,
+                ),
+            },
+        )
+        .returning(MovieInteraction)
+    )
+    row = db.scalars(stmt).one()
+    db.commit()
+    return row
+
+
+def delete_interaction(
+    user_id: str, tmdb_id: int, interaction_type: str, db: Session
+) -> bool:
+    """Remove one swipe type. Returns False when that signal was not stored."""
+    deleted = (
+        db.query(MovieInteraction)
+        .filter(
+            MovieInteraction.user_id == user_id,
+            MovieInteraction.tmdb_id == tmdb_id,
+            MovieInteraction.interaction_type == interaction_type,
+        )
+        .delete()
+    )
+    db.commit()
+    return deleted > 0
+
+
+def get_swiped_movie_ids(user_id: str, db: Session) -> list[int]:
+    """Titles this user has swiped. Used to drop them from the personal deck."""
+    return [
+        row[0]
+        for row in db.query(MovieInteraction.tmdb_id)
+        .filter(MovieInteraction.user_id == user_id)
+        .all()
+    ]
 
 
 # --- Hidden movies CRUD ---
@@ -755,11 +901,7 @@ def _popular_now_movie(
 
 def _shares_signal(movie: Movie, rated: dict) -> bool:
     director = rated.get("director")
-    if (
-        movie.director
-        and director
-        and movie.director.lower() == str(director).lower()
-    ):
+    if movie.director and director and movie.director.lower() == str(director).lower():
         return True
     rated_genres = {name.lower() for name in rated.get("genres") or [] if name}
     return bool(_genre_names(movie) & rated_genres)
