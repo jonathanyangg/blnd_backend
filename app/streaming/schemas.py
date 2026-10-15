@@ -1,5 +1,7 @@
 from pydantic import BaseModel
 
+from app.affiliate.schemas import WhereToWatch
+
 
 class StreamingPrice(BaseModel):
     amount: str
@@ -26,3 +28,5 @@ class StreamingAvailabilityResponse(BaseModel):
     tmdb_id: int
     country: str
     options: list[StreamingOption]
+    # TMDB watch providers. Null when that lookup fails; old clients ignore it.
+    where_to_watch: WhereToWatch | None = None
