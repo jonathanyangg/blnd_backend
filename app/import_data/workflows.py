@@ -68,6 +68,7 @@ def _parse_csvs(file_bytes: bytes) -> dict[str, FilmRecord]:
                 for row in reader:
                     record = _get_or_create(merged, row)
                     record.in_watched = True
+                    record.rating = float(row["Rating"]) if row.get("Rating") else None
                     record.watched_date = (
                         date.fromisoformat(row["Date"]) if row.get("Date") else None
                     )
