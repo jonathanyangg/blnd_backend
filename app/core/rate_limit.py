@@ -1,4 +1,3 @@
-import jwt as pyjwt
 from limits import parse as parse_limit
 from slowapi import Limiter
 from starlette.requests import Request
@@ -7,16 +6,21 @@ from app.config import settings
 
 
 def get_rate_limit_key(request: Request) -> str:
-    """Rate limit by JWT sub claim, fallback to client IP."""
+    """Key by the user id from a signature-checked JWT. Otherwise the client IP.
+
+    A token whose signature does not verify is not a user key, even if its
+    payload names someone. That request shares the IP bucket.
+    """
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         try:
-            payload = pyjwt.decode(auth[7:], options={"verify_signature": False})
-            if sub := payload.get("sub"):
-                return f"user:{sub}"
+            from app.dependencies import _decode_jwt
+
+            return f"user:{_decode_jwt(auth[7:])}"
         except Exception:
             pass
-    return f"ip:{request.client.host if request.client else 'unknown'}"
+    host = request.client.host if request.client else "unknown"
+    return f"ip:{host}"
 
 
 limiter = Limiter(
