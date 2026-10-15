@@ -49,7 +49,9 @@ async def get_tv_streaming(
     """Same streaming shape as movies. options stays empty; watch data is TMDB."""
     _require_tv_support()
     country = country.lower()
-    where = await load_where_to_watch("tv", tmdb_id, country, db, tmdb_client)
+    where = await load_where_to_watch(
+        "tv", tmdb_id, country, db, tmdb_client, str(request.base_url)
+    )
     return {
         "tmdb_id": tmdb_id,
         "country": country,

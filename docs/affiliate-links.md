@@ -22,15 +22,17 @@ working.
   "options": [],
   "where_to_watch": {
     "country": "US",
-    "attribution": "Data provided by JustWatch",
+    "attribution": "JustWatch",
     "link": "https://www.themoviedb.org/movie/550/watch?locale=US",
     "flatrate": [
       {
         "provider_id": 119,
         "provider_name": "Amazon Prime Video",
         "logo_path": "/prime.jpg",
-        "web_url": "https://www.amazon.com/gp/video/search?phrase=Fight%20Club%201999&tag=blndmovies-20",
-        "app_url": "aiv://aiv/search?phrase=Fight%20Club%201999"
+        "web_url": "https://www.amazon.com/gp/video/search?phrase=Fight%20Club%201999",
+        "app_url": "aiv://aiv/search?phrase=Fight%20Club%201999",
+        "click_url": "https://api.example.com/out/119/movie/550",
+        "ios_link": "aiv://aiv/search?phrase=Fight%20Club%201999"
       }
     ],
     "rent": [],
@@ -41,8 +43,16 @@ working.
 
 `flatrate` is subscription streaming (where to watch). `rent` and `buy` are the
 other two TMDB groups. Offers TMDB labels `ads` or `free` are not returned.
-`web_url` is a title-specific https URL (the title plus year). `app_url` is set
-only when we have a real app scheme. Amazon https URLs are universal links.
+`web_url` is a title-specific https URL (the title plus year) with no affiliate
+tag. `click_url` is an absolute `GET /out/{provider}/{media_type}/{tmdb_id}`
+for allow-listed providers, and null otherwise. That route is public. `ios_link` is either an `aiv://` URL or an https universal link on
+`www.amazon.com` or `tv.apple.com`. It is null when neither is known. The only
+custom scheme this field emits is `aiv` (add that to
+`LSApplicationQueriesSchemes`). `app_url` is the raw app scheme when we have
+one.
+
+Movie and TV streaming responses use the same keys. TV `options` is an empty
+list because the RapidAPI catalog is movie-only.
 
 Provider rows are cached for 24 hours in `watch_provider_cache`, one row per
 movie or show (TMDB returns every country in one call). Movie id 550 and TV id
@@ -66,10 +76,12 @@ providers that are turned off also use the passthrough, so the user still gets
 the provider search URL with no partner param. Providers we do not register
 link to the TMDB/JustWatch `link` for that country.
 
-Amazon is the only live affiliate adapter. `AMAZON_ASSOCIATES_TAG` defaults to
-the public tag `blndmovies-20` when the variable is unset. Set it to an empty
-string to leave Amazon links untagged. Set `AMAZON_ASSOCIATES_ENABLED=false`
-to force the passthrough.
+Amazon is the only live affiliate adapter. The offer `web_url` never includes
+`tag`. The redirect appends `tag` only when the effective tag is non-empty.
+Unset `AMAZON_ASSOCIATES_TAG` uses the public tag `blndmovies-20`. An empty
+value leaves the redirect untagged. Clients must not append `tag=`. Set
+`AMAZON_ASSOCIATES_ENABLED=false` to force the passthrough URL shape. The
+redirect still adds the tag for Amazon provider ids when the tag is non-empty.
 
 Impact, Rakuten, and CJ are stubs. They do not wrap the destination in the
 network's tracking domain, because that URL has to come from the approved
@@ -100,17 +112,21 @@ parameter cannot choose the destination.
 
 ## Clicks
 
-`GET /out/{provider}/{media_type}/{tmdb_id}` requires a logged-in user. The
-handler checks the allow-list, builds the URL, inserts `affiliate_clicks`,
-commits, and only then returns 302. If the insert fails, there is no redirect.
+`GET /out/{provider}/{media_type}/{tmdb_id}` does not require a login. A
+valid bearer token stores that user id. No token stores `user_id` null. The
+handler checks the allow-list, builds the https URL, appends the Amazon tag
+when it is non-empty, inserts `affiliate_clicks`, commits, and only then
+returns 302. If the insert fails, there is no redirect.
 
-Columns: `user_id`, `media_type` (`movie` or `tv`), `tmdb_id`, `provider`
-(TMDB id), `created_at`.
+Columns: `user_id` (nullable), `media_type` (`movie` or `tv`), `tmdb_id`,
+`provider` (TMDB id), `created_at`.
 
-Row level security is on. `authenticated` can select and insert only rows
-whose `user_id` is `auth.uid()`. There is no update or delete policy. The API
-connects as the database owner, which bypasses RLS, same as the other tables.
-The policies are what stop the public Supabase API from reading every click.
+Row level security is on. `authenticated` can select and insert only their own
+rows. `anon` can insert a row only when `user_id` is null, and cannot select.
+There is no update or delete policy. The API connects as the database owner,
+which bypasses RLS the same way the service role does, and it sets `user_id`
+from the token rather than from the client. A forged user id cannot be
+inserted through the public Supabase API.
 
 TV redirects 404 while `TV_SUPPORT_ENABLED` is false.
 
@@ -121,7 +137,7 @@ Show this next to the links, not only in a settings screen:
 - FTC: say that some outbound links are affiliate links and that we may earn a
   commission. The relationship has to be clear before the tap.
 - JustWatch: TMDB watch-provider data is licensed through JustWatch. Show
-  `where_to_watch.attribution` (`Data provided by JustWatch`) with the offers.
+  `where_to_watch.attribution` (`JustWatch`) with the offers.
   Keep `where_to_watch.link` available. Do not drop the credit when the list
   is rendered.
 - Amazon: pages that show Amazon Associates links need a notice such as

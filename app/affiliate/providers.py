@@ -62,11 +62,16 @@ class AffiliateProvider(Protocol):
         ...
 
 
-def resolve_amazon_tag(raw: str | None) -> str | None:
-    """Map AMAZON_ASSOCIATES_TAG.
+# Custom schemes ios_link may return. https universal links are the other kind.
+IOS_CUSTOM_SCHEMES = frozenset({"aiv"})
+UNIVERSAL_LINK_HOSTS = frozenset({"www.amazon.com", "tv.apple.com"})
 
-    None means the variable is unset and the public tag is used. A blank
-    string is explicit and means the link is left untagged.
+
+def resolve_amazon_tag(raw: str | None) -> str | None:
+    """Tag appended on the redirect, never by the client.
+
+    Unset uses the public tag. A blank string is explicit and means untagged.
+    The redirect adds ``tag`` only when this returns a non-empty value.
     """
     if raw is None:
         return DEFAULT_AMAZON_TAG
@@ -167,9 +172,7 @@ class AmazonAssociates:
         )
 
     def build_web_url(self, title: Title, offer: Offer) -> str:
-        base = _search_url(TARGETS[offer.provider_id], title)
-        tag = resolve_amazon_tag(settings.amazon_associates_tag)
-        return _with_param(base, "tag", tag)
+        return _search_url(TARGETS[offer.provider_id], title)
 
     def build_app_deeplink(self, title: Title, offer: Offer) -> str | None:
         phrase = quote(_query_text(title), safe="")
@@ -273,8 +276,38 @@ for _adapter in (AMAZON, IMPACT, RAKUTEN, CJ, APPLE):
         REGISTRY[_provider_id] = _adapter
 
 
+def ios_link(web_url: str, app_url: str | None) -> str | None:
+    """Link the iOS app can open. Null when we have neither kind.
+
+    A custom scheme is returned only if it is in ``IOS_CUSTOM_SCHEMES``.
+    Otherwise an https universal link is returned when the host is known.
+    """
+    if app_url:
+        scheme = (urlparse(app_url).scheme or "").lower()
+        if scheme in IOS_CUSTOM_SCHEMES:
+            return app_url
+    parsed = urlparse(web_url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme == "https" and host in UNIVERSAL_LINK_HOSTS:
+        return web_url
+    return None
+
+
+def click_url(
+    base_url: str, provider_id: int, media_type: str, tmdb_id: int
+) -> str | None:
+    """Absolute public redirect URL. Null when the provider is not allow-listed."""
+    if provider_id not in REGISTRY:
+        return None
+    parsed = urlparse(base_url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    root = base_url.rstrip("/")
+    return f"{root}/out/{provider_id}/{media_type}/{tmdb_id}"
+
+
 def links_for(title: Title, offer: Offer) -> tuple[str, str | None]:
-    """Tagged adapter link, or the untagged passthrough link."""
+    """Adapter link, or the untagged passthrough link. No Amazon tag here."""
     provider = Provider(offer.provider_id, offer.provider_name)
     adapter = REGISTRY.get(offer.provider_id)
     if adapter is not None and adapter.supports(title, provider):
@@ -299,6 +332,10 @@ def outbound_url(title: Title, provider_id: int) -> str:
             monetization="flatrate",
         ),
     )
+    if provider_id in AMAZON.provider_ids:
+        web = _with_param(
+            web, "tag", resolve_amazon_tag(settings.amazon_associates_tag)
+        )
     parsed = urlparse(web)
     host = (parsed.hostname or "").lower()
     if parsed.scheme != "https" or host not in target.hosts:

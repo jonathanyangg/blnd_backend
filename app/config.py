@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     posthog_api_key: str = ""
     posthog_host: str = ""
     tv_support_enabled: bool = False
-    # None means unset: Amazon links use the public tag. "" means untagged.
+    # None means unset: the redirect uses the public tag. "" means no tag.
     amazon_associates_tag: str | None = None
     amazon_associates_enabled: bool = True
     impact_enabled: bool = False

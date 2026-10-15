@@ -9,13 +9,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.affiliate.models import AffiliateClick, WatchProviderCache
-from app.affiliate.providers import Offer, Title, links_for
+from app.affiliate.providers import Offer, Title, click_url, ios_link, links_for
 from app.movies.services import get_movie_details
 from app.tv.services import get_tv_show_details
 
 logger = logging.getLogger(__name__)
 
-ATTRIBUTION = "Data provided by JustWatch"
+ATTRIBUTION = "JustWatch"
 CACHE_TTL = timedelta(hours=24)
 _KINDS = ("flatrate", "rent", "buy")
 
@@ -37,6 +37,7 @@ def _assemble(
     tmdb_id: int,
     country: str,
     region: dict,
+    base_url: str,
 ) -> dict:
     region_link = region.get("link") if isinstance(region.get("link"), str) else None
     fallback = region_link or (
@@ -71,6 +72,8 @@ def _assemble(
             "logo_path": _logo(raw),
             "web_url": web,
             "app_url": app,
+            "click_url": click_url(base_url, provider_id, media_type, tmdb_id),
+            "ios_link": ios_link(web, app),
         }
 
     grouped: dict[str, list] = {}
@@ -181,6 +184,7 @@ async def get_where_to_watch(
     country: str,
     db: Session,
     tmdb_client: httpx.AsyncClient,
+    base_url: str,
 ) -> dict | None:
     """Cached TMDB watch offers with affiliate web and app URLs.
 
@@ -206,7 +210,7 @@ async def get_where_to_watch(
             logger.warning(
                 "title unavailable for %s %s watch links", media_type, tmdb_id
             )
-    return _assemble(title, media_type, tmdb_id, region_code, region)
+    return _assemble(title, media_type, tmdb_id, region_code, region, base_url)
 
 
 async def load_where_to_watch(
@@ -215,10 +219,13 @@ async def load_where_to_watch(
     country: str,
     db: Session,
     tmdb_client: httpx.AsyncClient,
+    base_url: str,
 ) -> dict | None:
     """Same as get_where_to_watch, but a failure leaves the caller response intact."""
     try:
-        return await get_where_to_watch(media_type, tmdb_id, country, db, tmdb_client)
+        return await get_where_to_watch(
+            media_type, tmdb_id, country, db, tmdb_client, base_url
+        )
     except Exception:
         logger.warning(
             "where_to_watch failed for %s %s", media_type, tmdb_id, exc_info=True
@@ -229,7 +236,7 @@ async def load_where_to_watch(
 
 def log_click(
     db: Session,
-    user_id: str,
+    user_id: str | None,
     media_type: str,
     tmdb_id: int,
     provider: int,
@@ -237,7 +244,7 @@ def log_click(
     """Insert the click and commit. Callers redirect only after this returns."""
     db.add(
         AffiliateClick(
-            user_id=uuid.UUID(user_id),
+            user_id=uuid.UUID(user_id) if user_id else None,
             media_type=media_type,
             tmdb_id=tmdb_id,
             provider=provider,

@@ -23,7 +23,7 @@ class AffiliateClick(Base):
     __tablename__ = "affiliate_clicks"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     media_type: Mapped[str] = mapped_column(Text, nullable=False)
     tmdb_id: Mapped[int] = mapped_column(Integer, nullable=False)
     provider: Mapped[int] = mapped_column(Integer, nullable=False)

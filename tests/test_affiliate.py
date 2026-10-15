@@ -24,6 +24,7 @@ from app.affiliate.providers import (
     Offer,
     Provider,
     Title,
+    ios_link,
     links_for,
     outbound_url,
     resolve_amazon_tag,
@@ -195,16 +196,24 @@ class FakeStreaming:
         )
 
 
+def _sign_in() -> None:
+    from app.dependencies import get_optional_user
+    from main import app
+
+    app.dependency_overrides[get_optional_user] = lambda: TEST_USER_ID
+
+
 @pytest.fixture
 def with_tmdb(client: TestClient):
     """Redirect and TV routes depend on the TMDB client even when they 404."""
-    from app.dependencies import get_tmdb_client
+    from app.dependencies import get_optional_user, get_tmdb_client
     from main import app
 
     fake = FakeTMDB()
     app.dependency_overrides[get_tmdb_client] = lambda: fake
     yield client, fake
     app.dependency_overrides.pop(get_tmdb_client, None)
+    app.dependency_overrides.pop(get_optional_user, None)
 
 
 @pytest.fixture
@@ -253,22 +262,26 @@ def test_amazon_default_tag_and_urls() -> None:
     video = AMAZON.build_web_url(TITLE, AMAZON_VIDEO)
     assert prime.startswith("https://www.amazon.com/gp/video/search?phrase=")
     assert "Fight%20Club%201999" in prime
-    assert "tag=blndmovies-20" in prime
+    assert "tag=" not in prime
     assert video.startswith("https://www.amazon.com/s?k=")
     assert "i=instant-video" in video
-    assert "tag=blndmovies-20" in video
+    assert "tag=" not in video
+    assert "tag=blndmovies-20" in outbound_url(TITLE, 119)
+    assert "tag=blndmovies-20" in outbound_url(TITLE, 10)
     app = AMAZON.build_app_deeplink(TITLE, PRIME)
     assert app == "aiv://aiv/search?phrase=Fight%20Club%201999"
+    assert ios_link(prime, app) == app
 
 
 def test_amazon_custom_tag(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "amazon_associates_tag", "custom-20")
-    assert "tag=custom-20" in AMAZON.build_web_url(TITLE, PRIME)
+    assert "tag=" not in AMAZON.build_web_url(TITLE, PRIME)
+    assert "tag=custom-20" in outbound_url(TITLE, 119)
 
 
 def test_amazon_empty_tag_is_untagged(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "amazon_associates_tag", "")
-    url = AMAZON.build_web_url(TITLE, PRIME)
+    url = outbound_url(TITLE, 119)
     assert "tag=" not in url
     assert "blndmovies-20" not in url
     assert AMAZON.supports(TITLE, Provider(119, "Amazon Prime Video")) is True
@@ -431,21 +444,29 @@ def test_movie_streaming_keeps_options_and_adds_watch_links(
     assert body["options"][0]["service"]["id"] == "prime"
     assert body["options"][0]["type"] == "subscription"
     watch = body["where_to_watch"]
-    assert watch["attribution"] == "Data provided by JustWatch"
+    assert watch["attribution"] == "JustWatch"
     assert watch["link"] == REGION_LINK
     assert watch["country"] == "US"
     prime = watch["flatrate"][0]
     assert prime["provider_id"] == 119
     assert prime["web_url"].startswith("https://www.amazon.com/gp/video/search?phrase=")
-    assert "tag=blndmovies-20" in prime["web_url"]
+    assert "tag=" not in prime["web_url"]
+    assert prime["click_url"].endswith("/out/119/movie/550")
+    assert prime["click_url"].startswith("http")
+    assert "tag=" not in prime["click_url"]
     assert prime["app_url"] == "aiv://aiv/search?phrase=Fight%20Club%201999"
+    assert prime["ios_link"] == prime["app_url"]
     netflix = watch["flatrate"][1]
     assert netflix["provider_id"] == 8
     assert netflix["web_url"] == REGION_LINK
     assert netflix["app_url"] is None
-    assert "tag=blndmovies-20" in watch["rent"][0]["web_url"]
+    assert netflix["click_url"] is None
+    assert netflix["ios_link"] is None
+    assert "tag=" not in watch["rent"][0]["web_url"]
+    assert watch["rent"][0]["click_url"].endswith("/out/10/movie/550")
     assert "i=instant-video" in watch["rent"][0]["web_url"]
     assert watch["buy"][0]["web_url"].startswith("https://tv.apple.com/")
+    assert watch["buy"][0]["ios_link"] == watch["buy"][0]["web_url"]
     assert "at=" not in watch["buy"][0]["web_url"]
     assert watch["buy"][0]["app_url"] is None
 
@@ -485,10 +506,9 @@ def test_stale_watch_cache_is_used_when_tmdb_fails(streaming_api, db: Session) -
     response = client.get("/movies/550/streaming")
 
     assert response.status_code == 200
-    assert (
-        "tag=blndmovies-20"
-        in response.json()["where_to_watch"]["flatrate"][0]["web_url"]
-    )
+    offer = response.json()["where_to_watch"]["flatrate"][0]
+    assert "tag=" not in offer["web_url"]
+    assert offer["ios_link"].startswith("aiv://")
 
 
 def test_missing_title_falls_back_to_justwatch_link(
@@ -537,9 +557,10 @@ def test_tv_streaming_is_disabled_by_default(with_tmdb) -> None:
 
 
 def test_tv_streaming_uses_same_shape(
-    streaming_api, monkeypatch: pytest.MonkeyPatch
+    streaming_api, db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, fake_tmdb = streaming_api
+    make_movie(db)
     monkeypatch.setattr(settings, "tv_support_enabled", True)
 
     response = client.get("/tv/1399/streaming")
@@ -547,10 +568,16 @@ def test_tv_streaming_uses_same_shape(
     assert response.status_code == 200
     body = response.json()
     assert body["options"] == []
-    assert body["where_to_watch"]["attribution"] == "Data provided by JustWatch"
+    assert body["where_to_watch"]["attribution"] == "JustWatch"
     prime = body["where_to_watch"]["flatrate"][0]
     assert "Game%20of%20Thrones%202011" in prime["web_url"]
-    assert "tag=blndmovies-20" in prime["web_url"]
+    assert "tag=" not in prime["web_url"]
+    assert prime["click_url"].endswith("/out/119/tv/1399")
+    assert prime["ios_link"].startswith("aiv://")
+    movie = client.get("/movies/550/streaming").json()
+    assert set(body) == set(movie)
+    assert set(body["where_to_watch"]) == set(movie["where_to_watch"])
+    assert set(prime) == set(movie["where_to_watch"]["flatrate"][0])
     assert "/tv/1399/watch/providers" in fake_tmdb.calls
     assert "/tv/1399" in fake_tmdb.calls
 
@@ -564,6 +591,7 @@ def test_redirect_logs_click_before_302(
     with_tmdb, db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, _fake = with_tmdb
+    _sign_in()
     _seed_redirect(db)
     seen: list[int] = []
     real = RedirectResponse
@@ -592,6 +620,26 @@ def test_redirect_logs_click_before_302(
     assert "Fight%20Club%201999" in location
     assert "evil.example" not in location
     assert seen == [db.query(AffiliateClick).one().id]
+
+
+def test_anonymous_redirect_omits_user_and_empty_tag(
+    with_tmdb, db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _fake = with_tmdb
+    make_movie(db)
+    monkeypatch.setattr(settings, "amazon_associates_tag", "")
+
+    empty = client.get("/out/119/movie/550", follow_redirects=False)
+
+    assert empty.status_code == 302
+    assert "tag=" not in empty.headers["location"]
+    assert db.query(AffiliateClick).one().user_id is None
+
+    monkeypatch.setattr(settings, "amazon_associates_tag", "blndmovies-20")
+    tagged = client.get("/out/119/movie/550", follow_redirects=False)
+    assert tagged.status_code == 302
+    assert "tag=blndmovies-20" in tagged.headers["location"]
+    assert db.query(AffiliateClick).count() == 2
 
 
 def test_failed_click_log_does_not_redirect(
@@ -661,6 +709,7 @@ def test_tv_redirect_uses_show_title(
     with_tmdb, db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, _fake = with_tmdb
+    _sign_in()
     make_profile(db, user_id=TEST_USER_ID, username="tvredirect")
     db.execute(
         text(
@@ -699,4 +748,5 @@ def test_affiliate_clicks_rls(db: Session) -> None:
     assert set(policies) == {
         "affiliate_clicks_select_own",
         "affiliate_clicks_insert_own",
+        "affiliate_clicks_insert_anonymous",
     }

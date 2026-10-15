@@ -48,6 +48,6 @@ async def get_streaming_availability(
             status_code=502, detail="Streaming availability service error"
         )
     result["where_to_watch"] = await load_where_to_watch(
-        "movie", tmdb_id, country, db, tmdb_client
+        "movie", tmdb_id, country, db, tmdb_client, str(request.base_url)
     )
     return result

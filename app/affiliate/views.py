@@ -8,7 +8,7 @@ from app.affiliate.providers import REGISTRY, outbound_url
 from app.affiliate.services import load_title, log_click
 from app.config import settings
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
-from app.dependencies import get_current_user, get_db, get_tmdb_client
+from app.dependencies import get_db, get_optional_user, get_tmdb_client
 
 router = APIRouter()
 
@@ -20,7 +20,7 @@ async def affiliate_redirect(
     provider: int,
     media_type: str,
     tmdb_id: int,
-    user_id: str = Depends(get_current_user),
+    user_id: str | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
