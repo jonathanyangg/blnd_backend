@@ -2,6 +2,8 @@
 
 Every error response uses this shape. `detail` is the same string as `error.message` so the shipped iOS 1.1 app, which reads `detail`, keeps working.
 
+`FREE_GROUP_CAP` and `GROUP_FULL` are the exception. That build's `parseDetail` only reads `detail["message"]` when `detail` is a dict, and it opens the paywall when the free-cap message contains `Upgrade to blnd+`. For those two codes only, `detail` is `{"message": "<same text as error.message>"}`. `error` is unchanged. Every other code still sends `detail` as a string.
+
 ```json
 {
   "error": {
@@ -24,10 +26,10 @@ The server logs the original exception, including upstream bodies, with that req
 | Code | Status | Meaning | iOS handling |
 | --- | --- | --- | --- |
 | `BAD_REQUEST` | 400 | The request was rejected for a reason `message` explains (a business rule, or a client error that is not schema validation). | Show `message`. |
-| `GROUP_FULL` | 400 | The group is already at its member cap. `message` includes the cap. | Show `message`. |
+| `GROUP_FULL` | 400 | The group is already at its member cap. `message` is `Group is full (N members max).` `detail` is `{"message": "<that text>"}`. | Read `detail.message`. |
 | `UNAUTHORIZED` | 401 | The access token is missing, invalid, or expired, or a refresh token was rejected. | Call refresh. If that refresh also returns 401, the session is dead: go to login. Do not log the user out on a 401 from any other call until refresh has failed. |
 | `PAYMENT_REQUIRED` | 402 | A paid action was rejected and no more specific code was set. | Show `message` and the upgrade path. |
-| `FREE_GROUP_CAP` | 402 | A free group is at its member cap. `message` includes the free and blnd+ caps. | Show `message` and the blnd+ upgrade path. |
+| `FREE_GROUP_CAP` | 402 | A free group is at its member cap. `message` is `Free groups are limited to 4 members. Upgrade to blnd+ for groups up to 12.` `detail` is `{"message": "<that text>"}`. | Read `detail.message`. The `Upgrade to blnd+` substring opens the paywall. |
 | `FORBIDDEN` | 403 | The caller is signed in but is not allowed to do this. | Show `message`. Do not refresh. |
 | `NOT_FOUND` | 404 | The resource does not exist or is hidden. | Show `message`, or an empty state. |
 | `METHOD_NOT_ALLOWED` | 405 | This HTTP method is not valid for the path. | Treat as a client bug. |

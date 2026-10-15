@@ -84,8 +84,9 @@ async def like_comment(
     comment_id: int,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
+    apns_client: APNs | None = Depends(get_apns_client),
 ):
-    return services.like_comment(user_id, comment_id, db)
+    return services.like_comment(user_id, comment_id, db, apns_client)
 
 
 @router.delete("/{comment_id}/like", response_model=schemas.LikeResponse)

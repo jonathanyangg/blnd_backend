@@ -35,81 +35,199 @@ def validate_zip(file_bytes: bytes) -> None:
 TMDB_RATE_LIMIT_DELAY = 0.025  # ~40 req/s — matches seed pipeline
 
 
-def _make_record(row: dict[str, str]) -> FilmRecord:
-    """Create a FilmRecord from a CSV row with safe year parsing."""
-    year: int | None = None
-    if row.get("Year"):
-        try:
-            year = int(row["Year"])
-        except ValueError:
-            year = None
-    return FilmRecord(uri=row["Letterboxd URI"], name=row["Name"], year=year)
+# Basenames from a Letterboxd export. Anything else in the zip is ignored.
+_IMPORT_CSV = {
+    "watched.csv": "watched",
+    "ratings.csv": "ratings",
+    "diary.csv": "diary",
+    "reviews.csv": "reviews",
+    "watchlist.csv": "watchlist",
+}
+# likes/ and lists/ are real export folders, but not film history.
+_IGNORED_DIRS = {"likes", "lists", "deleted", "__macosx"}
 
 
-def _get_or_create(merged: dict[str, FilmRecord], row: dict[str, str]) -> FilmRecord:
-    """Return existing FilmRecord for URI, or create and register a new one."""
-    uri = row["Letterboxd URI"]
+def _csv_members(zf: zipfile.ZipFile) -> dict[str, str]:
+    """Map each known CSV to the shallowest safe member in the zip.
+
+    Exports are usually nested in one folder (`letterboxd-user-date/watched.csv`).
+    Duplicate names prefer the shorter path. `likes/` and `lists/` never match.
+    """
+    chosen: dict[str, tuple[int, str]] = {}
+    for info in zf.infolist():
+        if info.is_dir():
+            continue
+        parts = [
+            part
+            for part in info.filename.replace("\\", "/").split("/")
+            if part not in ("", ".")
+        ]
+        if not parts or any(part == ".." for part in parts):
+            continue
+        if any(part.lower() in _IGNORED_DIRS for part in parts[:-1]):
+            continue
+        kind = _IMPORT_CSV.get(parts[-1].lower())
+        if kind is None:
+            continue
+        rank = (len(parts), info.filename)
+        current = chosen.get(kind)
+        if current is None or rank < current:
+            chosen[kind] = rank
+    return {kind: filename for kind, (_depth, filename) in chosen.items()}
+
+
+def _rows(zf: zipfile.ZipFile, name: str | None):
+    """Yield CSV rows for one zip member. Missing members yield nothing."""
+    if not name:
+        return
+    with zf.open(name) as raw:
+        reader = csv.DictReader(
+            io.TextIOWrapper(raw, encoding="utf-8-sig", newline="")
+        )
+        yield from reader
+
+
+def _parse_date(value: str | None) -> date | None:
+    """Parse a Letterboxd date cell. Blank or junk cells are no date."""
+    if not value:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _activity_date(row: dict[str, str]) -> date | None:
+    """Later of the log date and the watched date, when either is present."""
+    logged = _parse_date(row.get("Date"))
+    watched = _parse_date(row.get("Watched Date"))
+    if logged and watched:
+        return max(logged, watched)
+    return logged or watched
+
+
+def _get_or_create(
+    merged: dict[str, FilmRecord], row: dict[str, str]
+) -> FilmRecord | None:
+    """Return the film for this row, creating it when the URI and name exist."""
+    uri = (row.get("Letterboxd URI") or "").strip()
+    name = (row.get("Name") or "").strip()
+    if not uri or not name:
+        return None
     if uri not in merged:
-        merged[uri] = _make_record(row)
+        year: int | None = None
+        if row.get("Year"):
+            try:
+                year = int(row["Year"])
+            except ValueError:
+                year = None
+        merged[uri] = FilmRecord(uri=uri, name=name, year=year)
     return merged[uri]
 
 
+def _apply_rating(record: FilmRecord, row: dict[str, str]) -> None:
+    """Keep this row's rating when it is the latest one seen for the film."""
+    raw = (row.get("Rating") or "").strip()
+    if not raw:
+        return
+    try:
+        rating = float(raw)
+    except ValueError:
+        return
+    rated_on = _activity_date(row)
+    current = record.rating_on
+    if record.rating is not None:
+        if rated_on is None and current is not None:
+            return
+        if current is not None and rated_on is not None and rated_on < current:
+            return
+    record.rating = rating
+    record.rating_on = rated_on
+
+
+def _apply_watched_date(record: FilmRecord, row: dict[str, str]) -> None:
+    """Keep the latest watch date. A blank cell does not clear one already set."""
+    watched_on = _parse_date(row.get("Watched Date")) or _parse_date(row.get("Date"))
+    if watched_on is None:
+        return
+    if record.watched_date is None or watched_on > record.watched_date:
+        record.watched_date = watched_on
+
+
+def _apply_review(record: FilmRecord, row: dict[str, str]) -> None:
+    """Keep the latest non-empty review. Older text does not replace it."""
+    review = (row.get("Review") or "").strip()
+    if not review:
+        return
+    reviewed_on = _activity_date(row)
+    current = record.review_on
+    if record.review is not None:
+        if reviewed_on is None and current is not None:
+            return
+        if current is not None and reviewed_on is not None and reviewed_on < current:
+            return
+    record.review = review
+    record.review_on = reviewed_on
+
+
 def _parse_csvs(file_bytes: bytes) -> dict[str, FilmRecord]:
-    """Extract and parse all 5 Letterboxd CSVs from the zip into a URI-keyed dict."""
+    """Parse a full Letterboxd export zip into a URI-keyed dict.
+
+    Reads `watched.csv`, `ratings.csv`, `diary.csv`, `reviews.csv`, and
+    `watchlist.csv` at the zip root or inside one folder. When the same film
+    has more than one rating, the latest date wins. `likes/`, `lists/`, and
+    any other file are ignored.
+    """
     merged: dict[str, FilmRecord] = {}
 
     with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
-        available = zf.namelist()
+        members = _csv_members(zf)
 
-        # watched.csv
-        if "watched.csv" in available:
-            with zf.open("watched.csv") as raw:
-                reader = csv.DictReader(io.TextIOWrapper(raw, encoding="utf-8"))
-                for row in reader:
-                    record = _get_or_create(merged, row)
-                    record.in_watched = True
-                    record.rating = float(row["Rating"]) if row.get("Rating") else None
-                    record.watched_date = (
-                        date.fromisoformat(row["Date"]) if row.get("Date") else None
-                    )
+        for row in _rows(zf, members.get("watched")):
+            record = _get_or_create(merged, row)
+            if record is None:
+                continue
+            record.in_watched = True
+            _apply_rating(record, row)
+            _apply_watched_date(record, row)
 
-        # ratings.csv
-        if "ratings.csv" in available:
-            with zf.open("ratings.csv") as raw:
-                reader = csv.DictReader(io.TextIOWrapper(raw, encoding="utf-8"))
-                for row in reader:
-                    record = _get_or_create(merged, row)
-                    record.rating = float(row["Rating"]) if row.get("Rating") else None
+        for row in _rows(zf, members.get("ratings")):
+            record = _get_or_create(merged, row)
+            if record is None:
+                continue
+            record.in_watched = True
+            _apply_rating(record, row)
 
-        # reviews.csv — rating and watched_date here take priority
-        if "reviews.csv" in available:
-            with zf.open("reviews.csv") as raw:
-                reader = csv.DictReader(io.TextIOWrapper(raw, encoding="utf-8"))
-                for row in reader:
-                    record = _get_or_create(merged, row)
-                    record.review = row.get("Review") or None
-                    record.rating = float(row["Rating"]) if row.get("Rating") else None
-                    if row.get("Watched Date"):
-                        record.watched_date = date.fromisoformat(row["Watched Date"])
+        for row in _rows(zf, members.get("diary")):
+            record = _get_or_create(merged, row)
+            if record is None:
+                continue
+            record.in_watched = True
+            _apply_rating(record, row)
+            _apply_watched_date(record, row)
 
-        # likes/films.csv
-        if "likes/films.csv" in available:
-            with zf.open("likes/films.csv") as raw:
-                reader = csv.DictReader(io.TextIOWrapper(raw, encoding="utf-8"))
-                for row in reader:
-                    record = _get_or_create(merged, row)
-                    record.liked = True
+        for row in _rows(zf, members.get("reviews")):
+            record = _get_or_create(merged, row)
+            if record is None:
+                continue
+            record.in_watched = True
+            _apply_rating(record, row)
+            _apply_review(record, row)
+            _apply_watched_date(record, row)
 
-        # watchlist.csv
-        if "watchlist.csv" in available:
-            with zf.open("watchlist.csv") as raw:
-                reader = csv.DictReader(io.TextIOWrapper(raw, encoding="utf-8"))
-                for row in reader:
-                    record = _get_or_create(merged, row)
-                    record.in_watchlist = True
-                    record.watchlist_date = (
-                        date.fromisoformat(row["Date"]) if row.get("Date") else None
-                    )
+        for row in _rows(zf, members.get("watchlist")):
+            record = _get_or_create(merged, row)
+            if record is None:
+                continue
+            record.in_watchlist = True
+            listed_on = _parse_date(row.get("Date"))
+            if listed_on is not None and (
+                record.watchlist_date is None or listed_on > record.watchlist_date
+            ):
+                record.watchlist_date = listed_on
 
     return merged
 

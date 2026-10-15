@@ -8,10 +8,16 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
 from app.auth.models import Profile
-from app.friends.models import Friendship
+from app.friends.models import Friendship, UserBlock
+from app.groups.models import GroupMember
 from app.movies.models import Movie
 from app.movies.services import get_movie_details
-from app.tracking.models import ActivityFeedItem, WatchedMovie, WatchlistMovie
+from app.tracking.models import (
+    ActivityFeedItem,
+    WatchedMovie,
+    WatchedWith,
+    WatchlistMovie,
+)
 from app.tracking.schemas import UpdateTrackingRequest
 
 
@@ -24,8 +30,19 @@ async def track_movie(
     db: Session,
     tmdb_client: httpx.AsyncClient,
     source: str = "manual",
+    watched_with: list | None = None,
 ) -> dict:
-    """Track a movie — upserts if already tracked."""
+    """Track a movie — upserts if already tracked.
+
+    When watched_with is not None, replace the tagged companions. Omitted
+    leaves any existing tags in place. Tags must be accepted friends or
+    Blend members, and not the owner.
+    """
+    companion_ids = (
+        None
+        if watched_with is None
+        else _validate_companion_ids(user_id, watched_with, db)
+    )
     # Ensure movie is cached (FK constraint)
     await get_movie_details(tmdb_id, db, tmdb_client)
 
@@ -42,8 +59,6 @@ async def track_movie(
             existing.review = review
         if watched_date is not None:
             existing.watched_date = watched_date
-        db.commit()
-        db.refresh(existing)
         entry = existing
     else:
         entry = WatchedMovie(
@@ -55,8 +70,10 @@ async def track_movie(
             source=source,
         )
         db.add(entry)
-        db.commit()
-        db.refresh(entry)
+    db.flush()
+    added: list[str] = []
+    if companion_ids is not None:
+        added = _replace_companions(entry.id, user_id, companion_ids, db)
 
     # Remove from user's personal watchlist if present
     profile = db.query(Profile).filter(Profile.id == user_id).first()
@@ -65,10 +82,14 @@ async def track_movie(
             WatchlistMovie.watchlist_id == profile.watchlist_id,
             WatchlistMovie.tmdb_id == tmdb_id,
         ).delete()
-        db.commit()
+
+    _notify_watched_with(db, user_id, tmdb_id, added)
+    db.commit()
+    db.refresh(entry)
 
     movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
-    return _to_response(entry, movie)
+    companions = _companions_for([entry.id], db).get(entry.id, [])
+    return _to_response(entry, movie, companions)
 
 
 def get_watch_history(
@@ -92,7 +113,11 @@ def get_watch_history(
 
     rows = base.order_by(*_watched_order_by(sort)).offset(offset).limit(limit).all()
 
-    results = [_to_response(entry, movie) for entry, movie in rows]
+    companions = _companions_for([entry.id for entry, _movie in rows], db)
+    results = [
+        _to_response(entry, movie, companions.get(entry.id, []))
+        for entry, movie in rows
+    ]
     return {"results": results, "total": total}
 
 
@@ -138,13 +163,17 @@ def get_watched_movie(user_id: str, tmdb_id: int, db: Session) -> dict | None:
     )
     if not row:
         return None
-    return _to_response(row[0], row[1])
+    companions = _companions_for([row[0].id], db).get(row[0].id, [])
+    return _to_response(row[0], row[1], companions)
 
 
 def update_watched_movie(
     user_id: str, tmdb_id: int, updates: UpdateTrackingRequest, db: Session
 ) -> dict:
-    """Update rating/review/watched_date on an existing entry."""
+    """Update rating/review/watched_date/companions on an existing entry.
+
+    watched_with replaces the tag list when present. Null or omitted leaves it.
+    """
     entry = (
         db.query(WatchedMovie)
         .filter(WatchedMovie.user_id == user_id, WatchedMovie.tmdb_id == tmdb_id)
@@ -156,18 +185,26 @@ def update_watched_movie(
         )
 
     data = updates.model_dump(exclude_unset=True)
+    companion_ids = None
+    if "watched_with" in data and data["watched_with"] is not None:
+        companion_ids = _validate_companion_ids(user_id, data["watched_with"], db)
     if "rating" in data:
         entry.rating = data["rating"]
     if "review" in data:
         entry.review = data["review"]
     if "watched_date" in data:
         entry.watched_date = data["watched_date"]
+    added: list[str] = []
+    if companion_ids is not None:
+        added = _replace_companions(entry.id, user_id, companion_ids, db)
 
+    _notify_watched_with(db, user_id, tmdb_id, added)
     db.commit()
     db.refresh(entry)
 
     movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
-    return _to_response(entry, movie)
+    companions = _companions_for([entry.id], db).get(entry.id, [])
+    return _to_response(entry, movie, companions)
 
 
 def delete_watched_movie(user_id: str, tmdb_id: int, db: Session) -> None:
@@ -422,7 +459,11 @@ def get_friends_who_watched(
     return {"results": results, "total": total or 0}
 
 
-def _to_response(entry: WatchedMovie, movie: Movie | None) -> dict:
+def _to_response(
+    entry: WatchedMovie,
+    movie: Movie | None,
+    companions: list[dict] | None = None,
+) -> dict:
     """Convert a WatchedMovie + Movie pair to response dict."""
     return {
         "id": entry.id,
@@ -434,7 +475,199 @@ def _to_response(entry: WatchedMovie, movie: Movie | None) -> dict:
         "watched_date": entry.watched_date,
         "liked": entry.liked,
         "created_at": entry.created_at,
+        "watched_with": companions or [],
     }
+
+
+def _validate_companion_ids(
+    owner_id: str, companion_ids: list, db: Session
+) -> list[str]:
+    """Dedupe companion ids. Each must be an accepted friend or Blend member.
+
+    The owner cannot tag themselves. A block in either direction rejects the
+    tag even when the two users still share a Blend.
+    """
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for raw in companion_ids:
+        companion_id = str(raw)
+        if companion_id in seen:
+            continue
+        seen.add(companion_id)
+        deduped.append(companion_id)
+    if not deduped:
+        return []
+    if owner_id in seen:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Can only tag friends or Blend members",
+        )
+    allowed = _taggable_user_ids(owner_id, db)
+    if any(companion_id not in allowed for companion_id in deduped):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Can only tag friends or Blend members",
+        )
+    blocked = (
+        db.query(UserBlock.id)
+        .filter(
+            or_(
+                (UserBlock.blocker_id == owner_id)
+                & (UserBlock.blocked_id.in_(deduped)),
+                (UserBlock.blocked_id == owner_id)
+                & (UserBlock.blocker_id.in_(deduped)),
+            )
+        )
+        .first()
+    )
+    if blocked:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Can only tag friends or Blend members",
+        )
+    return deduped
+
+
+def _taggable_user_ids(owner_id: str, db: Session) -> set[str]:
+    """Accepted friends plus anyone who shares a Blend with the owner."""
+    friendships = (
+        db.query(Friendship.requester_id, Friendship.addressee_id)
+        .filter(
+            Friendship.status == "accepted",
+            or_(
+                Friendship.requester_id == owner_id,
+                Friendship.addressee_id == owner_id,
+            ),
+        )
+        .all()
+    )
+    allowed: set[str] = set()
+    for requester_id, addressee_id in friendships:
+        other = addressee_id if str(requester_id) == owner_id else requester_id
+        allowed.add(str(other))
+
+    blend_ids = [
+        row[0]
+        for row in db.query(GroupMember.group_id)
+        .filter(GroupMember.user_id == owner_id)
+        .all()
+    ]
+    if blend_ids:
+        members = (
+            db.query(GroupMember.user_id)
+            .filter(
+                GroupMember.group_id.in_(blend_ids),
+                GroupMember.user_id != owner_id,
+            )
+            .all()
+        )
+        allowed.update(str(row[0]) for row in members)
+    return allowed
+
+
+def _replace_companions(
+    watched_movie_id: int, owner_id: str, companion_ids: list[str], db: Session
+) -> list[str]:
+    """Replace the companion set. Returns ids that were not already tagged.
+
+    Caller commits.
+    """
+    previous = {
+        str(row[0])
+        for row in db.query(WatchedWith.user_id)
+        .filter(WatchedWith.watched_movie_id == watched_movie_id)
+        .all()
+    }
+    db.query(WatchedWith).filter(
+        WatchedWith.watched_movie_id == watched_movie_id
+    ).delete(synchronize_session=False)
+    added: list[str] = []
+    for companion_id in companion_ids:
+        db.add(
+            WatchedWith(
+                watched_movie_id=watched_movie_id,
+                owner_id=owner_id,
+                user_id=companion_id,
+            )
+        )
+        if companion_id not in previous:
+            added.append(companion_id)
+    return added
+
+
+def _notify_watched_with(
+    db: Session, actor_id: str, tmdb_id: int, added: list[str]
+) -> None:
+    """Tell newly tagged people, if the notification center is installed.
+
+    PR #24 defines notify_watched_with. This branch imports it by name and
+    skips the call when that name is absent, so #19 runs before #24 is merged.
+    The function does not commit; the caller does.
+    """
+    if not added:
+        return
+    try:
+        from app.notifications.services import notify_watched_with
+    except ImportError:
+        return
+    notify_watched_with(db, actor_id=actor_id, tagged_user_ids=added, tmdb_id=tmdb_id)
+
+
+def _companions_for(entry_ids: list[int], db: Session) -> dict[int, list[dict]]:
+    """Batch-load companions for watch logs, ordered by username within each log."""
+    if not entry_ids:
+        return {}
+    rows = (
+        db.query(WatchedWith, Profile)
+        .join(Profile, WatchedWith.user_id == Profile.id)
+        .filter(WatchedWith.watched_movie_id.in_(entry_ids))
+        .order_by(Profile.username.asc())
+        .all()
+    )
+    grouped: dict[int, list[dict]] = {}
+    for link, profile in rows:
+        grouped.setdefault(link.watched_movie_id, []).append(_person(profile))
+    return grouped
+
+
+def _person(profile: Profile) -> dict:
+    """iOS user card: id, display name (username if they have none), avatar."""
+    return {
+        "id": str(profile.id),
+        "name": profile.display_name or profile.username,
+        "avatar": profile.avatar_url,
+    }
+
+
+def get_watched_with(user_id: str, tmdb_id: int, db: Session) -> dict:
+    """Companions on the caller's log for one movie."""
+    entry = _owned_log(user_id, tmdb_id, db)
+    return {"watched_with": _companions_for([entry.id], db).get(entry.id, [])}
+
+
+def replace_watched_with(
+    user_id: str, tmdb_id: int, companion_ids: list, db: Session
+) -> dict:
+    """Replace the companion set on the caller's log for one movie."""
+    entry = _owned_log(user_id, tmdb_id, db)
+    ids = _validate_companion_ids(user_id, companion_ids, db)
+    added = _replace_companions(entry.id, user_id, ids, db)
+    _notify_watched_with(db, user_id, tmdb_id, added)
+    db.commit()
+    return {"watched_with": _companions_for([entry.id], db).get(entry.id, [])}
+
+
+def _owned_log(user_id: str, tmdb_id: int, db: Session) -> WatchedMovie:
+    entry = (
+        db.query(WatchedMovie)
+        .filter(WatchedMovie.user_id == user_id, WatchedMovie.tmdb_id == tmdb_id)
+        .first()
+    )
+    if not entry:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Movie not in watch history"
+        )
+    return entry
 
 
 # --- Activity Feed ---

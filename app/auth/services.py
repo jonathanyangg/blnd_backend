@@ -224,27 +224,35 @@ def get_profile(user_id: str, db: Session) -> Profile | None:
     return db.query(Profile).filter(Profile.id == user_id).first()
 
 
-def search_users(query: str, user_id: str, db: Session, limit: int = 10) -> list[dict]:
-    """Search users by username prefix (ILIKE), excluding the current user and blocked users."""
+def search_users(
+    query: str, user_id: str, db: Session, limit: int = 10, offset: int = 0
+) -> tuple[list[dict], int]:
+    """Search users by username prefix or display name, excluding the caller and blocked users."""
     from app.friends.services import follow_counts_by_user, get_blocked_user_ids
 
     escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     blocked_ids = get_blocked_user_ids(user_id, db)
     excluded_ids = blocked_ids | {user_id}
+    match = or_(
+        Profile.username.ilike(f"{escaped}%"),
+        Profile.display_name.ilike(f"%{escaped}%"),
+    )
+    excluded = Profile.id.notin_(list(excluded_ids))
+    total = (
+        db.query(func.count(Profile.id)).filter(match, excluded).scalar() or 0
+    )
     profiles = (
         db.query(Profile)
-        .filter(
-            or_(
-                Profile.username.ilike(f"{escaped}%"),
-                Profile.display_name.ilike(f"%{escaped}%"),
-            ),
-            Profile.id.notin_(list(excluded_ids)),
-        )
+        .filter(match, excluded)
+        .order_by(Profile.username)
+        .offset(offset)
         .limit(limit)
         .all()
     )
     # Batch fetch friendship statuses
     profile_ids = [p.id for p in profiles]
+    if not profile_ids:
+        return [], total
     friendships = (
         db.query(Friendship)
         .filter(
@@ -285,7 +293,7 @@ def search_users(query: str, user_id: str, db: Session, limit: int = 10) -> list
             "is_premium": is_premium(p),
         }
         for p in profiles
-    ]
+    ], total
 
 
 def update_profile(
