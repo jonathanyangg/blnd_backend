@@ -176,6 +176,39 @@ def test_user_search_no_results(client: TestClient, db: Session) -> None:
     resp = client.get("/auth/users/search", params={"q": "zzz"})
     assert resp.status_code == 200
     assert resp.json()["results"] == []
+    assert resp.json()["total"] == 0
+
+
+def test_user_search_matches_display_name_and_pages(
+    client: TestClient, db: Session
+) -> None:
+    make_profile(db, user_id=TEST_USER_ID, username="me")
+    make_profile(
+        db, user_id=TEST_USER_ID_2, username="samlee", display_name="Sam Rivera"
+    )
+    make_profile(
+        db,
+        user_id="33333333-3333-3333-3333-333333333333",
+        username="samantha",
+        display_name="Samantha Cole",
+    )
+    by_name = client.get("/auth/users/search", params={"q": "rivera"})
+    assert by_name.status_code == 200
+    assert by_name.json()["total"] == 1
+    assert by_name.json()["results"][0]["username"] == "samlee"
+
+    first = client.get(
+        "/auth/users/search", params={"q": "sam", "limit": 1, "offset": 0}
+    )
+    second = client.get(
+        "/auth/users/search", params={"q": "sam", "limit": 1, "offset": 1}
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["total"] == 2
+    assert second.json()["total"] == 2
+    assert first.json()["results"][0]["username"] == "samantha"
+    assert second.json()["results"][0]["username"] == "samlee"
 
 
 # --- POST /auth/refresh error mapping ---

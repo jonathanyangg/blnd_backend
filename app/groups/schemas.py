@@ -29,6 +29,8 @@ class GroupResponse(BaseModel):
     member_count: int
     member_avatars: list[str | None] = []
     created_at: datetime
+    # Set on search results. Omitted on the plain list.
+    display_name: str | None = None
 
 
 class GroupDetailResponse(BaseModel):
@@ -41,6 +43,7 @@ class GroupDetailResponse(BaseModel):
 
 class GroupListResponse(BaseModel):
     groups: list[GroupResponse]
+    total: int | None = None
 
 
 class GroupFeedRequest(BaseModel):

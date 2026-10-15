@@ -22,11 +22,13 @@ router = APIRouter()
 def search_users(
     request: Request,
     q: str = Query(min_length=1, max_length=30),
+    limit: int = Query(default=10, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    results = services.search_users(q, user_id, db)
-    return {"results": results}
+    results, total = services.search_users(q, user_id, db, limit, offset)
+    return {"results": results, "total": total}
 
 
 @router.get(

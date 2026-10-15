@@ -35,14 +35,24 @@ async def create_group(
     return result
 
 
-@router.get("/", response_model=schemas.GroupListResponse)
+@router.get(
+    "/",
+    response_model=schemas.GroupListResponse,
+    response_model_exclude_none=True,
+)
 @limiter.limit(LIMIT_DEFAULT)
 async def list_groups(
     request: Request,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
+    q: str | None = Query(default=None, min_length=1, max_length=100),
+    limit: int = Query(default=20, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
 ):
-    return services.list_groups(user_id, db)
+    """List the caller's blends. `q` searches stored names and default member names."""
+    if q is None:
+        return services.list_groups(user_id, db)
+    return services.search_groups(user_id, q, db, limit, offset)
 
 
 @router.get("/{group_id}", response_model=schemas.GroupDetailResponse)
