@@ -1,3 +1,4 @@
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
@@ -12,9 +13,10 @@ from app.core.rate_limit import (
     limiter,
 )
 from app.database import SessionLocal
-from app.dependencies import get_current_user, get_db, openai_client
+from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
 from app.subscriptions.services import is_premium
 from app.movies.models import Movie
+from app.movies.services import get_movie_details
 from app.recommendations import schemas, services
 from app.recommendations.services import increment_action_counter
 from app.recommendations.pipeline import (
@@ -173,16 +175,18 @@ def _schedule_taste_rebuild(
 
 @router.post("/{tmdb_id}/interested", response_model=schemas.InterestedMovieResponse)
 @limiter.limit(LIMIT_DEFAULT)
-def mark_interested(
+async def mark_interested(
     request: Request,
     tmdb_id: int,
     background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
+    # movie_interactions.tmdb_id references movies, so cache it first.
+    movie = await get_movie_details(tmdb_id, db, tmdb_client)
     row = services.record_interaction(user_id, tmdb_id, "interested", db)
     _schedule_taste_rebuild(background_tasks, user_id, db)
-    movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
     return _signal_response(tmdb_id, movie, row.created_at.isoformat(), "interested_at")
 
 
@@ -202,16 +206,18 @@ def unmark_interested(
 
 @router.post("/{tmdb_id}/not-for-me", response_model=schemas.NotForMeMovieResponse)
 @limiter.limit(LIMIT_DEFAULT)
-def mark_not_for_me(
+async def mark_not_for_me(
     request: Request,
     tmdb_id: int,
     background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
+    # movie_interactions.tmdb_id references movies, so cache it first.
+    movie = await get_movie_details(tmdb_id, db, tmdb_client)
     row = services.record_interaction(user_id, tmdb_id, "not_for_me", db)
     _schedule_taste_rebuild(background_tasks, user_id, db)
-    movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
     return _signal_response(tmdb_id, movie, row.created_at.isoformat(), "not_for_me_at")
 
 

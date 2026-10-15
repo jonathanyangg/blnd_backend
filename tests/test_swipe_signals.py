@@ -31,7 +31,7 @@ def _embed(db: Session, tmdb_id: int, index: int) -> None:
 
 
 def test_interested_does_not_watchlist_and_not_for_me_does_not_hide(
-    client: TestClient, db: Session
+    client_with_tmdb: TestClient, db: Session
 ) -> None:
     watchlist = make_watchlist(db)
     make_profile(db, user_id=TEST_USER_ID, username="swiper", watchlist_id=watchlist.id)
@@ -42,13 +42,13 @@ def test_interested_does_not_watchlist_and_not_for_me_does_not_hide(
         .filter(WatchlistMovie.watchlist_id == watchlist.id)
         .count()
     )
-    interested = client.post("/recommendations/550/interested")
+    interested = client_with_tmdb.post("/recommendations/550/interested")
     assert interested.status_code == 200
     body = interested.json()
     assert body["tmdb_id"] == 550
     assert body["title"] == "Fight Club"
     assert "interested_at" in body
-    again = client.post("/recommendations/550/interested")
+    again = client_with_tmdb.post("/recommendations/550/interested")
     assert again.status_code == 200
     assert again.json()["interested_at"] == body["interested_at"]
     assert (
@@ -63,9 +63,11 @@ def test_interested_does_not_watchlist_and_not_for_me_does_not_hide(
         .count()
         == before
     )
-    assert db.query(HiddenMovie).filter(HiddenMovie.user_id == TEST_USER_ID).count() == 0
+    assert (
+        db.query(HiddenMovie).filter(HiddenMovie.user_id == TEST_USER_ID).count() == 0
+    )
 
-    replaced = client.post("/recommendations/550/not-for-me")
+    replaced = client_with_tmdb.post("/recommendations/550/not-for-me")
     assert replaced.status_code == 200
     assert "not_for_me_at" in replaced.json()
     assert (
@@ -77,7 +79,9 @@ def test_interested_does_not_watchlist_and_not_for_me_does_not_hide(
         .count()
         == 1
     )
-    assert db.query(HiddenMovie).filter(HiddenMovie.user_id == TEST_USER_ID).count() == 0
+    assert (
+        db.query(HiddenMovie).filter(HiddenMovie.user_id == TEST_USER_ID).count() == 0
+    )
     assert (
         db.query(WatchlistMovie)
         .filter(WatchlistMovie.watchlist_id == watchlist.id)
@@ -86,11 +90,13 @@ def test_interested_does_not_watchlist_and_not_for_me_does_not_hide(
     )
 
 
-def test_undo_schedules_another_taste_action(client: TestClient, db: Session) -> None:
+def test_undo_schedules_another_taste_action(
+    client_with_tmdb: TestClient, db: Session
+) -> None:
     make_profile(db, user_id=TEST_USER_ID, username="swiper")
     make_movie(db, tmdb_id=550)
-    assert client.post("/recommendations/550/interested").status_code == 200
-    assert client.delete("/recommendations/550/interested").status_code == 204
+    assert client_with_tmdb.post("/recommendations/550/interested").status_code == 200
+    assert client_with_tmdb.delete("/recommendations/550/interested").status_code == 204
     from app.auth.models import Profile
 
     profile = db.query(Profile).filter(Profile.id == TEST_USER_ID).one()
@@ -99,35 +105,41 @@ def test_undo_schedules_another_taste_action(client: TestClient, db: Session) ->
     assert profile.actions_since_rebuild == 2
 
 
-def test_hide_does_not_write_a_swipe(client: TestClient, db: Session) -> None:
+def test_hide_does_not_write_a_swipe(client_with_tmdb: TestClient, db: Session) -> None:
     make_profile(db, user_id=TEST_USER_ID, username="swiper")
     make_movie(db, tmdb_id=550)
 
-    hidden = client.post("/recommendations/550/hide")
+    hidden = client_with_tmdb.post("/recommendations/550/hide")
     assert hidden.status_code == 200
-    assert db.query(HiddenMovie).filter(HiddenMovie.user_id == TEST_USER_ID).count() == 1
     assert (
-        db.query(MovieInteraction).filter(MovieInteraction.user_id == TEST_USER_ID).count()
+        db.query(HiddenMovie).filter(HiddenMovie.user_id == TEST_USER_ID).count() == 1
+    )
+    assert (
+        db.query(MovieInteraction)
+        .filter(MovieInteraction.user_id == TEST_USER_ID)
+        .count()
         == 0
     )
 
 
-def test_swipe_validation_and_delete(client: TestClient, db: Session) -> None:
+def test_swipe_validation_and_delete(client_with_tmdb: TestClient, db: Session) -> None:
     make_profile(db, user_id=TEST_USER_ID, username="swiper")
     make_movie(db, tmdb_id=550)
 
-    client.post("/recommendations/550/interested")
-    deleted = client.delete("/recommendations/550/interested")
+    client_with_tmdb.post("/recommendations/550/interested")
+    deleted = client_with_tmdb.delete("/recommendations/550/interested")
     assert deleted.status_code == 204
     assert (
-        db.query(MovieInteraction).filter(MovieInteraction.user_id == TEST_USER_ID).count()
+        db.query(MovieInteraction)
+        .filter(MovieInteraction.user_id == TEST_USER_ID)
+        .count()
         == 0
     )
-    missing_delete = client.delete("/recommendations/550/interested")
+    missing_delete = client_with_tmdb.delete("/recommendations/550/interested")
     assert missing_delete.status_code == 404
 
-    client.post("/recommendations/550/not-for-me")
-    wrong_undo = client.delete("/recommendations/550/interested")
+    client_with_tmdb.post("/recommendations/550/not-for-me")
+    wrong_undo = client_with_tmdb.delete("/recommendations/550/interested")
     assert wrong_undo.status_code == 404
     assert (
         db.query(MovieInteraction)
@@ -161,15 +173,11 @@ def test_interested_weight_and_rating_wins(db: Session) -> None:
     _embed(db, 1, 0)
     _embed(db, 2, 1)
     db.add(
-        MovieInteraction(
-            user_id=TEST_USER_ID, tmdb_id=2, interaction_type="interested"
-        )
+        MovieInteraction(user_id=TEST_USER_ID, tmdb_id=2, interaction_type="interested")
     )
     # Same movie as the rating: the rating wins, the swipe adds nothing.
     db.add(
-        MovieInteraction(
-            user_id=TEST_USER_ID, tmdb_id=1, interaction_type="interested"
-        )
+        MovieInteraction(user_id=TEST_USER_ID, tmdb_id=1, interaction_type="interested")
     )
     db.commit()
 
@@ -199,9 +207,7 @@ def test_interested_and_watchlist_on_the_same_movie_count_once(db: Session) -> N
     _embed(db, 1, 0)
     _embed(db, 2, 1)
     db.add(
-        MovieInteraction(
-            user_id=TEST_USER_ID, tmdb_id=2, interaction_type="interested"
-        )
+        MovieInteraction(user_id=TEST_USER_ID, tmdb_id=2, interaction_type="interested")
     )
     db.commit()
 
@@ -240,9 +246,7 @@ def test_not_for_me_is_weaker_than_hide(db: Session) -> None:
     _embed(db, 2, 1)
     db.add(HiddenMovie(user_id=TEST_USER_ID, tmdb_id=1))
     db.add(
-        MovieInteraction(
-            user_id=TEST_USER_ID, tmdb_id=2, interaction_type="not_for_me"
-        )
+        MovieInteraction(user_id=TEST_USER_ID, tmdb_id=2, interaction_type="not_for_me")
     )
     db.commit()
 
@@ -260,13 +264,13 @@ def test_hide_wins_over_interested_on_the_same_movie(db: Session) -> None:
     _embed(db, 1, 0)
     db.add(HiddenMovie(user_id=TEST_USER_ID, tmdb_id=1))
     db.add(
-        MovieInteraction(
-            user_id=TEST_USER_ID, tmdb_id=1, interaction_type="interested"
-        )
+        MovieInteraction(user_id=TEST_USER_ID, tmdb_id=1, interaction_type="interested")
     )
     db.commit()
 
-    positive, negative, sum_weights = compute_taste_embeddings(TEST_USER_ID, db, profile)
+    positive, negative, sum_weights = compute_taste_embeddings(
+        TEST_USER_ID, db, profile
+    )
     assert positive is None
     assert sum_weights is None
     assert negative is not None
@@ -279,9 +283,7 @@ def test_hide_wins_over_not_for_me_on_the_same_movie(db: Session) -> None:
     _embed(db, 1, 0)
     db.add(HiddenMovie(user_id=TEST_USER_ID, tmdb_id=1))
     db.add(
-        MovieInteraction(
-            user_id=TEST_USER_ID, tmdb_id=1, interaction_type="not_for_me"
-        )
+        MovieInteraction(user_id=TEST_USER_ID, tmdb_id=1, interaction_type="not_for_me")
     )
     db.commit()
 
@@ -289,3 +291,21 @@ def test_hide_wins_over_not_for_me_on_the_same_movie(db: Session) -> None:
     assert negative is not None
     # Weight 1.0 only. A second 0.5 would have pulled the vector off the axis.
     assert np.allclose(negative, _basis(0))
+
+
+def test_swipe_on_uncached_movie_caches_it_first(
+    client_with_tmdb: TestClient, db: Session
+) -> None:
+    """A reel card can come straight from TMDB; the swipe must not 500 on the FK."""
+    make_profile(db, user_id=TEST_USER_ID)
+    resp = client_with_tmdb.post("/recommendations/680/not-for-me")
+    assert resp.status_code == 200
+    assert resp.json()["tmdb_id"] == 680
+    row = (
+        db.query(MovieInteraction)
+        .filter(
+            MovieInteraction.user_id == TEST_USER_ID, MovieInteraction.tmdb_id == 680
+        )
+        .one()
+    )
+    assert row.interaction_type == "not_for_me"
