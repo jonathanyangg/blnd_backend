@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     posthog_api_key: str = ""
     posthog_host: str = ""
     tv_support_enabled: bool = False
+    amazon_affiliate_enabled: bool = False
+    amazon_affiliate_tag: str = ""
 
     model_config = {"env_file": ".env"}
 
