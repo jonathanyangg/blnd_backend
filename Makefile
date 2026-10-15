@@ -25,6 +25,7 @@ db-down:
 	supabase stop
 
 # Offline recommendation eval against the local Supabase Postgres.
-# Rebuilds movies 900001-900240 and @eval.local users. See scripts/eval_recs.py.
+# Replaces only movies 900001-900240 and @eval.local users. Dataset notes
+# are in scripts/eval_recs.py.
 eval: db-up
 	uv run python scripts/eval_recs.py
