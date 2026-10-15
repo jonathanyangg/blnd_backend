@@ -90,26 +90,34 @@ _PUSH_DEFAULT = {
     "recommendations": True,
 }
 
+# API field -> column, when they differ. share_ratings is the iOS name.
+_PREF_COLUMN = {
+    "share_ratings": "share_ratings_activity",
+    "watched_with_in_app": "watched_with_tags_in_app",
+    "watched_with_push": "watched_with_tags_push",
+}
+
 _PREFERENCE_DEFAULTS = {
     "friend_requests": True,
     "group_invites": True,
     "recommendations": True,
     "friend_activity": True,
     "comment_replies": True,
-    "share_ratings_activity": "friends",
+    "share_ratings": "friends",
     "friends_ratings_in_app": True,
     "friends_ratings_push": False,
     "blend_activity_in_app": True,
     "blend_activity_push": True,
     "comments_likes_in_app": True,
     "comments_likes_push": True,
-    "watched_with_tags_in_app": True,
-    "watched_with_tags_push": True,
+    "watched_with_in_app": True,
+    "watched_with_push": True,
     "recommendations_in_app": True,
     "recommendations_push": True,
 }
 
-_ACTIONABLE = {"friend_request", "follow_request"}
+_ACTIONABLE = {"friend_request"}
+_TMDB_THUMB = "https://image.tmdb.org/t/p/w185"
 _CLOSED = {"accepted", "declined", "rejected"}
 
 # Shared visibility filter for the grouped inbox and the unread count.
@@ -122,6 +130,7 @@ WITH visible AS (
         n.title,
         n.body,
         n.data,
+        n.group_key,
         n.read,
         n.created_at,
         COALESCE(n.group_key, 'row:' || n.id::text) AS gkey
@@ -160,17 +169,6 @@ WITH visible AS (
                   )
             )
         )
-        OR (
-            COALESCE(actor.share_ratings_activity, 'friends') = 'blends'
-            AND EXISTS (
-                SELECT 1
-                FROM group_members gm1
-                JOIN group_members gm2 ON gm1.group_id = gm2.group_id
-                WHERE gm1.user_id = n.user_id
-                  AND gm2.user_id = n.from_user_id
-                  AND gm1.user_id <> gm2.user_id
-            )
-        )
       )
 )
 """
@@ -185,10 +183,18 @@ def _pref_row(user_id: str, db: Session) -> NotificationPreference | None:
 
 
 def serialize_preferences(pref: NotificationPreference | None) -> dict:
-    """Preference payload. A missing row returns lazy defaults and writes nothing."""
-    if pref is None:
-        return dict(_PREFERENCE_DEFAULTS)
-    return {key: getattr(pref, key) for key in _PREFERENCE_DEFAULTS}
+    """Preference payload. A missing row returns lazy defaults and writes nothing.
+
+    ``share_ratings`` reads column share_ratings_activity. ``watched_with_*``
+    reads the watched_with_tags_* columns.
+    """
+    values = {}
+    for key, default in _PREFERENCE_DEFAULTS.items():
+        if pref is None:
+            values[key] = default
+        else:
+            values[key] = getattr(pref, _PREF_COLUMN.get(key, key))
+    return values
 
 
 def read_preferences(user_id: str, db: Session) -> dict:
@@ -268,11 +274,9 @@ def rating_recipient_ids(user_id: str, db: Session) -> list[str]:
     if audience == "off":
         return []
     friends = _friend_ids(user_id, db)
-    if audience == "friends":
+    if audience != "everyone":
         return friends
     mates = _blend_mate_ids(user_id, db)
-    if audience == "blends":
-        return mates
     # shortcut: "everyone" stops at friends and blend-mates, not every profile.
     seen: list[str] = []
     for uid in friends + mates:
@@ -369,12 +373,12 @@ def get_or_create_preferences(user_id: str, db: Session) -> NotificationPreferen
 
 
 def update_preferences(
-    user_id: str, updates: dict[str, bool], db: Session
+    user_id: str, updates: dict[str, bool | str], db: Session
 ) -> NotificationPreference:
-    """Partially update notification preferences."""
+    """Partially update notification preferences. API names are mapped to columns."""
     pref = get_or_create_preferences(user_id, db)
     for key, value in updates.items():
-        setattr(pref, key, value)
+        setattr(pref, _PREF_COLUMN.get(key, key), value)
     pref.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(pref)
@@ -598,6 +602,83 @@ def _actions_for(inbox_type: str, data: dict) -> list[str]:
     return ["accept", "decline"]
 
 
+def _poster_url(path: str | None) -> str | None:
+    """TMDB w185 thumb. Stored poster_path values are paths like /poster.jpg."""
+    if not path:
+        return None
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return f"{_TMDB_THUMB}{path}"
+
+
+def _tmdb_id(data: dict) -> int | None:
+    raw = data.get("tmdb_id")
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _target(inbox_type: str, data: dict) -> dict | None:
+    """Tap target: one type and one id."""
+    if inbox_type in ("comment_like", "comment_reply", "comment_mention"):
+        if data.get("comment_id"):
+            return {"type": "comment", "id": str(data["comment_id"])}
+    if inbox_type in (
+        "friend_activity",
+        "recommendation",
+        "match",
+        "watched_with",
+        "weekly_digest",
+    ) and data.get("tmdb_id"):
+        return {"type": "movie", "id": str(data["tmdb_id"])}
+    if inbox_type in (
+        "group_invite",
+        "blend_invite",
+        "group_watchlist",
+        "blend_activity",
+    ) and data.get("group_id"):
+        return {"type": "blend", "id": str(data["group_id"])}
+    if inbox_type in (
+        "friend_request",
+        "friend_accepted",
+        "new_follower",
+    ) and data.get("user_id"):
+        return {"type": "user", "id": str(data["user_id"])}
+    return None
+
+
+def _card_fields(
+    inbox_type: str,
+    data: dict,
+    avatar: str | None,
+    group_key: str | None,
+    poster_path: str | None,
+) -> dict:
+    stored = data.get("poster_path") or poster_path
+    return {
+        "avatar_url": avatar,
+        "poster_url": _poster_url(stored if isinstance(stored, str) else None),
+        "group_key": group_key,
+        "target": _target(inbox_type, data),
+    }
+
+
+def _poster_paths(db: Session, tmdb_ids: set[int]) -> dict[int, str | None]:
+    if not tmdb_ids:
+        return {}
+    rows = (
+        db.query(Movie.tmdb_id, Movie.poster_path)
+        .filter(Movie.tmdb_id.in_(tmdb_ids))
+        .all()
+    )
+    return {row.tmdb_id: row.poster_path for row in rows}
+
+
 def _visible_params(user_id: str, cursor_at: datetime | None, cursor_id: int | None) -> dict:
     return {"uid": user_id, "cursor_at": cursor_at, "cursor_id": cursor_id}
 
@@ -646,6 +727,7 @@ def get_inbox(
                         (ARRAY_AGG(created_at ORDER BY created_at DESC, id DESC))[1] AS created_at,
                         BOOL_AND(read) AS read,
                         COUNT(*)::int AS actor_count,
+                        (ARRAY_AGG(group_key ORDER BY created_at DESC, id DESC))[1] AS group_key,
                         (ARRAY_AGG(from_user_id ORDER BY created_at DESC, id DESC))[1:8] AS actor_ids
                     FROM visible
                     GROUP BY gkey
@@ -686,10 +768,13 @@ def get_inbox(
             str(profile.id): profile
             for profile in db.query(Profile).filter(Profile.id.in_(all_ids)).all()
         }
+    page_data = [_as_dict(row["data"]) for row in page]
+    posters = _poster_paths(
+        db, {tid for data in page_data if (tid := _tmdb_id(data)) is not None}
+    )
 
     results = []
-    for row, actor_ids in zip(page, parsed_ids, strict=True):
-        data = _as_dict(row["data"])
+    for row, actor_ids, data in zip(page, parsed_ids, page_data, strict=True):
         actors = []
         names = []
         for actor_id in actor_ids:
@@ -705,12 +790,14 @@ def get_inbox(
             )
         lead = profiles.get(actor_ids[0]) if actor_ids else None
         created_at = row["created_at"]
+        avatar = lead.avatar_url if lead else None
+        tid = _tmdb_id(data)
         results.append(
             {
                 "id": int(row["id"]),
                 "type": row["type"],
                 "from_username": lead.username if lead else None,
-                "from_avatar_url": lead.avatar_url if lead else None,
+                "from_avatar_url": avatar,
                 "title": row["title"],
                 "body": _grouped_body(
                     row["type"], int(row["actor_count"]), names, data, row["body"]
@@ -723,6 +810,13 @@ def get_inbox(
                 "actors": actors,
                 "actor_count": int(row["actor_count"]),
                 "actions": _actions_for(row["type"], data),
+                **_card_fields(
+                    row["type"],
+                    data,
+                    avatar,
+                    row["group_key"],
+                    posters.get(tid) if tid is not None else None,
+                ),
             }
         )
 
@@ -798,11 +892,17 @@ def _present_item(item: NotificationInboxItem, db: Session) -> dict:
             "display_name": profile.display_name,
             "avatar_url": profile.avatar_url,
         }
+    avatar = profile.avatar_url if profile else None
+    tid = _tmdb_id(data)
+    poster = None
+    if tid is not None:
+        movie = db.query(Movie.poster_path).filter(Movie.tmdb_id == tid).first()
+        poster = movie.poster_path if movie else None
     return {
         "id": item.id,
         "type": item.type,
         "from_username": profile.username if profile else None,
-        "from_avatar_url": profile.avatar_url if profile else None,
+        "from_avatar_url": avatar,
         "title": item.title,
         "body": item.body,
         "data": data,
@@ -811,6 +911,7 @@ def _present_item(item: NotificationInboxItem, db: Session) -> dict:
         "actors": [actor] if actor else [],
         "actor_count": 1,
         "actions": _actions_for(item.type, data),
+        **_card_fields(item.type, data, avatar, item.group_key, poster),
     }
 
 
@@ -919,6 +1020,57 @@ def record_comment_like(
             group_key=f"like:comment:{comment_id}",
         )
     )
+
+
+def notify_watched_with(
+    db: Session,
+    *,
+    actor_id: str,
+    tagged_user_ids: list[str],
+    tmdb_id: int,
+    movie_title: str | None = None,
+    poster_path: str | None = None,
+) -> None:
+    """Write a watched_with inbox row for each newly tagged person. Caller commits.
+
+    PR #19 (cursor/watched-with-6fe9) owns the watched_with table. After it
+    saves tags, call this with only the user ids added in that save:
+
+        notify_watched_with(db, actor_id=user_id, tagged_user_ids=added,
+                            tmdb_id=tmdb_id, movie_title=title,
+                            poster_path=poster_path)
+
+    This branch does not import that table, so the two PRs do not both edit
+    the tracking write path.
+    """
+    fresh = [uid for uid in tagged_user_ids if uid and uid != actor_id]
+    if not fresh:
+        return
+    actor = db.query(Profile).filter(Profile.id == actor_id).first()
+    name = _display_name(actor)
+    movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+    title = movie_title or (movie.title if movie else "a movie")
+    path = poster_path if poster_path is not None else (movie.poster_path if movie else None)
+    data = {
+        "type": "watched_with",
+        "tmdb_id": str(tmdb_id),
+        "user_id": actor_id,
+        "poster_path": path,
+    }
+    for uid in fresh:
+        if not in_app_enabled(uid, "watched_with", db):
+            continue
+        db.add(
+            NotificationInboxItem(
+                user_id=uid,
+                type="watched_with",
+                from_user_id=actor_id,
+                title="Watched with you",
+                body=f"{name} watched {title} with you",
+                data=dict(data),
+                group_key=f"watched_with:{tmdb_id}",
+            )
+        )
 
 
 def _build_digest_body(user_id: str, since: datetime, db: Session) -> str | None:

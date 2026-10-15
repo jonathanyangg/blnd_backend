@@ -17,10 +17,12 @@ from app.notifications.models import (
     NotificationInboxItem,
     NotificationPreference,
 )
+from app.auth.models import Profile
 from app.notifications.services import (
     fire_notification_to_friends,
     get_inbox,
     is_push_eligible,
+    notify_watched_with,
 )
 from tests.conftest import CALLER_ID, TARGET_ID
 from tests.factories import make_friendship, make_group, make_movie, make_profile
@@ -85,6 +87,11 @@ def test_groups_likes_and_marks_the_group_read(client: TestClient, db: Session) 
     ]
     for uid, username, display, _stamp in actors:
         make_profile(db, user_id=uid, username=username, display_name=display)
+    alex = db.query(Profile).filter(Profile.id == TARGET_ID).one()
+    alex.avatar_url = "https://cdn.example/alex.jpg"
+    db.commit()
+    make_movie(db)
+    like_data = {"type": "comment_like", "comment_id": "9", "tmdb_id": "550"}
     for uid, _username, display, stamp in actors:
         _note(
             db,
@@ -94,6 +101,7 @@ def test_groups_likes_and_marks_the_group_read(client: TestClient, db: Session) 
             body=f"{display} liked your review",
             created_at=stamp,
             group_key="like:comment:9",
+            data=like_data,
         )
     _note(
         db,
@@ -120,6 +128,10 @@ def test_groups_likes_and_marks_the_group_read(client: TestClient, db: Session) 
     assert four["body"] == "Alex and 3 others liked your review"
     assert four["type"] == "comment_like"
     assert four["from_username"] == "nalex"
+    assert four["avatar_url"] == "https://cdn.example/alex.jpg"
+    assert four["poster_url"] == "https://image.tmdb.org/t/p/w185/poster.jpg"
+    assert four["group_key"] == "like:comment:9"
+    assert four["target"] == {"type": "comment", "id": "9"}
     assert two["body"] == "Alex and Sam liked your review"
     assert body["unread_count"] == 6
 
@@ -213,13 +225,6 @@ def test_rating_audience_at_query_time(client: TestClient, db: Session) -> None:
     _prefs(db, TARGET_ID, share_ratings_activity="off")
     assert visible() is False
 
-    _prefs(db, TARGET_ID, share_ratings_activity="blends")
-    assert visible() is False
-    group, _watchlist = make_group(db, name="Weekend", created_by=TARGET_ID)
-    db.add(GroupMember(group_id=group.id, user_id=CALLER_ID))
-    db.commit()
-    assert visible() is True
-
     _prefs(db, TARGET_ID, share_ratings_activity="friends")
     assert visible() is False
     make_friendship(db, TARGET_ID, CALLER_ID, status="accepted")
@@ -248,11 +253,6 @@ def test_rating_fanout_respects_audience(db: Session) -> None:
     _prefs(db, TARGET_ID, share_ratings_activity="off")
     fire_notification_to_friends(TARGET_ID, "rated", 550, db, rating=4.0)
     assert bodies(CALLER_ID) == []
-
-    _prefs(db, TARGET_ID, share_ratings_activity="blends")
-    fire_notification_to_friends(TARGET_ID, "rated", 550, db, rating=3.5)
-    assert bodies(CALLER_ID) == []
-    assert bodies(THIRD_ID)
 
     db.query(NotificationInboxItem).delete(synchronize_session=False)
     db.commit()
@@ -366,23 +366,23 @@ def test_accept_and_decline_friend_request(client: TestClient, db: Session) -> N
     assert client.post(f"/notifications/inbox/{stranger.id}/accept").status_code == 404
 
 
-def test_follow_request_accept_updates_the_row_only(client: TestClient, db: Session) -> None:
+def test_new_follower_is_informational(client: TestClient, db: Session) -> None:
     make_profile(db, user_id=CALLER_ID, username="casey")
     make_profile(db, user_id=TARGET_ID, username="alex")
     note = _note(
         db,
         CALLER_ID,
-        type="follow_request",
+        type="new_follower",
         from_user=TARGET_ID,
-        body="alex wants to follow you",
+        body="alex started following you",
         created_at=WHEN,
+        data={"type": "new_follower", "user_id": TARGET_ID},
     )
     listed = client.get("/notifications/inbox").json()["results"][0]
-    assert listed["actions"] == ["accept", "decline"]
-    resp = client.post(f"/notifications/inbox/{note.id}/decline")
-    assert resp.status_code == 200
-    assert resp.json()["data"]["status"] == "declined"
-    assert resp.json()["actions"] == []
+    assert listed["actions"] == []
+    assert listed["target"] == {"type": "user", "id": TARGET_ID}
+    assert client.post(f"/notifications/inbox/{note.id}/accept").status_code == 400
+    assert client.post(f"/notifications/inbox/{note.id}/decline").status_code == 400
 
 
 @pytest.mark.parametrize(
@@ -391,7 +391,7 @@ def test_follow_request_accept_updates_the_row_only(client: TestClient, db: Sess
         ("friends_ratings_in_app", "friend_activity", []),
         ("blend_activity_in_app", "group_invite", ["group_watchlist", "blend_activity"]),
         ("comments_likes_in_app", "comment_like", ["comment_reply", "comment_mention"]),
-        ("watched_with_tags_in_app", "watched_with", []),
+        ("watched_with_in_app", "watched_with", []),
         ("recommendations_in_app", "match", ["recommendation", "weekly_digest"]),
     ],
 )
@@ -464,12 +464,17 @@ def test_preference_defaults_are_lazy_and_old_fields_remain(
     assert body["recommendations"] is True
     assert body["friend_activity"] is True
     assert body["comment_replies"] is True
-    assert body["share_ratings_activity"] == "friends"
+    assert body["share_ratings"] == "friends"
+    assert "share_ratings_activity" not in body
     assert body["friends_ratings_in_app"] is True
     assert body["friends_ratings_push"] is False
+    assert body["blend_activity_in_app"] is True
     assert body["blend_activity_push"] is True
     assert body["comments_likes_in_app"] is True
-    assert body["watched_with_tags_in_app"] is True
+    assert body["comments_likes_push"] is True
+    assert body["watched_with_in_app"] is True
+    assert body["watched_with_push"] is True
+    assert body["recommendations_in_app"] is True
     assert body["recommendations_push"] is True
     assert (
         db.query(NotificationPreference)
@@ -480,11 +485,17 @@ def test_preference_defaults_are_lazy_and_old_fields_remain(
 
     patched = client.patch(
         "/notifications/preferences",
-        json={"friend_requests": False, "share_ratings_activity": "off"},
+        json={"friend_requests": False, "share_ratings": "off"},
     )
     assert patched.status_code == 200
     assert patched.json()["friend_requests"] is False
-    assert patched.json()["share_ratings_activity"] == "off"
+    assert patched.json()["share_ratings"] == "off"
+    stored = (
+        db.query(NotificationPreference.share_ratings_activity)
+        .filter(NotificationPreference.user_id == CALLER_ID)
+        .scalar()
+    )
+    assert stored == "off"
     assert patched.json()["comment_replies"] is True
     assert (
         db.query(NotificationPreference)
@@ -492,10 +503,43 @@ def test_preference_defaults_are_lazy_and_old_fields_remain(
         .count()
         == 1
     )
-    bad = client.patch(
-        "/notifications/preferences", json={"share_ratings_activity": "public"}
-    )
+    bad = client.patch("/notifications/preferences", json={"share_ratings": "public"})
     assert bad.status_code == 422
+    blends = client.patch("/notifications/preferences", json={"share_ratings": "blends"})
+    assert blends.status_code == 422
+
+
+def test_watched_with_hook_emits_a_card(client: TestClient, db: Session) -> None:
+    make_profile(db, user_id=CALLER_ID, username="casey")
+    actor = make_profile(db, user_id=TARGET_ID, username="alex", display_name="Alex")
+    actor.avatar_url = "https://cdn.example/alex.jpg"
+    db.commit()
+    make_movie(db)
+    notify_watched_with(
+        db, actor_id=TARGET_ID, tagged_user_ids=[CALLER_ID, TARGET_ID], tmdb_id=550
+    )
+    db.commit()
+    item = client.get("/notifications/inbox").json()["results"][0]
+    assert item["type"] == "watched_with"
+    assert item["body"] == "Alex watched Fight Club with you"
+    assert item["avatar_url"] == "https://cdn.example/alex.jpg"
+    assert item["poster_url"] == "https://image.tmdb.org/t/p/w185/poster.jpg"
+    assert item["group_key"] == "watched_with:550"
+    assert item["target"] == {"type": "movie", "id": "550"}
+    assert item["actions"] == []
+
+    _prefs(db, CALLER_ID, watched_with_tags_in_app=False)
+    notify_watched_with(db, actor_id=TARGET_ID, tagged_user_ids=[CALLER_ID], tmdb_id=550)
+    db.commit()
+    stored = (
+        db.query(NotificationInboxItem)
+        .filter(
+            NotificationInboxItem.user_id == CALLER_ID,
+            NotificationInboxItem.type == "watched_with",
+        )
+        .count()
+    )
+    assert stored == 1
 
 
 def test_rls_prefs_and_inbox_are_owner_only(db: Session) -> None:

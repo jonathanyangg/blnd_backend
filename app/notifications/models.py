@@ -64,7 +64,7 @@ class NotificationPreference(Base):
     last_friend_activity_push_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # Outgoing audience for rating activity. Lazy: a missing row means friends.
+    # iOS share_ratings. Values: everyone, friends, off. A missing row means friends.
     share_ratings_activity: Mapped[str] = mapped_column(
         String, nullable=False, default="friends", server_default="friends"
     )

@@ -1,5 +1,6 @@
 -- Demo notification center for the local Casey account.
--- Watched-with tags are intentionally absent: that feature is not on main.
+-- watched_with rows are written by notify_watched_with(), which PR #19 calls
+-- when a log tags someone. One demo row is included so the inbox shows the type.
 
 INSERT INTO auth.users (id, instance_id, aud, role, email, created_at, updated_at)
 VALUES
@@ -59,25 +60,25 @@ VALUES
     (
         'c1c1c1c1-c1c1-c1c1-c1c1-c1c1c1c1c1c1', 'comment_like',
         'a4a4a4a4-a4a4-a4a4-a4a4-a4a4a4a4a4a4', 'New Like', 'Riley liked your review',
-        '{"type":"comment_like","comment_id":"1","tmdb_id":"550"}'::jsonb,
+        '{"type":"comment_like","comment_id":"1","tmdb_id":"550","poster_path":"/poster.jpg"}'::jsonb,
         'like:comment:1', now() - interval '8 minutes'
     ),
     (
         'c1c1c1c1-c1c1-c1c1-c1c1-c1c1c1c1c1c1', 'comment_like',
         'a3a3a3a3-a3a3-a3a3-a3a3-a3a3a3a3a3a3', 'New Like', 'Jordan liked your review',
-        '{"type":"comment_like","comment_id":"1","tmdb_id":"550"}'::jsonb,
+        '{"type":"comment_like","comment_id":"1","tmdb_id":"550","poster_path":"/poster.jpg"}'::jsonb,
         'like:comment:1', now() - interval '7 minutes'
     ),
     (
         'c1c1c1c1-c1c1-c1c1-c1c1-c1c1c1c1c1c1', 'comment_like',
         'a2a2a2a2-a2a2-a2a2-a2a2-a2a2a2a2a2a2', 'New Like', 'Sam liked your review',
-        '{"type":"comment_like","comment_id":"1","tmdb_id":"550"}'::jsonb,
+        '{"type":"comment_like","comment_id":"1","tmdb_id":"550","poster_path":"/poster.jpg"}'::jsonb,
         'like:comment:1', now() - interval '6 minutes'
     ),
     (
         'c1c1c1c1-c1c1-c1c1-c1c1-c1c1c1c1c1c1', 'comment_like',
         'a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1', 'New Like', 'Alex liked your review',
-        '{"type":"comment_like","comment_id":"1","tmdb_id":"550"}'::jsonb,
+        '{"type":"comment_like","comment_id":"1","tmdb_id":"550","poster_path":"/poster.jpg"}'::jsonb,
         'like:comment:1', now() - interval '5 minutes'
     ),
     (
@@ -121,6 +122,13 @@ VALUES
         'Fight Club is a 92% match',
         '{"type":"recommendation","tmdb_id":"550"}'::jsonb,
         NULL, now() - interval '60 seconds'
+    ),
+    (
+        'c1c1c1c1-c1c1-c1c1-c1c1-c1c1c1c1c1c1', 'watched_with',
+        'a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1', 'Watched with you',
+        'Alex watched Fight Club with you',
+        '{"type":"watched_with","tmdb_id":"550","user_id":"a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1","poster_path":"/poster.jpg"}'::jsonb,
+        'watched_with:550', now() - interval '40 seconds'
     ),
     (
         'c1c1c1c1-c1c1-c1c1-c1c1-c1c1c1c1c1c1', 'match',
