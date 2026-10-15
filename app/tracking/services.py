@@ -591,15 +591,47 @@ def _companions_for(entry_ids: list[int], db: Session) -> dict[int, list[dict]]:
     )
     grouped: dict[int, list[dict]] = {}
     for link, profile in rows:
-        grouped.setdefault(link.watched_movie_id, []).append(
-            {
-                "user_id": str(profile.id),
-                "username": profile.username,
-                "display_name": profile.display_name,
-                "avatar_url": profile.avatar_url,
-            }
-        )
+        grouped.setdefault(link.watched_movie_id, []).append(_person(profile))
     return grouped
+
+
+def _person(profile: Profile) -> dict:
+    """iOS user card: id, display name (username if they have none), avatar."""
+    return {
+        "id": str(profile.id),
+        "name": profile.display_name or profile.username,
+        "avatar": profile.avatar_url,
+    }
+
+
+def get_watched_with(user_id: str, tmdb_id: int, db: Session) -> dict:
+    """Companions on the caller's log for one movie."""
+    entry = _owned_log(user_id, tmdb_id, db)
+    return {"watched_with": _companions_for([entry.id], db).get(entry.id, [])}
+
+
+def replace_watched_with(
+    user_id: str, tmdb_id: int, companion_ids: list, db: Session
+) -> dict:
+    """Replace the companion set on the caller's log for one movie."""
+    entry = _owned_log(user_id, tmdb_id, db)
+    ids = _validate_companion_ids(user_id, companion_ids, db)
+    _replace_companions(entry.id, user_id, ids, db)
+    db.commit()
+    return {"watched_with": _companions_for([entry.id], db).get(entry.id, [])}
+
+
+def _owned_log(user_id: str, tmdb_id: int, db: Session) -> WatchedMovie:
+    entry = (
+        db.query(WatchedMovie)
+        .filter(WatchedMovie.user_id == user_id, WatchedMovie.tmdb_id == tmdb_id)
+        .first()
+    )
+    if not entry:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Movie not in watch history"
+        )
+    return entry
 
 
 # --- Activity Feed ---

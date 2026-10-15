@@ -6,10 +6,18 @@ from pydantic import BaseModel, Field
 
 
 class WatchedWithUser(BaseModel):
-    user_id: str
-    username: str
-    display_name: str | None = None
-    avatar_url: str | None = None
+    id: str
+    name: str
+    avatar: str | None = None
+
+
+class WatchedWithResponse(BaseModel):
+    watched_with: list[WatchedWithUser]
+
+
+class ReplaceWatchedWithRequest(BaseModel):
+    # shortcut: one log tags at most 50 people
+    user_ids: list[UUID] = Field(default_factory=list, max_length=50)
 
 
 class TrackMovieRequest(BaseModel):

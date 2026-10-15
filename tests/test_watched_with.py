@@ -26,7 +26,7 @@ REBUILD_PATH = "app.tracking.views.rebuild_taste_profile"
 
 
 def _ids(payload: dict) -> list[str]:
-    return [person["user_id"] for person in payload["watched_with"]]
+    return [person["id"] for person in payload["watched_with"]]
 
 
 @pytest.fixture
@@ -49,8 +49,8 @@ def test_track_tags_friend(
     assert resp.status_code == 200
     body = resp.json()
     assert _ids(body) == [TEST_USER_ID_2]
-    assert body["watched_with"][0]["username"] == "wwada"
-    assert body["watched_with"][0]["display_name"] == "Ada"
+    assert body["watched_with"][0]["name"] == "Ada"
+    assert body["watched_with"][0]["avatar"] is None
 
     listed = client_with_tmdb.get("/tracking/")
     assert listed.status_code == 200
@@ -98,7 +98,10 @@ def test_track_rejects_people_who_are_not_friends_or_blend_members(
     )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Can only tag friends or Blend members"
-    assert db.query(WatchedWith).count() == 0
+    assert (
+        db.query(WatchedWith).filter(WatchedWith.owner_id == TEST_USER_ID).count()
+        == 0
+    )
 
 
 @patch(REBUILD_PATH)
@@ -114,7 +117,10 @@ def test_track_rejects_blocked_blend_member(
         "/tracking/", json={"tmdb_id": 550, "watched_with": [TEST_USER_ID_2]}
     )
     assert resp.status_code == 400
-    assert db.query(WatchedWith).count() == 0
+    assert (
+        db.query(WatchedWith).filter(WatchedWith.owner_id == TEST_USER_ID).count()
+        == 0
+    )
 
 
 def test_update_watched_with(client: TestClient, db: Session, people: None) -> None:
@@ -137,6 +143,37 @@ def test_update_watched_with(client: TestClient, db: Session, people: None) -> N
     assert _ids(swapped.json()) == [str(beau.id)]
 
     cleared = client.patch("/tracking/550", json={"watched_with": []})
+    assert cleared.status_code == 200
+    assert cleared.json()["watched_with"] == []
+
+
+def test_put_replaces_watched_with(
+    client: TestClient, db: Session, people: None
+) -> None:
+    make_friendship(db, TEST_USER_ID, TEST_USER_ID_2, status="accepted")
+    missing = client.get("/tracking/550/watched-with")
+    assert missing.status_code == 404
+
+    make_watched(db, user_id=TEST_USER_ID, tmdb_id=550)
+    put = client.put("/tracking/550/watched-with", json={"user_ids": [TEST_USER_ID_2]})
+    assert put.status_code == 200
+    assert put.json()["watched_with"] == [
+        {"id": TEST_USER_ID_2, "name": "Ada", "avatar": None}
+    ]
+
+    got = client.get("/tracking/550/watched-with")
+    assert got.status_code == 200
+    assert got.json() == put.json()
+
+    rejected = client.put(
+        "/tracking/550/watched-with", json={"user_ids": [STRANGER_ID]}
+    )
+    assert rejected.status_code == 400
+    assert client.get("/tracking/550/watched-with").json()["watched_with"][0]["id"] == (
+        TEST_USER_ID_2
+    )
+
+    cleared = client.put("/tracking/550/watched-with", json={"user_ids": []})
     assert cleared.status_code == 200
     assert cleared.json()["watched_with"] == []
 
@@ -166,7 +203,10 @@ def test_delete_log_removes_companions(
 
     deleted = client.delete("/tracking/550")
     assert deleted.status_code == 204
-    assert db.query(WatchedWith).count() == 0
+    assert (
+        db.query(WatchedWith).filter(WatchedWith.owner_id == TEST_USER_ID).count()
+        == 0
+    )
 
 
 def _as_user(db: Session, user_id: str) -> None:
