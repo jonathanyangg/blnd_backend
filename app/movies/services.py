@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.auth.models import Profile
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
+from app.recommendations.collaborative import blend_cf_similarity
 from app.recommendations.collaborative import compute_cf_scores
 from app.recommendations.ranking import (
     W_CAST,
@@ -143,9 +144,10 @@ def compute_match_scores(
     (similarity term becomes 0, remaining signals renormalized so the
     fallback can still reach ~100%).
 
-    For movies that contributed to the user's taste embedding (rated positive or
-    currently in watchlist), we apply a leave-one-out adjustment so a movie isn't
-    being compared against a taste vector that contains itself.
+    For movies that contributed to the user's taste embedding (a positive rating,
+    a watchlist save, or an interested swipe), we apply a leave-one-out
+    adjustment so a movie isn't being compared against a taste vector that
+    contains itself. That cosine is what gets blended with a CF score.
     """
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile or profile.taste_embedding is None:
@@ -189,8 +191,8 @@ def compute_match_scores(
         if not movie:
             continue
         movie_emb = emb_map.get(tid)
-        similarity = cf_scores.get(tid)
-        if similarity is None and movie_emb:
+        embedding_similarity = None
+        if movie_emb:
             movie_weight = contrib_weights.get(tid, 0.0)
             if movie_weight > 0 and sum_weights and sum_weights > movie_weight:
                 # Leave-one-out: reconstruct the taste vector without this
@@ -200,9 +202,16 @@ def compute_match_scores(
                     taste_emb * sum_weights
                     - movie_weight * np.array(movie_emb, dtype=np.float64)
                 ) / adjusted_denom
-                similarity = _cosine_sim(adjusted_taste.tolist(), movie_emb)
+                embedding_similarity = _cosine_sim(adjusted_taste.tolist(), movie_emb)
             else:
-                similarity = _cosine_sim(taste_emb.tolist(), movie_emb)
+                embedding_similarity = _cosine_sim(taste_emb.tolist(), movie_emb)
+
+        cf_sim = cf_scores.get(tid)
+        similarity = (
+            blend_cf_similarity(cf_sim, embedding_similarity)
+            if cf_sim is not None
+            else embedding_similarity
+        )
 
         if similarity is not None:
             neg_sim = (

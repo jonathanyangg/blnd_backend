@@ -12,14 +12,28 @@ the caller can fall back to embedding cosine similarity.
 """
 
 import numpy as np
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.tracking.models import WatchedMovie
 
 MIN_PROFILE_RATINGS = 5  # below this, the target profile has too little signal
 MIN_CO_RATERS = 3  # a candidate needs this many co-raters on some rated movie
 SHRINKAGE = 10.0  # co-rater count at which a similarity keeps half its value
 MAX_RATING = 5.0
+MAX_NEIGHBOURS = 1000
+
+
+def blend_cf_similarity(cf_score: float, embedding_score: float | None) -> float:
+    """Blend CF with the embedding score. Default weight keeps CF unchanged.
+
+    A movie with no embedding has nothing to blend, so the CF score is used whole.
+    """
+    if embedding_score is None:
+        return cf_score
+    weight = min(max(settings.cf_blend_weight, 0.0), 1.0)
+    return weight * cf_score + (1.0 - weight) * embedding_score
 
 
 def compute_cf_scores(
@@ -34,6 +48,8 @@ def compute_cf_scores(
     co-rating support get a score.
     """
     if not user_ids or not candidate_tmdb_ids:
+        return {}
+    if not settings.cf_enabled:
         return {}
 
     profile_ratings = _profile_ratings(user_ids, db)
@@ -119,6 +135,10 @@ def _centered_rating_matrix(
     dot products that form item-item similarities. The boolean matrix says
     which cells were actually rated.
     """
+    # shortcut: at most MAX_NEIGHBOURS people, the ones who share the most
+    # movies with the profile. Switch to a precomputed item-item table once a
+    # popular title has more raters than this.
+    overlap = func.count(WatchedMovie.tmdb_id)
     neighbour_ids = (
         db.query(WatchedMovie.user_id)
         .filter(
@@ -126,7 +146,9 @@ def _centered_rating_matrix(
             WatchedMovie.rating.isnot(None),
             WatchedMovie.user_id.notin_(user_ids),
         )
-        .distinct()
+        .group_by(WatchedMovie.user_id)
+        .order_by(overlap.desc(), WatchedMovie.user_id)
+        .limit(MAX_NEIGHBOURS)
         .subquery()
     )
     rows = (

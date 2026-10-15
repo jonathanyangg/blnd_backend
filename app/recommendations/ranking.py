@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 from app.movies.models import Movie
+from app.recommendations.collaborative import blend_cf_similarity
 
 # Weights — easy to tune later
 W_SIMILARITY = 0.50
@@ -93,7 +94,11 @@ def rerank_candidates(
     for c in candidates:
         movie: Movie = c["movie"]
         cf_sim = cf_scores.get(c["tmdb_id"]) if cf_scores else None
-        sim = c["similarity"] if cf_sim is None else cf_sim
+        sim = (
+            c["similarity"]
+            if cf_sim is None
+            else blend_cf_similarity(cf_sim, c["similarity"])
+        )
 
         genre = _genre_overlap(movie.genres or [], user_genres)
         consensus = _consensus_score(movie.vote_average)

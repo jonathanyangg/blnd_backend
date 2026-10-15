@@ -2,6 +2,7 @@
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.import_data.models import MovieEmbedding
 from app.movies.services import compute_match_scores
 from app.recommendations.ranking import W_SIMILARITY, to_match_percentage
@@ -63,6 +64,26 @@ def test_match_score_uses_cf_when_supported(db: Session) -> None:
     scores = compute_match_scores([CANDIDATE], user_id, db)
 
     assert scores[CANDIDATE] == to_match_percentage(round(W_SIMILARITY * 1.0, 4))
+
+
+def test_match_score_blends_cf_with_embedding(db: Session, monkeypatch) -> None:
+    """CF_BLEND_WEIGHT splits the similarity term between CF and cosine."""
+    user_id = _setup(db, with_neighbours=True)
+    monkeypatch.setattr(settings, "cf_blend_weight", 0.5)
+
+    scores = compute_match_scores([CANDIDATE], user_id, db)
+
+    assert scores[CANDIDATE] == to_match_percentage(round(W_SIMILARITY * 0.5, 4))
+
+
+def test_match_score_disabled_uses_embedding(db: Session, monkeypatch) -> None:
+    """Disabling CF restores the cosine-only match score even with neighbours."""
+    user_id = _setup(db, with_neighbours=True)
+    monkeypatch.setattr(settings, "cf_enabled", False)
+
+    scores = compute_match_scores([CANDIDATE], user_id, db)
+
+    assert scores[CANDIDATE] == to_match_percentage(0.0)
 
 
 def test_match_score_falls_back_to_cosine_without_cf_support(db: Session) -> None:
