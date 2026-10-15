@@ -742,7 +742,8 @@ def test_out_missing_title_uses_error_envelope(with_tmdb, db: Session) -> None:
     assert db.query(AffiliateClick).count() == 0
 
 
-def test_streaming_upstream_error_uses_envelope(client: TestClient) -> None:
+def test_streaming_catalog_down_keeps_watch_offers(client: TestClient) -> None:
+    """A RapidAPI failure must not drop the TMDB where-to-watch block."""
     from app.dependencies import get_streaming_client, get_tmdb_client
     from main import app
 
@@ -760,12 +761,10 @@ def test_streaming_upstream_error_uses_envelope(client: TestClient) -> None:
         app.dependency_overrides.pop(get_streaming_client, None)
         app.dependency_overrides.pop(get_tmdb_client, None)
 
-    assert_error(
-        response,
-        status=503,
-        code="SERVICE_UNAVAILABLE",
-        message="Upstream service unavailable, try again",
-    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["options"] == []
+    assert body["where_to_watch"]["flatrate"][0]["provider_id"] == 119
 
 
 def test_unknown_provider_is_not_a_redirect(with_tmdb, db: Session) -> None:
