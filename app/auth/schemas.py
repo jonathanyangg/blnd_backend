@@ -98,6 +98,7 @@ class UserResponse(BaseModel):
 
 class UserSearchResponse(BaseModel):
     results: list[UserResponse]
+    total: int = 0
 
 
 class UpdateProfileRequest(BaseModel):

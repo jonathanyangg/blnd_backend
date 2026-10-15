@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 from app.auth.models import Profile
 from app.groups.models import Group, GroupMember
+from app.groups.names import blend_display_name, default_blend_name, first_name
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
 from app.recommendations.models import HiddenMovie
@@ -104,6 +105,62 @@ def list_groups(user_id: str, db: Session) -> dict:
         )
 
     return {"groups": results}
+
+
+def search_groups(
+    user_id: str, query: str, db: Session, limit: int, offset: int
+) -> dict:
+    """Blends whose stored name or default member name matches.
+
+    Groups have no public flag, so this is only blends the caller belongs to.
+    shortcut: filtered in memory. Fine while a person is in a handful of
+    blends (free cap 4, premium 12). Filter in SQL if public blends exist.
+    """
+    group_ids = [
+        row[0]
+        for row in db.query(GroupMember.group_id)
+        .filter(GroupMember.user_id == user_id)
+        .all()
+    ]
+    if not group_ids:
+        return {"groups": [], "total": 0}
+
+    groups = (
+        db.query(Group).filter(Group.id.in_(group_ids)).order_by(Group.id).all()
+    )
+    member_rows = (
+        db.query(GroupMember, Profile)
+        .join(Profile, GroupMember.user_id == Profile.id)
+        .filter(GroupMember.group_id.in_(group_ids))
+        .order_by(GroupMember.joined_at, GroupMember.user_id)
+        .all()
+    )
+    members_by_group: dict[int, list[Profile]] = defaultdict(list)
+    for gm, profile in member_rows:
+        members_by_group[gm.group_id].append(profile)
+
+    needle = query.strip().lower()
+    matched = []
+    for group in groups:
+        people = members_by_group.get(group.id, [])
+        first_names = [first_name(p.display_name, p.username) for p in people]
+        stored = group.name or ""
+        default_name = default_blend_name(first_names)
+        if needle not in stored.lower() and needle not in default_name.lower():
+            continue
+        matched.append(
+            {
+                "id": group.id,
+                "name": group.name,
+                "display_name": blend_display_name(group.name, first_names),
+                "created_by": str(group.created_by),
+                "member_count": len(people),
+                "member_avatars": [p.avatar_url for p in people[:4]],
+                "created_at": group.created_at,
+            }
+        )
+
+    return {"groups": matched[offset : offset + limit], "total": len(matched)}
 
 
 def get_group(group_id: int, user_id: str, db: Session) -> dict:
@@ -448,6 +505,7 @@ def get_group_recommendations(
         top_cast=all_cast,
         genre_watch_counts=combined_counts,
         total_watches=combined_total,
+        cf_user_ids=[str(mid) for mid in member_ids],
     )
 
     results = run_recommendation_pipeline(ctx, db, limit, offset)
