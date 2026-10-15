@@ -197,10 +197,13 @@ async def search_movies(
                 row["media_type"] = "movie"
             if filters.wants_tv:
                 tv_data = await tv_services.search_tv_shows(query, page, tmdb_client)
+                _keep_tv_vote(tv_data["results"])
                 data["results"].extend(tv_data["results"])
                 data["total_results"] += tv_data["total_results"]
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
+    if filters.media_type == "tv":
+        _keep_tv_vote(data["results"])
     data["results"] = [
         row
         for row in data["results"]
@@ -208,6 +211,14 @@ async def search_movies(
     ]
     data["total_results"] = len(data["results"]) if filters.year_min or filters.year_max else data["total_results"]
     return data
+
+
+def _keep_tv_vote(rows: list[dict]) -> None:
+    """Movie responses halve vote_average. Double TV votes first so they survive."""
+    for row in rows:
+        vote = row.get("vote_average")
+        if isinstance(vote, (int, float)):
+            row["vote_average"] = vote * 2
 
 
 def _year_in_range(year: int | None, year_min: int | None, year_max: int | None) -> bool:
