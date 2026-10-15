@@ -24,7 +24,7 @@ class GroupMemberResponse(BaseModel):
 
 class GroupResponse(BaseModel):
     id: int
-    name: str
+    name: str | None
     created_by: str
     member_count: int
     member_avatars: list[str | None] = []
@@ -35,7 +35,7 @@ class GroupResponse(BaseModel):
 
 class GroupDetailResponse(BaseModel):
     id: int
-    name: str
+    name: str | None
     created_by: str
     members: list[GroupMemberResponse]
     created_at: datetime
