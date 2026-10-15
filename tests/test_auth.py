@@ -128,6 +128,23 @@ def test_get_me(client: TestClient, db: Session) -> None:
     assert data["id"] == TEST_USER_ID
 
 
+def test_get_me_is_premium_follows_the_profile_row(
+    client: TestClient, db: Session
+) -> None:
+    profile = make_profile(db, user_id=TEST_USER_ID, username="testuser")
+    free = client.get("/auth/me")
+    assert free.status_code == 200
+    assert free.json()["is_premium"] is False
+
+    profile.subscription_tier = "premium"
+    profile.subscription_source = "admin"
+    profile.subscription_expires_at = None
+    db.commit()
+    premium = client.get("/auth/me")
+    assert premium.status_code == 200
+    assert premium.json()["is_premium"] is True
+
+
 def test_get_me_not_found(client: TestClient) -> None:
     resp = client.get("/auth/me")
     assert resp.status_code == 404

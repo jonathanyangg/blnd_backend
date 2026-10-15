@@ -6,6 +6,7 @@ from starlette.requests import Request
 
 from app.analytics import Event, track
 from app.auth.models import Profile
+from app.content_filters import ContentFilters, get_content_filters
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.dependencies import (
     get_apns_client,
@@ -17,6 +18,8 @@ from app.dependencies import (
 from app.groups import picks
 from app.groups import schemas, services
 from app.groups.models import Group, GroupMember
+from app.timeline import schemas as timeline_schemas
+from app.timeline import services as timeline_services
 from app.movies.models import Movie
 from app.notifications.services import (
     THREAD_GROUP_ACTIVITY,
@@ -61,6 +64,19 @@ async def get_group(
     db: Session = Depends(get_db),
 ):
     return services.get_group(group_id, user_id, db)
+
+
+@router.get("/{group_id}/timeline", response_model=timeline_schemas.TimelineResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def get_group_timeline(
+    request: Request,
+    group_id: int,
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=50),
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return timeline_services.get_blend_timeline(user_id, group_id, cursor, limit, db)
 
 
 @router.patch("/{group_id}", response_model=schemas.GroupDetailResponse)
@@ -160,8 +176,20 @@ async def get_group_recommendations(
     db: Session = Depends(get_db),
     limit: int = Query(default=20, ge=1, le=50),
     offset: int = Query(default=0, ge=0),
+    filters: ContentFilters = Depends(get_content_filters),
 ):
-    return services.get_group_recommendations(group_id, user_id, db, limit, offset)
+    if not filters.wants_movies:
+        services._verify_membership(group_id, user_id, db)
+        return {"results": []}
+    return services.get_group_recommendations(
+        group_id,
+        user_id,
+        db,
+        limit,
+        offset,
+        year_min=filters.year_min,
+        year_max=filters.year_max,
+    )
 
 
 @router.post(
@@ -175,10 +203,21 @@ async def get_group_feed(
     body: schemas.GroupFeedRequest,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
+    filters: ContentFilters = Depends(get_content_filters),
 ):
     """Infinite scroll feed for group recommendations with exclude list."""
+    if not filters.wants_movies:
+        services._verify_membership(group_id, user_id, db)
+        return {"results": []}
     return services.get_group_recommendations(
-        group_id, user_id, db, body.limit, 0, extra_exclude=body.exclude
+        group_id,
+        user_id,
+        db,
+        body.limit,
+        0,
+        extra_exclude=body.exclude,
+        year_min=filters.year_min,
+        year_max=filters.year_max,
     )
 
 
@@ -223,12 +262,23 @@ async def get_group_watchlist(
     db: Session = Depends(get_db),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    filters: ContentFilters = Depends(get_content_filters),
 ):
+    if not filters.wants_movies:
+        services._verify_membership(group_id, user_id, db)
+        return {"results": [], "total": 0}
     services._verify_membership(group_id, user_id, db)
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group or not group.watchlist_id:
         return {"results": [], "total": 0}
-    data = watchlist_services.get_watchlist(group.watchlist_id, db, limit, offset)
+    data = watchlist_services.get_watchlist(
+        group.watchlist_id,
+        db,
+        limit,
+        offset,
+        year_min=filters.year_min,
+        year_max=filters.year_max,
+    )
     # Inject group match scores
     tmdb_ids = [r["tmdb_id"] for r in data["results"]]
     if tmdb_ids:

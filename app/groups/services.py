@@ -22,7 +22,12 @@ from app.recommendations.pipeline import (
     run_recommendation_pipeline,
 )
 from app.subscriptions.services import is_premium
-from app.tracking.models import Watchlist, WatchedMovie, WatchlistMovie
+from app.tracking.models import (
+    InterestedMovie,
+    Watchlist,
+    WatchedMovie,
+    WatchlistMovie,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -309,6 +314,8 @@ def get_group_recommendations(
     limit: int = 20,
     offset: int = 0,
     extra_exclude: list[int] | None = None,
+    year_min: int | None = None,
+    year_max: int | None = None,
 ) -> dict:
     """Generate group recommendations using the shared pipeline."""
     group = db.query(Group).filter(Group.id == group_id).first()
@@ -382,6 +389,7 @@ def get_group_recommendations(
     exclude_stmts = [
         select(WatchedMovie.tmdb_id).where(WatchedMovie.user_id.in_(member_ids)),
         select(HiddenMovie.tmdb_id).where(HiddenMovie.user_id.in_(member_ids)),
+        select(InterestedMovie.tmdb_id).where(InterestedMovie.user_id.in_(member_ids)),
     ]
     if group.watchlist_id:
         exclude_stmts.append(
@@ -448,6 +456,9 @@ def get_group_recommendations(
         top_cast=all_cast,
         genre_watch_counts=combined_counts,
         total_watches=combined_total,
+        year_min=year_min,
+        year_max=year_max,
+        cf_user_ids=[str(mid) for mid in member_ids],
     )
 
     results = run_recommendation_pipeline(ctx, db, limit, offset)

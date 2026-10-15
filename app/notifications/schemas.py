@@ -1,4 +1,8 @@
+from typing import Literal
+
 from pydantic import BaseModel
+
+ShareAudience = Literal["everyone", "friends", "blends", "off"]
 
 
 class RegisterDeviceRequest(BaseModel):
@@ -16,6 +20,17 @@ class PreferencesResponse(BaseModel):
     recommendations: bool
     friend_activity: bool
     comment_replies: bool
+    share_ratings_activity: ShareAudience
+    friends_ratings_in_app: bool
+    friends_ratings_push: bool
+    blend_activity_in_app: bool
+    blend_activity_push: bool
+    comments_likes_in_app: bool
+    comments_likes_push: bool
+    watched_with_tags_in_app: bool
+    watched_with_tags_push: bool
+    recommendations_in_app: bool
+    recommendations_push: bool
 
 
 class UpdatePreferencesRequest(BaseModel):
@@ -24,6 +39,17 @@ class UpdatePreferencesRequest(BaseModel):
     recommendations: bool | None = None
     friend_activity: bool | None = None
     comment_replies: bool | None = None
+    share_ratings_activity: ShareAudience | None = None
+    friends_ratings_in_app: bool | None = None
+    friends_ratings_push: bool | None = None
+    blend_activity_in_app: bool | None = None
+    blend_activity_push: bool | None = None
+    comments_likes_in_app: bool | None = None
+    comments_likes_push: bool | None = None
+    watched_with_tags_in_app: bool | None = None
+    watched_with_tags_push: bool | None = None
+    recommendations_in_app: bool | None = None
+    recommendations_push: bool | None = None
 
 
 class DigestStatusResponse(BaseModel):
@@ -31,6 +57,13 @@ class DigestStatusResponse(BaseModel):
 
 
 # --- Inbox ---
+
+
+class InboxActor(BaseModel):
+    id: str
+    username: str | None = None
+    display_name: str | None = None
+    avatar_url: str | None = None
 
 
 class InboxItemResponse(BaseModel):
@@ -43,8 +76,17 @@ class InboxItemResponse(BaseModel):
     data: dict = {}
     read: bool
     created_at: str
+    actors: list[InboxActor] = []
+    actor_count: int = 1
+    actions: list[str] = []
 
 
 class InboxResponse(BaseModel):
     results: list[InboxItemResponse]
+    unread_count: int
+    next_cursor: str | None = None
+
+
+class InboxReadResponse(BaseModel):
+    message: str
     unread_count: int

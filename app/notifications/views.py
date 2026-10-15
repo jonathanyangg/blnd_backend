@@ -3,7 +3,7 @@
 import asyncio
 
 from aioapns import APNs
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 from starlette.responses import Response
@@ -47,14 +47,7 @@ async def get_preferences(
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> schemas.PreferencesResponse:
-    pref = services.get_or_create_preferences(user_id, db)
-    return schemas.PreferencesResponse(
-        friend_requests=pref.friend_requests,
-        group_invites=pref.group_invites,
-        recommendations=pref.recommendations,
-        friend_activity=pref.friend_activity,
-        comment_replies=pref.comment_replies,
-    )
+    return schemas.PreferencesResponse(**services.read_preferences(user_id, db))
 
 
 @router.patch("/preferences", response_model=schemas.PreferencesResponse)
@@ -66,36 +59,82 @@ async def update_preferences(
     db: Session = Depends(get_db),
 ) -> schemas.PreferencesResponse:
     pref = services.update_preferences(user_id, body.model_dump(exclude_none=True), db)
-    return schemas.PreferencesResponse(
-        friend_requests=pref.friend_requests,
-        group_invites=pref.group_invites,
-        recommendations=pref.recommendations,
-        friend_activity=pref.friend_activity,
-        comment_replies=pref.comment_replies,
-    )
+    return schemas.PreferencesResponse(**services.serialize_preferences(pref))
 
 
+@router.get("", response_model=schemas.InboxResponse)
 @router.get("/inbox", response_model=schemas.InboxResponse)
 @limiter.limit(LIMIT_DEFAULT)
 async def get_inbox(
     request: Request,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
-    limit: int = 30,
-    offset: int = 0,
+    limit: int = Query(default=30, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    cursor: str | None = None,
 ) -> dict:
-    return services.get_inbox(user_id, db, limit, offset)
+    return services.get_inbox(user_id, db, limit, offset, cursor)
 
 
-@router.post("/inbox/read", response_model=schemas.MessageResponse)
+@router.get("/unread", response_model=schemas.InboxReadResponse)
+@limiter.limit(LIMIT_DEFAULT)
+async def get_unread_count(
+    request: Request,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.InboxReadResponse:
+    return schemas.InboxReadResponse(
+        message="Unread count", unread_count=services.unread_count(user_id, db)
+    )
+
+
+@router.post("/inbox/read", response_model=schemas.InboxReadResponse)
 @limiter.limit(LIMIT_DEFAULT)
 async def mark_inbox_read(
     request: Request,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> schemas.MessageResponse:
+) -> schemas.InboxReadResponse:
     services.mark_inbox_read(user_id, db)
-    return schemas.MessageResponse(message="Inbox marked as read")
+    return schemas.InboxReadResponse(
+        message="Inbox marked as read", unread_count=services.unread_count(user_id, db)
+    )
+
+
+@router.post("/inbox/{item_id}/read", response_model=schemas.InboxReadResponse)
+@limiter.limit(LIMIT_DEFAULT)
+async def mark_one_read(
+    request: Request,
+    item_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.InboxReadResponse:
+    remaining = services.mark_one_read(user_id, item_id, db)
+    return schemas.InboxReadResponse(
+        message="Notification marked as read", unread_count=remaining
+    )
+
+
+@router.post("/inbox/{item_id}/accept", response_model=schemas.InboxItemResponse)
+@limiter.limit(LIMIT_DEFAULT)
+async def accept_notification(
+    request: Request,
+    item_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return services.accept_notification(user_id, item_id, db)
+
+
+@router.post("/inbox/{item_id}/decline", response_model=schemas.InboxItemResponse)
+@limiter.limit(LIMIT_DEFAULT)
+async def decline_notification(
+    request: Request,
+    item_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return services.decline_notification(user_id, item_id, db)
 
 
 @router.post("/badge/reset", response_model=schemas.MessageResponse)

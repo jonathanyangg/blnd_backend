@@ -8,14 +8,34 @@ from supabase_auth.errors import AuthApiError, AuthRetryableError
 
 from app.analytics import Event, track
 from app.auth import schemas, services
+from app.auth.models import Profile
+from app.content_filters import ContentFilters, get_content_filters
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
+from app.subscriptions.services import is_premium as profile_is_premium
+from app.timeline import schemas as timeline_schemas
+from app.timeline import services as timeline_services
 from app.database import SessionLocal
 from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
-from app.subscriptions.services import is_premium
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _user_response(profile: Profile) -> schemas.UserResponse:
+    """Build the /auth/me payload. is_premium matches the server-side entitlement check."""
+    return schemas.UserResponse(
+        id=str(profile.id),
+        username=profile.username,
+        display_name=profile.display_name,
+        avatar_url=profile.avatar_url,
+        taste_bio=profile.taste_bio,
+        favorite_genres=profile.favorite_genres or [],
+        phone_number=profile.phone_number,
+        subscription_tier=profile.subscription_tier,
+        subscription_expires_at=profile.subscription_expires_at,
+        is_premium=profile_is_premium(profile),
+    )
 
 
 @router.get("/users/search", response_model=schemas.UserSearchResponse)
@@ -239,18 +259,7 @@ def me(
     profile = services.get_profile(user_id, db)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
-    return schemas.UserResponse(
-        id=str(profile.id),
-        username=profile.username,
-        display_name=profile.display_name,
-        avatar_url=profile.avatar_url,
-        taste_bio=profile.taste_bio,
-        favorite_genres=profile.favorite_genres or [],
-        phone_number=profile.phone_number,
-        subscription_tier=profile.subscription_tier,
-        subscription_expires_at=profile.subscription_expires_at,
-        is_premium=is_premium(profile),
-    )
+    return _user_response(profile)
 
 
 @router.get("/me/taste", response_model=schemas.GenreTasteResponse)
@@ -297,18 +306,7 @@ def update_profile(
 
         background_tasks.add_task(_rebuild_in_background)
 
-    return schemas.UserResponse(
-        id=str(profile.id),
-        username=profile.username,
-        display_name=profile.display_name,
-        avatar_url=profile.avatar_url,
-        taste_bio=profile.taste_bio,
-        favorite_genres=profile.favorite_genres or [],
-        phone_number=profile.phone_number,
-        subscription_tier=profile.subscription_tier,
-        subscription_expires_at=profile.subscription_expires_at,
-        is_premium=is_premium(profile),
-    )
+    return _user_response(profile)
 
 
 @router.delete("/account", status_code=204)
@@ -342,10 +340,37 @@ def get_user_watched(
     offset: int = Query(default=0, ge=0),
     q: str | None = Query(default=None, max_length=100),
     sort: str | None = Query(default=None),
+    filters: ContentFilters = Depends(get_content_filters),
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return services.get_public_watched(user_id, id, limit, offset, db, q=q, sort=sort)
+    return services.get_public_watched(
+        user_id,
+        id,
+        limit,
+        offset,
+        db,
+        q=q,
+        sort=sort,
+        year_min=filters.year_min,
+        year_max=filters.year_max,
+        media_type=filters.media_type,
+    )
+
+
+@router.get(
+    "/users/{user_id}/timeline", response_model=timeline_schemas.TimelineResponse
+)
+@limiter.limit(LIMIT_DEFAULT)
+def get_user_timeline(
+    request: Request,
+    user_id: str,
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=50),
+    caller_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return timeline_services.get_profile_timeline(caller_id, user_id, cursor, limit, db)
 
 
 @router.get("/users/{id}/friends", response_model=schemas.PublicFriendsListResponse)

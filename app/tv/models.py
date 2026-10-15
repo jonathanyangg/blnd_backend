@@ -14,6 +14,7 @@ class TVShow(Base):
     tmdb_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     first_air_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    first_air_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     overview: Mapped[str | None] = mapped_column(Text, nullable=True)
     poster_path: Mapped[str | None] = mapped_column(String, nullable=True)
     backdrop_path: Mapped[str | None] = mapped_column(String, nullable=True)
