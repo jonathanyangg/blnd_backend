@@ -25,3 +25,5 @@ class FilmRecord(BaseModel):
     in_watchlist: bool = False
     watchlist_date: date | None = None
     liked: bool = False
+    rating_on: date | None = None
+    review_on: date | None = None

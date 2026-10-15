@@ -1,11 +1,14 @@
 """Tests for app/recommendations/ranking.py — pure functions, no mocking needed."""
 
+from app.movies.models import Movie
 from app.recommendations.ranking import (
     MATCH_BOOST,
+    W_SIMILARITY,
     _cast_boost,
     _consensus_score,
     _director_boost,
     _genre_overlap,
+    rerank_candidates,
     to_match_percentage,
 )
 
@@ -134,3 +137,51 @@ def test_match_percentage_one() -> None:
 def test_match_percentage_half() -> None:
     # 0.5 + MATCH_BOOST (0.33) = 0.83
     assert to_match_percentage(0.5) == round(0.5 + MATCH_BOOST, 4)
+
+
+# --- rerank_candidates: CF vs embedding similarity ---
+
+
+def _candidate(tmdb_id: int, similarity: float) -> dict:
+    movie = Movie(tmdb_id=tmdb_id, title=f"Movie {tmdb_id}", genres=[], cast=[])
+    return {"tmdb_id": tmdb_id, "similarity": similarity, "movie": movie}
+
+
+def _scores(ranked: list[dict]) -> dict[int, float]:
+    return {c["tmdb_id"]: c["score"] for c in ranked}
+
+
+def test_rerank_uses_cf_score_over_embedding_similarity() -> None:
+    ranked = rerank_candidates(
+        [_candidate(1, 0.9), _candidate(2, 0.1)],
+        user_genres=[],
+        top_directors=set(),
+        top_cast=set(),
+        cf_scores={1: 0.1, 2: 0.9},
+    )
+    scores = _scores(ranked)
+    assert scores[2] == round(W_SIMILARITY * 0.9, 4)
+    assert scores[1] == round(W_SIMILARITY * 0.1, 4)
+
+
+def test_rerank_falls_back_to_embedding_similarity_without_cf_score() -> None:
+    ranked = rerank_candidates(
+        [_candidate(1, 0.9), _candidate(2, 0.1)],
+        user_genres=[],
+        top_directors=set(),
+        top_cast=set(),
+        cf_scores={2: 0.4},
+    )
+    scores = _scores(ranked)
+    assert scores[1] == round(W_SIMILARITY * 0.9, 4)
+    assert scores[2] == round(W_SIMILARITY * 0.4, 4)
+
+
+def test_rerank_without_cf_scores_matches_embedding_similarity() -> None:
+    ranked = rerank_candidates(
+        [_candidate(1, 0.9)],
+        user_genres=[],
+        top_directors=set(),
+        top_cast=set(),
+    )
+    assert _scores(ranked)[1] == round(W_SIMILARITY * 0.9, 4)

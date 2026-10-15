@@ -58,6 +58,52 @@ def test_add_member(client: TestClient, db: Session) -> None:
     assert len(members) == 2
 
 
+def _fill_members(db: Session, group_id: int, count: int, start: int) -> None:
+    for i in range(count):
+        uid = f"00000000-0000-4000-8000-{start + i:012d}"
+        make_profile(db, user_id=uid, username=f"mem{start + i}")
+        db.add(GroupMember(group_id=group_id, user_id=uid))
+    db.commit()
+
+
+def test_free_group_cap_detail_is_a_message_object(
+    client: TestClient, db: Session
+) -> None:
+    make_profile(db, user_id=TEST_USER_ID, username="owner")
+    make_profile(db, user_id=TEST_USER_ID_2, username="extra")
+    group, _ = make_group(db, name="Free", created_by=TEST_USER_ID)
+    _fill_members(db, group.id, 3, 1)
+    resp = client.post(f"/groups/{group.id}/members", json={"username": "extra"})
+    assert resp.status_code == 402
+    body = resp.json()
+    message = (
+        "Free groups are limited to 4 members. Upgrade to blnd+ for groups up to 12."
+    )
+    assert body["error"]["code"] == "FREE_GROUP_CAP"
+    assert body["error"]["message"] == message
+    assert body["detail"] == {"message": message}
+    assert "Upgrade to blnd+" in body["detail"]["message"]
+
+
+def test_group_full_detail_is_a_message_object(
+    client: TestClient, db: Session
+) -> None:
+    owner = make_profile(db, user_id=TEST_USER_ID, username="owner")
+    owner.subscription_tier = "premium"
+    owner.subscription_source = "admin"
+    db.commit()
+    make_profile(db, user_id=TEST_USER_ID_2, username="extra")
+    group, _ = make_group(db, name="Plus", created_by=TEST_USER_ID)
+    _fill_members(db, group.id, 11, 20)
+    resp = client.post(f"/groups/{group.id}/members", json={"username": "extra"})
+    assert resp.status_code == 400
+    body = resp.json()
+    message = "Group is full (12 members max)."
+    assert body["error"]["code"] == "GROUP_FULL"
+    assert body["error"]["message"] == message
+    assert body["detail"] == {"message": message}
+
+
 def test_add_member_already_member(client: TestClient, db: Session) -> None:
     make_profile(db, user_id=TEST_USER_ID, username="user1")
     make_profile(db, user_id=TEST_USER_ID_2, username="user2")

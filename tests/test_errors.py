@@ -113,6 +113,10 @@ def test_upstream_outage_message_stays_503(error_client: TestClient) -> None:
 
 
 def test_dict_detail_becomes_stable_code(error_client: TestClient) -> None:
+    message = (
+        "Free groups are limited to 4 members. "
+        "Upgrade to blnd+ for groups up to 12."
+    )
     _install(
         HTTPException(
             status_code=402,
@@ -120,24 +124,45 @@ def test_dict_detail_becomes_stable_code(error_client: TestClient) -> None:
                 "code": "free_group_cap",
                 "cap": 4,
                 "premium_cap": 12,
-                "message": (
-                    "Free groups are limited to 4 members. "
-                    "Upgrade to blnd+ for groups up to 12."
-                ),
+                "message": message,
             },
         )
     )
     response = error_client.get("/auth/me")
-    assert_error(
+    body = assert_error(
         response,
         status=402,
         code="FREE_GROUP_CAP",
-        message=(
-            "Free groups are limited to 4 members. "
-            "Upgrade to blnd+ for groups up to 12."
-        ),
+        message=message,
     )
+    assert body["detail"] == {"message": message}
     assert "premium_cap" not in response.text
+    assert "Upgrade to blnd+" in body["detail"]["message"]
+
+
+def test_group_full_detail_is_message_object(error_client: TestClient) -> None:
+    message = "Group is full (12 members max)."
+    _install(
+        HTTPException(
+            status_code=400,
+            detail={"code": "group_full", "cap": 12, "message": message},
+        )
+    )
+    response = error_client.get("/auth/me")
+    body = assert_error(response, status=400, code="GROUP_FULL", message=message)
+    assert body["detail"] == {"message": message}
+
+
+def test_other_dict_detail_stays_a_string(error_client: TestClient) -> None:
+    _install(
+        HTTPException(
+            status_code=400,
+            detail={"code": "other_code", "message": "Nope"},
+        )
+    )
+    response = error_client.get("/auth/me")
+    body = assert_error(response, status=400, code="OTHER_CODE", message="Nope")
+    assert body["detail"] == "Nope"
 
 
 def test_unknown_route_is_not_found(error_client: TestClient) -> None:

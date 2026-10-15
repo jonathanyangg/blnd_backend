@@ -390,6 +390,7 @@ def test_inbox_hides_hidden_actor(client: TestClient, db: Session, hide: dict) -
     make_profile(db, user_id=TEST_USER_ID, username="reader")
     make_profile(db, user_id=HIDDEN_ID, username="ghost", **hide)
     make_profile(db, user_id=VISIBLE_ID, username="shown")
+    make_friendship(db, TEST_USER_ID, VISIBLE_ID, status="accepted")
     db.add(
         NotificationInboxItem(
             user_id=TEST_USER_ID,

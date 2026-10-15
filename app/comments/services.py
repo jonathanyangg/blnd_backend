@@ -548,8 +548,16 @@ def delete_comment(user_id: str, comment_id: int, db: Session) -> None:
     db.commit()
 
 
-def like_comment(user_id: str, comment_id: int, db: Session) -> dict:
-    """Like a comment. Raises 404 if deleted/missing, 400 if already liked."""
+def like_comment(
+    user_id: str,
+    comment_id: int,
+    db: Session,
+    apns_client: "APNs | None" = None,
+) -> dict:
+    """Like a comment. Raises 404 if deleted/missing, 400 if already liked.
+
+    Fans the like out to the author's notification inbox (grouped by comment).
+    """
     comment = (
         db.query(MovieComment)
         .filter(MovieComment.id == comment_id, MovieComment.deleted == False)  # noqa: E712
@@ -558,12 +566,51 @@ def like_comment(user_id: str, comment_id: int, db: Session) -> dict:
     if not comment:
         raise HTTPException(status_code=404, detail="Comment not found")
 
+    from app.notifications.services import (
+        THREAD_COMMENT_LIKES,
+        fire_notification,
+        is_push_eligible,
+        record_comment_like,
+    )
+
+    record_comment_like(
+        db,
+        comment_owner_id=str(comment.user_id),
+        comment_id=comment.id,
+        tmdb_id=comment.tmdb_id,
+        actor_id=user_id,
+    )
     try:
         db.add(CommentLike(comment_id=comment_id, user_id=user_id))
         db.commit()
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=400, detail="Already liked")
+
+    if (
+        apns_client is not None
+        and str(comment.user_id) != user_id
+        and is_push_eligible(str(comment.user_id), "comments_likes", db)
+    ):
+        actor = db.query(Profile).filter(Profile.id == user_id).first()
+        actor_name = (
+            (actor.display_name or actor.username) if actor else "Someone"
+        )
+        fire_notification(
+            to=str(comment.user_id),
+            from_user=user_id,
+            notification_type="comment_like",
+            title="New Like",
+            body=f"{actor_name} liked your review",
+            data={
+                "type": "comment_like",
+                "tmdb_id": str(comment.tmdb_id),
+                "comment_id": str(comment.id),
+            },
+            thread=THREAD_COMMENT_LIKES,
+            apns_client=apns_client,
+            skip_inbox=True,
+        )
 
     new_count = (
         db.query(func.count(CommentLike.id))

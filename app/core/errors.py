@@ -1,9 +1,11 @@
 """Safe error responses and request ids.
 
-Every error body is ``{"error": {"code", "message", "request_id"}, "detail"}``
-where ``detail`` repeats ``message`` for the iOS 1.1 app. Status codes are left
-as the raiser set them. Messages never include stack traces, SQL, upstream
-bodies, or environment values; those are logged with the request id instead.
+Every error body is ``{"error": {"code", "message", "request_id"}, "detail"}``.
+``detail`` repeats ``message`` for the iOS 1.1 app, except ``FREE_GROUP_CAP``
+and ``GROUP_FULL``, where ``detail`` is ``{"message": <message>}``. Status
+codes are left as the raiser set them. Messages never include stack traces,
+SQL, upstream bodies, or environment values; those are logged with the
+request id instead.
 """
 
 import logging
@@ -142,15 +144,24 @@ def _secret_values() -> list[str]:
     return values
 
 
+# Shipped iOS parseDetail only reads detail["message"] when detail is a dict.
+# Every other code keeps detail as a string equal to error.message.
+_DICT_DETAIL_CODES = frozenset({"FREE_GROUP_CAP", "GROUP_FULL"})
+
+
 def _json_error(
-    status_code: int, code: str, message: str, request_id: str
+    status_code: int,
+    code: str,
+    message: str,
+    request_id: str,
+    detail: str | dict[str, str] | None = None,
 ) -> JSONResponse:
-    """Build the shared error body. ``detail`` matches ``message`` for iOS 1.1."""
+    """Build the shared error body. ``detail`` matches ``message`` unless overridden."""
     return JSONResponse(
         status_code=status_code,
         content={
             "error": {"code": code, "message": message, "request_id": request_id},
-            "detail": message,
+            "detail": message if detail is None else detail,
         },
         headers={REQUEST_ID_HEADER: request_id},
     )
@@ -229,7 +240,10 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     request_id = request_id_of(request)
     _log_http(request_id, exc.status_code, exc.detail)
     code, message = _public_http_error(exc.detail, exc.status_code)
-    response = _json_error(exc.status_code, code, message, request_id)
+    published: str | dict[str, str] = message
+    if code in _DICT_DETAIL_CODES:
+        published = {"message": message}
+    response = _json_error(exc.status_code, code, message, request_id, published)
     extra: Mapping[str, str] | None = exc.headers
     if extra:
         for key, value in extra.items():
