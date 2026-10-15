@@ -108,8 +108,7 @@ def list_groups(user_id: str, db: Session) -> dict:
 
 def get_group(group_id: int, user_id: str, db: Session) -> dict:
     """Get group detail, verifying membership."""
-    # Lock the group before the cap check so simultaneous adds serialize.
-    group = db.query(Group).filter(Group.id == group_id).with_for_update().first()
+    group = db.query(Group).filter(Group.id == group_id).first()
     if not group:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Group not found"
@@ -142,7 +141,8 @@ def update_group(
 
 def add_member(group_id: int, user_id: str, username: str, db: Session) -> dict:
     """Add a member by username. Caller must be a member."""
-    group = db.query(Group).filter(Group.id == group_id).first()
+    # Lock the group before the cap check so simultaneous adds serialize.
+    group = db.query(Group).filter(Group.id == group_id).with_for_update().first()
     if not group:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Group not found"
