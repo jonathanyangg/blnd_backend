@@ -30,6 +30,7 @@ from app.reports.views import router as reports_router
 from app.streaming.views import router as streaming_router
 from app.subscriptions.views import router as subscriptions_router
 from app.tracking.views import router as tracking_router
+from app.tv.views import router as tv_router
 from app.watchlist.views import router as watchlist_router
 
 handler = logging.StreamHandler(sys.stdout)
@@ -107,6 +108,7 @@ app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(comments_router, prefix="/comments", tags=["comments"])
 app.include_router(movies_router, prefix="/movies", tags=["movies"])
 app.include_router(tracking_router, prefix="/tracking", tags=["tracking"])
+app.include_router(tv_router, tags=["tv"])
 app.include_router(import_router, prefix="/import", tags=["import"])
 app.include_router(
     recommendations_router, prefix="/recommendations", tags=["recommendations"]

@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     posthog_host: str = ""
     cf_enabled: bool = True
     cf_blend_weight: float = 1.0
+    tv_support_enabled: bool = False
 
     model_config = {"env_file": ".env"}
 
