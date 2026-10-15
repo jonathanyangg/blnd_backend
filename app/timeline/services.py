@@ -238,7 +238,9 @@ def _page(
     for row in page:
         results.append(
             {
+                "id": row["log_id"],
                 "date": row["sort_date"],
+                "created_at": row["created_at"] or row["sort_created"],
                 "rating": row["rating"],
                 "media": {
                     "tmdb_id": row["tmdb_id"],

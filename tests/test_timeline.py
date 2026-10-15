@@ -80,7 +80,9 @@ def test_profile_timeline_is_dated_and_includes_companions(
     assert first.status_code == 200
     body = first.json()
     item = body["results"][0]
+    assert item["id"] == newer
     assert item["date"] == "2026-03-04"
+    assert item["created_at"].startswith("2026-03-04T08:00:00")
     assert item["rating"] == 4.5
     assert item["media"]["title"] == "Newer"
     assert item["media"]["media_type"] == "movie"
@@ -95,7 +97,8 @@ def test_profile_timeline_is_dated_and_includes_companions(
 
     own = client.get("/tracking/timeline", params={"limit": 1})
     assert own.status_code == 200
-    assert own.json()["results"][0]["media"]["tmdb_id"] == 101
+    assert own.json()["results"][0]["id"] == newer
+    assert own.json()["results"][0]["created_at"].startswith("2026-03-04T08:00:00")
 
     second = client.get(
         "/auth/users/" + TEST_USER_ID + "/timeline",
@@ -182,6 +185,8 @@ def test_blend_timeline_respects_friendship_and_blocks(
     assert titles == ["Ada", "Mine"]
     assert resp.json()["results"][0]["rating"] == 5.0
     assert resp.json()["results"][0]["user"]["name"] == "Ada"
+    assert isinstance(resp.json()["results"][0]["id"], int)
+    assert "T" in resp.json()["results"][0]["created_at"]
 
     missing = client.get("/groups/999999/timeline")
     other, _wl = make_group(db, name="Closed", created_by=STRANGER_ID)
@@ -254,3 +259,5 @@ def test_tv_items_follow_the_flag(client: TestClient, db: Session, monkeypatch) 
     assert on.json()["results"][0]["date"] == "2026-04-01"
     assert on.json()["results"][0]["rating"] == 3.5
     assert on.json()["results"][0]["watched_with"] == []
+    assert isinstance(on.json()["results"][0]["id"], int)
+    assert "T" in on.json()["results"][0]["created_at"]

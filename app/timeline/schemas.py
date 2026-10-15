@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel
@@ -19,7 +19,9 @@ class WatchedWithUser(BaseModel):
 
 
 class TimelineItem(BaseModel):
+    id: int
     date: date
+    created_at: datetime
     rating: float | None = None
     media: MediaRef
     user: WatchedWithUser
