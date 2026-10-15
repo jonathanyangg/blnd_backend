@@ -1,13 +1,22 @@
+import logging
+
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
+from app.affiliate.services import load_where_to_watch, offer_base
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
-from app.dependencies import get_current_user, get_db, get_streaming_client
+from app.dependencies import (
+    get_current_user,
+    get_db,
+    get_streaming_client,
+    get_tmdb_client,
+)
 from app.streaming import schemas, services
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get(
@@ -26,17 +35,19 @@ async def get_streaming_availability(
     _user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     streaming_client: httpx.AsyncClient = Depends(get_streaming_client),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
     country = country.lower()
     try:
-        return await services.get_streaming_options(
+        result = await services.get_streaming_options(
             tmdb_id, country, db, streaming_client
         )
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 429:
-            raise HTTPException(
-                status_code=429, detail="Streaming API rate limit exceeded"
-            )
-        raise HTTPException(
-            status_code=502, detail="Streaming availability service error"
+    except httpx.HTTPError:
+        logger.warning(
+            "streaming options unavailable for movie %s", tmdb_id, exc_info=True
         )
+        result = {"tmdb_id": tmdb_id, "country": country, "options": []}
+    result["where_to_watch"] = await load_where_to_watch(
+        "movie", tmdb_id, country, db, tmdb_client, offer_base(request)
+    )
+    return result
