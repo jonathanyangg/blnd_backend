@@ -4,16 +4,14 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.core.phone import normalize_e164
+
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9._]+$")
-PHONE_RE = re.compile(r"^\+[1-9]\d{6,14}$")
 
 
 def validate_phone_number(v: str) -> str:
-    """Validate E.164 phone number format (+1234567890)."""
-    v = v.strip()
-    if not PHONE_RE.match(v):
-        raise ValueError("Phone number must be in E.164 format (e.g. +15551234567)")
-    return v
+    """Accept raw E.164, including spaces or dashes. The API hashes it later."""
+    return normalize_e164(v)
 
 
 USERNAME_MIN = 3
@@ -117,8 +115,9 @@ class UpdateProfileRequest(BaseModel):
     @field_validator("phone_number")
     @classmethod
     def check_phone(cls, v: str | None) -> str | None:
-        if v is None:
-            return v
+        # Omitted stays unset. null and "" both mean clear.
+        if v is None or not v.strip():
+            return None
         return validate_phone_number(v)
 
     @field_validator("avatar_url")

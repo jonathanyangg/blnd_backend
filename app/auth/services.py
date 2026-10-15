@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
+from app.core.phone import hash_phone
 from app.dependencies import supabase, supabase_admin
 from app.subscriptions.services import is_premium
 from app.friends.models import Friendship
@@ -133,7 +134,7 @@ def signup(
         username=username,
         display_name=display_name,
         watchlist_id=watchlist.id,
-        phone_number=phone_number,
+        phone_number=hash_phone(phone_number) if phone_number else None,
     )
     db.add(profile)
     db.commit()
@@ -320,7 +321,8 @@ def update_profile(
                 genres_changed = True
         profile.favorite_genres = new_genres
     if "phone_number" in fields:
-        new_phone = fields["phone_number"]
+        raw_phone = fields["phone_number"]
+        new_phone = hash_phone(raw_phone) if raw_phone else None
         if new_phone and new_phone != profile.phone_number:
             conflict = (
                 db.query(Profile)
@@ -687,10 +689,11 @@ async def complete_onboarding(
     db.add(watchlist)
     db.flush()
 
-    # Validate phone uniqueness
-    if phone_number:
+    # Validate phone uniqueness on the hash, never the raw number.
+    phone_hash = hash_phone(phone_number) if phone_number else None
+    if phone_hash:
         phone_conflict = (
-            db.query(Profile).filter(Profile.phone_number == phone_number).first()
+            db.query(Profile).filter(Profile.phone_number == phone_hash).first()
         )
         if phone_conflict:
             raise ValueError("Phone number is already linked to another account")
@@ -703,7 +706,7 @@ async def complete_onboarding(
         favorite_genres=favorite_genres,
         watchlist_id=watchlist.id,
         apple_refresh_token=apple_refresh_token,
-        phone_number=phone_number,
+        phone_number=phone_hash,
     )
     db.add(profile)
 
