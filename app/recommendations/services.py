@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 
 import numpy as np
 from openai import OpenAI
+from sqlalchemy import case
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
@@ -510,30 +512,37 @@ def record_interaction(
 ) -> MovieInteraction:
     """Store one swipe per user and movie. A new swipe replaces the old one.
 
-    Does not write watchlist_movies or hidden_movies.
+    Does not write watchlist_movies or hidden_movies. One statement so two
+    taps at the same time cannot both insert and hit the unique constraint.
+    Repeating the same type keeps the original timestamp.
     """
-    existing = (
-        db.query(MovieInteraction)
-        .filter(
-            MovieInteraction.user_id == user_id,
-            MovieInteraction.tmdb_id == tmdb_id,
+    now = datetime.now(timezone.utc)
+    ins = insert(MovieInteraction)
+    stmt = (
+        ins.values(
+            user_id=user_id,
+            tmdb_id=tmdb_id,
+            interaction_type=interaction_type,
+            created_at=now,
         )
-        .first()
+        .on_conflict_do_update(
+            index_elements=["user_id", "tmdb_id"],
+            set_={
+                "interaction_type": ins.excluded.interaction_type,
+                "created_at": case(
+                    (
+                        MovieInteraction.interaction_type
+                        == ins.excluded.interaction_type,
+                        MovieInteraction.created_at,
+                    ),
+                    else_=now,
+                ),
+            },
+        )
+        .returning(MovieInteraction)
     )
-    if existing:
-        if existing.interaction_type != interaction_type:
-            existing.interaction_type = interaction_type
-            existing.created_at = datetime.now(timezone.utc)
-            db.commit()
-            db.refresh(existing)
-        return existing
-
-    row = MovieInteraction(
-        user_id=user_id, tmdb_id=tmdb_id, interaction_type=interaction_type
-    )
-    db.add(row)
+    row = db.scalars(stmt).one()
     db.commit()
-    db.refresh(row)
     return row
 
 

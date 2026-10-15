@@ -191,11 +191,13 @@ def mark_interested(
 def unmark_interested(
     request: Request,
     tmdb_id: int,
+    background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if not services.delete_interaction(user_id, tmdb_id, "interested", db):
         raise HTTPException(status_code=404, detail="Movie not marked interested")
+    _schedule_taste_rebuild(background_tasks, user_id, db)
 
 
 @router.post("/{tmdb_id}/not-for-me", response_model=schemas.NotForMeMovieResponse)
@@ -218,11 +220,13 @@ def mark_not_for_me(
 def unmark_not_for_me(
     request: Request,
     tmdb_id: int,
+    background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if not services.delete_interaction(user_id, tmdb_id, "not_for_me", db):
         raise HTTPException(status_code=404, detail="Movie not marked not for me")
+    _schedule_taste_rebuild(background_tasks, user_id, db)
 
 
 # --- Hidden Movies ---

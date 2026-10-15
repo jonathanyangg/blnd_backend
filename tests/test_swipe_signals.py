@@ -86,6 +86,19 @@ def test_interested_does_not_watchlist_and_not_for_me_does_not_hide(
     )
 
 
+def test_undo_schedules_another_taste_action(client: TestClient, db: Session) -> None:
+    make_profile(db, user_id=TEST_USER_ID, username="swiper")
+    make_movie(db, tmdb_id=550)
+    assert client.post("/recommendations/550/interested").status_code == 200
+    assert client.delete("/recommendations/550/interested").status_code == 204
+    from app.auth.models import Profile
+
+    profile = db.query(Profile).filter(Profile.id == TEST_USER_ID).one()
+    # One count for the swipe, one for the undo. Otherwise the taste vector
+    # keeps the movie until some later, unrelated action.
+    assert profile.actions_since_rebuild == 2
+
+
 def test_hide_does_not_write_a_swipe(client: TestClient, db: Session) -> None:
     make_profile(db, user_id=TEST_USER_ID, username="swiper")
     make_movie(db, tmdb_id=550)
