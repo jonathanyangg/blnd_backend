@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
-from app.affiliate.services import load_where_to_watch
+from app.affiliate.services import load_where_to_watch, offer_base
 from app.config import settings
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.dependencies import get_current_user, get_db, get_tmdb_client
@@ -50,7 +50,7 @@ async def get_tv_streaming(
     _require_tv_support()
     country = country.lower()
     where = await load_where_to_watch(
-        "tv", tmdb_id, country, db, tmdb_client, str(request.base_url)
+        "tv", tmdb_id, country, db, tmdb_client, offer_base(request)
     )
     return {
         "tmdb_id": tmdb_id,

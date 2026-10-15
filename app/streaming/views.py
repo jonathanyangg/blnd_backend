@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
-from app.affiliate.services import load_where_to_watch
+from app.affiliate.services import load_where_to_watch, offer_base
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.dependencies import (
     get_current_user,
@@ -48,6 +48,6 @@ async def get_streaming_availability(
             status_code=502, detail="Streaming availability service error"
         )
     result["where_to_watch"] = await load_where_to_watch(
-        "movie", tmdb_id, country, db, tmdb_client, str(request.base_url)
+        "movie", tmdb_id, country, db, tmdb_client, offer_base(request)
     )
     return result

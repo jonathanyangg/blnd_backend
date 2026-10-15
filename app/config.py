@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     cj_partner_id: str = ""
     apple_tv_affiliate_enabled: bool = False
     apple_tv_affiliate_token: str = ""
+    # Absolute origin for click_url, e.g. https://blnd-backend.onrender.com
+    public_base_url: str = ""
 
     model_config = {"env_file": ".env"}
 

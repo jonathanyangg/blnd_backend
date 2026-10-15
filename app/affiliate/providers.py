@@ -293,6 +293,23 @@ def ios_link(web_url: str, app_url: str | None) -> str | None:
     return None
 
 
+def click_base(configured: str, request_base: str, forwarded_proto: str) -> str:
+    """Origin for click_url. PUBLIC_BASE_URL wins. Otherwise the request, with
+    X-Forwarded-Proto applied so a proxy can force https.
+    """
+    raw = configured.strip()
+    if raw:
+        parsed = urlparse(raw)
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+    base = urlparse(request_base)
+    proto = forwarded_proto.split(",")[0].strip().lower()
+    scheme = proto if proto in ("http", "https") else (base.scheme or "http")
+    if not base.netloc:
+        return request_base.rstrip("/")
+    return f"{scheme}://{base.netloc}"
+
+
 def click_url(
     base_url: str, provider_id: int, media_type: str, tmdb_id: int
 ) -> str | None:

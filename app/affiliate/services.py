@@ -7,13 +7,32 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from starlette.requests import Request
 
 from app.affiliate.models import AffiliateClick, WatchProviderCache
-from app.affiliate.providers import Offer, Title, click_url, ios_link, links_for
+from app.affiliate.providers import (
+    Offer,
+    Title,
+    click_base,
+    click_url,
+    ios_link,
+    links_for,
+)
+from app.config import settings
 from app.movies.services import get_movie_details
 from app.tv.services import get_tv_show_details
 
 logger = logging.getLogger(__name__)
+
+
+def offer_base(request: Request) -> str:
+    """Base origin for click_url. See click_base."""
+    return click_base(
+        settings.public_base_url,
+        str(request.base_url),
+        request.headers.get("x-forwarded-proto", ""),
+    )
+
 
 ATTRIBUTION = "JustWatch"
 CACHE_TTL = timedelta(hours=24)

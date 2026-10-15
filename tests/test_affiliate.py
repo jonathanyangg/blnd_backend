@@ -25,6 +25,7 @@ from app.affiliate.providers import (
     Provider,
     Title,
     ios_link,
+    click_base,
     links_for,
     outbound_url,
     resolve_amazon_tag,
@@ -247,6 +248,64 @@ def test_streaming_option_shape_is_unchanged() -> None:
     assert response.where_to_watch is None
     assert "where_to_watch" not in MovieResponse.model_fields
     assert "options" in StreamingAvailabilityResponse.model_fields
+
+
+def test_click_base_prefers_public_base_url() -> None:
+    assert (
+        click_base(
+            "https://blnd-backend.onrender.com/",
+            "http://10.0.0.1:10000/",
+            "http",
+        )
+        == "https://blnd-backend.onrender.com"
+    )
+
+
+def test_click_base_honors_forwarded_proto() -> None:
+    assert (
+        click_base("", "http://blnd-backend.onrender.com/", "https")
+        == "https://blnd-backend.onrender.com"
+    )
+    assert (
+        click_base("", "http://blnd-backend.onrender.com/", "https, http")
+        == "https://blnd-backend.onrender.com"
+    )
+
+
+def test_public_base_url_is_used_on_the_streaming_offer(
+    streaming_api, db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _fake = streaming_api
+    make_movie(db)
+    monkeypatch.setattr(
+        settings, "public_base_url", "https://blnd-backend.onrender.com"
+    )
+
+    response = client.get(
+        "/movies/550/streaming",
+        headers={"x-forwarded-proto": "http"},
+    )
+
+    assert response.status_code == 200
+    click = response.json()["where_to_watch"]["flatrate"][0]["click_url"]
+    assert click == "https://blnd-backend.onrender.com/out/119/movie/550"
+
+
+def test_forwarded_proto_sets_click_url_scheme(
+    streaming_api, db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _fake = streaming_api
+    make_movie(db)
+    monkeypatch.setattr(settings, "public_base_url", "")
+
+    response = client.get(
+        "/movies/550/streaming",
+        headers={"x-forwarded-proto": "https"},
+    )
+
+    assert response.status_code == 200
+    click = response.json()["where_to_watch"]["flatrate"][0]["click_url"]
+    assert click == "https://testserver/out/119/movie/550"
 
 
 def test_resolve_amazon_tag() -> None:

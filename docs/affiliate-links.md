@@ -45,7 +45,10 @@ working.
 other two TMDB groups. Offers TMDB labels `ads` or `free` are not returned.
 `web_url` is a title-specific https URL (the title plus year) with no affiliate
 tag. `click_url` is an absolute `GET /out/{provider}/{media_type}/{tmdb_id}`
-for allow-listed providers, and null otherwise. That route is public. `ios_link` is either an `aiv://` URL or an https universal link on
+for allow-listed providers, and null otherwise. The host comes from
+`PUBLIC_BASE_URL` when that is set (`https://blnd-backend.onrender.com` in
+production). Otherwise it is the request origin, with `X-Forwarded-Proto`
+applied so the scheme stays https behind the proxy. The route is public. `ios_link` is either an `aiv://` URL or an https universal link on
 `www.amazon.com` or `tv.apple.com`. It is null when neither is known. The only
 custom scheme this field emits is `aiv` (add that to
 `LSApplicationQueriesSchemes`). `app_url` is the raw app scheme when we have
