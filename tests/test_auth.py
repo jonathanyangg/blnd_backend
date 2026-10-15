@@ -176,3 +176,85 @@ def test_user_search_no_results(client: TestClient, db: Session) -> None:
     resp = client.get("/auth/users/search", params={"q": "zzz"})
     assert resp.status_code == 200
     assert resp.json()["results"] == []
+
+
+# --- POST /auth/refresh error mapping ---
+
+
+def test_refresh_success(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "app.auth.services.refresh_session",
+        lambda refresh_token: {
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "user_id": TEST_USER_ID,
+        },
+    )
+    resp = client.post("/auth/refresh", json={"refresh_token": "old-refresh"})
+    assert resp.status_code == 200
+    assert resp.json()["access_token"] == "new-access"
+
+
+def test_refresh_invalid_token_returns_401(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from supabase_auth.errors import AuthApiError
+
+    def _raise(refresh_token: str) -> None:
+        raise AuthApiError("Invalid Refresh Token", 400, None)
+
+    monkeypatch.setattr("app.auth.services.refresh_session", _raise)
+    resp = client.post("/auth/refresh", json={"refresh_token": "bad"})
+    assert resp.status_code == 401
+
+
+def test_refresh_generic_error_returns_401(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _raise(refresh_token: str) -> None:
+        raise ValueError("Refresh failed")
+
+    monkeypatch.setattr("app.auth.services.refresh_session", _raise)
+    resp = client.post("/auth/refresh", json={"refresh_token": "bad"})
+    assert resp.status_code == 401
+
+
+def test_refresh_supabase_5xx_returns_503(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from supabase_auth.errors import AuthApiError
+
+    def _raise(refresh_token: str) -> None:
+        raise AuthApiError("Internal Server Error", 500, None)
+
+    monkeypatch.setattr("app.auth.services.refresh_session", _raise)
+    resp = client.post("/auth/refresh", json={"refresh_token": "any"})
+    assert resp.status_code == 503
+    assert "unavailable" in resp.json()["detail"].lower()
+
+
+def test_refresh_retryable_upstream_returns_503(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from supabase_auth.errors import AuthRetryableError
+
+    def _raise(refresh_token: str) -> None:
+        raise AuthRetryableError("Service Unavailable", 503)
+
+    monkeypatch.setattr("app.auth.services.refresh_session", _raise)
+    resp = client.post("/auth/refresh", json={"refresh_token": "any"})
+    assert resp.status_code == 503
+    assert "unavailable" in resp.json()["detail"].lower()
+
+
+def test_refresh_network_error_returns_503(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+
+    def _raise(refresh_token: str) -> None:
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr("app.auth.services.refresh_session", _raise)
+    resp = client.post("/auth/refresh", json={"refresh_token": "any"})
+    assert resp.status_code == 503
