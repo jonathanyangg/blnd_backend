@@ -495,3 +495,69 @@ def test_blend_match_score_ignores_hidden_member(
     db.commit()
 
     assert compute_group_match_scores(group.id, [680], db) == {}
+
+
+@pytest.mark.parametrize("hide", HIDE)
+def test_match_404_for_hidden_friend(
+    client: TestClient, db: Session, hide: dict
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    future = datetime.now(timezone.utc) + timedelta(days=30)
+    make_profile(
+        db,
+        user_id=TEST_USER_ID,
+        username="me",
+        subscription_tier="premium",
+        subscription_source="apple",
+        subscription_expires_at=future,
+    )
+    make_profile(db, user_id=TEST_USER_ID_2, username="them", **hide)
+    make_friendship(db, TEST_USER_ID, TEST_USER_ID_2, status="accepted")
+    make_movie(db, tmdb_id=880501, title="Secret Overlap")
+    make_watched(db, TEST_USER_ID, 880501, rating=5)
+    make_watched(db, TEST_USER_ID_2, 880501, rating=5)
+
+    resp = client.get(f"/stats/match/{TEST_USER_ID_2}")
+    assert resp.status_code == 404
+    assert "Secret Overlap" not in resp.text
+    assert "them" not in resp.text
+
+
+@pytest.mark.parametrize("hide", HIDE)
+def test_pick_tonight_ignores_hidden_member_watches(
+    client: TestClient, db: Session, hide: dict
+) -> None:
+    from app.groups.models import GroupMember
+    from tests.test_premium import _blend_with_taste
+
+    group_id, winner, _second = _blend_with_taste(db, second_member=False)
+    make_profile(db, user_id=HIDDEN_ID, username="ghost", **hide)
+    db.add(GroupMember(group_id=group_id, user_id=HIDDEN_ID))
+    db.commit()
+    make_watched(db, HIDDEN_ID, winner, rating=5)
+
+    resp = client.get(f"/groups/{group_id}/pick-tonight")
+    assert resp.status_code == 200
+    assert resp.json()["pick"]["tmdb_id"] == winner
+
+
+@pytest.mark.parametrize("hide", HIDE)
+def test_hidden_veto_is_not_named(client: TestClient, db: Session, hide: dict) -> None:
+    from app.groups.models import GroupMember
+    from app.groups.picks import veto_tonight
+    from tests.test_premium import _blend_with_taste
+
+    group_id, winner, second = _blend_with_taste(db, second_member=False)
+    make_profile(db, user_id=HIDDEN_ID, username="ghost", **hide)
+    db.add(GroupMember(group_id=group_id, user_id=HIDDEN_ID))
+    db.commit()
+
+    body = veto_tonight(group_id, HIDDEN_ID, winner, "nope", db)
+    assert body["pick"]["tmdb_id"] == second
+    assert body["vetoes"] == []
+
+    listed = client.get(f"/groups/{group_id}/pick-tonight")
+    assert listed.status_code == 200
+    assert listed.json()["pick"]["tmdb_id"] == second
+    assert listed.json()["vetoes"] == []

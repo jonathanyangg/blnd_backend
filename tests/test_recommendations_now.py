@@ -163,7 +163,7 @@ def test_now_exclude_rerolls(client: TestClient, db: Session) -> None:
 def test_now_fallback_without_history(client: TestClient, db: Session) -> None:
     make_profile(db, user_id=TEST_USER_ID, username="nowcold")
     popular = make_movie(
-        db, tmdb_id=910010, title="The Godfather", vote_average=9.2, genres=[{"id": 18, "name": "Drama"}]
+        db, tmdb_id=910110, title="The Godfather", vote_average=9.2, genres=[{"id": 18, "name": "Drama"}]
     )
     _outrank(db, popular)
 
@@ -179,7 +179,7 @@ def test_now_genre_filter_uses_fallback(client: TestClient, db: Session) -> None
     profile.taste_embedding = _vec(10)
     db.commit()
     comedy = make_movie(
-        db, tmdb_id=910020, title="Superbad", genres=COMEDY, vote_average=7.6
+        db, tmdb_id=910120, title="Superbad", genres=COMEDY, vote_average=7.6
     )
     _outrank(db, comedy)
 
