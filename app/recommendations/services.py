@@ -336,7 +336,7 @@ def _swipe_embeddings(
     user_id: str, interaction_type: str, db: Session
 ) -> list[tuple[int, list[float]]]:
     """Embeddings for one swipe type. Movies without an embedding are skipped."""
-    return (
+    rows = (
         db.query(MovieInteraction.tmdb_id, MovieEmbedding.embedding)
         .join(MovieEmbedding, MovieInteraction.tmdb_id == MovieEmbedding.tmdb_id)
         .filter(
@@ -345,6 +345,7 @@ def _swipe_embeddings(
         )
         .all()
     )
+    return [(tmdb_id, embedding) for tmdb_id, embedding in rows]
 
 
 def _merge_positive(
