@@ -12,6 +12,7 @@ the caller can fall back to embedding cosine similarity.
 """
 
 import numpy as np
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -25,10 +26,13 @@ MAX_NEIGHBOURS = 1000
 
 
 def blend_cf_similarity(cf_score: float, embedding_score: float | None) -> float:
-    """Blend CF with the embedding score, preserving CF by default."""
-    weight = min(max(settings.cf_blend_weight, 0.0), 1.0)
+    """Blend CF with the embedding score. Default weight keeps CF unchanged.
+
+    A movie with no embedding has nothing to blend, so the CF score is used whole.
+    """
     if embedding_score is None:
-        return cf_score * weight
+        return cf_score
+    weight = min(max(settings.cf_blend_weight, 0.0), 1.0)
     return weight * cf_score + (1.0 - weight) * embedding_score
 
 
@@ -131,6 +135,10 @@ def _centered_rating_matrix(
     dot products that form item-item similarities. The boolean matrix says
     which cells were actually rated.
     """
+    # shortcut: at most MAX_NEIGHBOURS people, the ones who share the most
+    # movies with the profile. Switch to a precomputed item-item table once a
+    # popular title has more raters than this.
+    overlap = func.count(WatchedMovie.tmdb_id)
     neighbour_ids = (
         db.query(WatchedMovie.user_id)
         .filter(
@@ -138,8 +146,8 @@ def _centered_rating_matrix(
             WatchedMovie.rating.isnot(None),
             WatchedMovie.user_id.notin_(user_ids),
         )
-        .distinct()
-        .order_by(WatchedMovie.user_id)
+        .group_by(WatchedMovie.user_id)
+        .order_by(overlap.desc(), WatchedMovie.user_id)
         .limit(MAX_NEIGHBOURS)
         .subquery()
     )

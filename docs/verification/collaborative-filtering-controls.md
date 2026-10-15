@@ -18,8 +18,28 @@
 
 The tracked PR #5 head does not contain a `make verify` target (that script/target exists only as an uncommitted local change outside this worktree). The equivalent tracked checks from GitHub Actions plus Ruff and Pyright were run explicitly.
 
+## How to flip the kill switch
+
+Set either variable in the process environment or in `.env`, then restart the API. Pydantic Settings reads `CF_ENABLED` and `CF_BLEND_WEIGHT` (names are case-insensitive). `false`, `0`, and `no` turn the switch off.
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `CF_ENABLED` | `true` | `false` skips collaborative filtering. Ranking and match scores use embedding similarity. |
+| `CF_BLEND_WEIGHT` | `1.0` | Share of the similarity term taken from CF when a movie also has an embedding. `1` keeps the CF score, `0` keeps the embedding, `0.5` splits them. |
+
+Example, embeddings only:
+
+```bash
+CF_ENABLED=false uv run uvicorn main:app --reload
+```
+
+Example, half and half, without disabling CF:
+
+```bash
+CF_ENABLED=true CF_BLEND_WEIGHT=0.5 uv run uvicorn main:app --reload
+```
+
 ## Boundaries
 
-- Runtime environment parsing beyond Pydantic Settings is not covered.
 - Real-world neighbour data volumes and query performance are not load-tested.
 - No external services, migrations, production data, or App Store behavior are involved.

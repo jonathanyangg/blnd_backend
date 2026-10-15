@@ -4,12 +4,13 @@ import numpy as np
 import pytest
 from sqlalchemy.orm import Session
 
-from app.config import settings
+from app.config import Settings, settings
 from app.recommendations import collaborative
 from app.recommendations.collaborative import (
     MIN_CO_RATERS,
     MIN_PROFILE_RATINGS,
     _item_similarity,
+    blend_cf_similarity,
     compute_cf_scores,
 )
 from tests.factories import make_movie, make_profile, make_watched
@@ -143,6 +144,63 @@ def test_cf_kill_switch_returns_no_scores(db: Session, monkeypatch) -> None:
     scores = compute_cf_scores([user_id], CANDIDATES, db)
 
     assert scores == {}
+
+
+def test_cf_settings_read_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CF_ENABLED and CF_BLEND_WEIGHT are the env names for the kill switch."""
+    monkeypatch.setenv("CF_ENABLED", "false")
+    monkeypatch.setenv("CF_BLEND_WEIGHT", "0.25")
+
+    fresh = Settings()
+
+    assert fresh.cf_enabled is False
+    assert fresh.cf_blend_weight == 0.25
+
+
+def test_blend_keeps_cf_when_movie_has_no_embedding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing embedding is not a zero. The CF score stays intact."""
+    monkeypatch.setattr(settings, "cf_blend_weight", 0.5)
+
+    assert blend_cf_similarity(0.8, None) == 0.8
+    assert blend_cf_similarity(0.8, 0.0) == pytest.approx(0.4)
+
+
+def test_neighbour_cap_keeps_highest_overlap(db: Session, monkeypatch) -> None:
+    """The cap keeps people who share the most movies, not the lowest user ids."""
+    _make_movies(db, LIKED + DISLIKED + CANDIDATES)
+    user_id = _make_user(db, "user")
+    _rate(db, user_id, _target_ratings())
+    monkeypatch.setattr(collaborative, "MAX_NEIGHBOURS", MIN_CO_RATERS)
+
+    for i, uid in enumerate(
+        (
+            "00000000-0000-0000-0000-0000000000a1",
+            "00000000-0000-0000-0000-0000000000a2",
+            "00000000-0000-0000-0000-0000000000a3",
+        )
+    ):
+        neighbour = str(make_profile(db, user_id=uid, username=f"low{i}").id)
+        _rate(db, neighbour, {LIKED[0]: 5.0})
+
+    for i, uid in enumerate(
+        (
+            "ffffffff-ffff-ffff-ffff-fffffffffff1",
+            "ffffffff-ffff-ffff-ffff-fffffffffff2",
+            "ffffffff-ffff-ffff-ffff-fffffffffff3",
+        )
+    ):
+        neighbour = str(make_profile(db, user_id=uid, username=f"high{i}").id)
+        _rate(
+            db,
+            neighbour,
+            {**_target_ratings(), LIKED_CANDIDATE: 5.0, DISLIKED_CANDIDATE: 1.0},
+        )
+
+    scores = compute_cf_scores([user_id], CANDIDATES, db)
+
+    assert LIKED_CANDIDATE in scores
 
 
 def test_neighbour_fan_out_cap(db: Session, monkeypatch) -> None:
