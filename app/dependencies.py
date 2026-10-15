@@ -7,13 +7,25 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from openai import OpenAI
 from sqlalchemy.orm import Session
-from supabase import create_client
+from supabase import Client, create_client
 
-from app.config import settings
+from app.config import settings, validate_required_settings
 from app.database import SessionLocal
 
-# Clients
-supabase = create_client(settings.supabase_url, settings.supabase_key)
+
+def build_supabase_client() -> Client:
+    """Build the Supabase client used by auth routes.
+
+    A blank URL or key is logged first. Strict mode stops here. Otherwise the
+    client library still refuses the blank value, so the process does not stay
+    up and look healthy.
+    """
+    if not settings.supabase_url or not settings.supabase_key:
+        validate_required_settings()
+    return create_client(settings.supabase_url, settings.supabase_key)
+
+
+supabase = build_supabase_client()
 openai_client = OpenAI(api_key=settings.openai_api_key)
 
 # Admin client for privileged operations (e.g. account deletion, Apple token revocation)
