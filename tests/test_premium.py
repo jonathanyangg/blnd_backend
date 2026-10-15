@@ -58,7 +58,7 @@ def test_free_user_gets_premium_required(
     kwargs = {"json": body} if body is not None else {}
     resp = getattr(client, method)(path, **kwargs)
     assert resp.status_code == 403
-    assert resp.json()["detail"]["code"] == "PREMIUM_REQUIRED"
+    assert resp.json()["error"]["code"] == "PREMIUM_REQUIRED"
 
 
 def test_expired_premium_matches_auth_me(client: TestClient, db: Session) -> None:
@@ -75,7 +75,7 @@ def test_expired_premium_matches_auth_me(client: TestClient, db: Session) -> Non
     assert me.json()["is_premium"] is False
     blocked = client.get("/stats/year/2026")
     assert blocked.status_code == 403
-    assert blocked.json()["detail"]["code"] == "PREMIUM_REQUIRED"
+    assert blocked.json()["error"]["code"] == "PREMIUM_REQUIRED"
 
 
 def test_admin_grant_without_expiry_is_premium(client: TestClient, db: Session) -> None:
@@ -121,15 +121,9 @@ def test_year_in_review(client: TestClient, db: Session) -> None:
         watched_date=date(2026, 1, 15),
         created_at=datetime(2025, 12, 1, tzinfo=timezone.utc),
     )
-    make_watched(
-        db, TEST_USER_ID, 880002, rating=4, watched_date=date(2026, 1, 20)
-    )
-    make_watched(
-        db, TEST_USER_ID, 880003, rating=3, watched_date=date(2026, 10, 1)
-    )
-    make_watched(
-        db, TEST_USER_ID, 880004, rating=5, watched_date=date(2025, 6, 1)
-    )
+    make_watched(db, TEST_USER_ID, 880002, rating=4, watched_date=date(2026, 1, 20))
+    make_watched(db, TEST_USER_ID, 880003, rating=3, watched_date=date(2026, 10, 1))
+    make_watched(db, TEST_USER_ID, 880004, rating=5, watched_date=date(2025, 6, 1))
     make_watched(
         db,
         TEST_USER_ID,
@@ -341,7 +335,10 @@ def test_pick_tonight_single_member(client: TestClient, db: Session) -> None:
 
 def test_veto_repicks_and_stores_reason(client: TestClient, db: Session) -> None:
     group_id, winner, second = _blend_with_taste(db, second_member=True)
-    assert client.get(f"/groups/{group_id}/pick-tonight").json()["pick"]["tmdb_id"] == winner
+    assert (
+        client.get(f"/groups/{group_id}/pick-tonight").json()["pick"]["tmdb_id"]
+        == winner
+    )
     vetoed = client.post(
         f"/groups/{group_id}/pick-tonight/veto",
         json={"tmdb_id": winner, "reason": "already saw it"},
