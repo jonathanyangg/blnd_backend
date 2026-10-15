@@ -71,6 +71,7 @@ def _build_user_context(
         total_watches=total_watches,
         year_min=None if filters is None else filters.year_min,
         year_max=None if filters is None else filters.year_max,
+        cf_user_ids=[user_id],
     )
 
 

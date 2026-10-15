@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 from app.auth.models import Profile
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
+from app.recommendations.collaborative import blend_cf_similarity
+from app.recommendations.collaborative import compute_cf_scores
 from app.recommendations.ranking import (
     W_CAST,
     W_CONSENSUS,
@@ -108,8 +110,10 @@ def compute_match_scores(
     """Compute match scores for a list of movies against a user's taste profile.
 
     Returns {tmdb_id: score} for every movie in the list that has a Movie record.
-    When a movie has no embedding, falls back to a genre+consensus-only score
-    (cosine similarity term becomes 0, remaining signals renormalized so the
+    The similarity term is the collaborative-filtering prediction when the
+    movie has enough co-rating support, otherwise the taste-embedding cosine.
+    When a movie has neither, falls back to a genre+consensus-only score
+    (similarity term becomes 0, remaining signals renormalized so the
     fallback can still reach ~100%).
 
     For movies that contributed to the user's taste embedding (rated positive or
@@ -139,6 +143,7 @@ def compute_match_scores(
     movie_map = {m.tmdb_id: m for m in movies}
 
     user_genres, top_directors, top_cast = get_user_signal_context(user_id, db)
+    cf_scores = compute_cf_scores([user_id], tmdb_ids, db)
 
     # Per-movie contribution weights for leave-one-out (only when sum_weights
     # is present — LLM-strategy taste embeddings don't support this).
@@ -157,6 +162,7 @@ def compute_match_scores(
         if not movie:
             continue
         movie_emb = emb_map.get(tid)
+        embedding_similarity = None
         if movie_emb:
             movie_weight = contrib_weights.get(tid, 0.0)
             if movie_weight > 0 and sum_weights and sum_weights > movie_weight:
@@ -167,15 +173,28 @@ def compute_match_scores(
                     taste_emb * sum_weights
                     - movie_weight * np.array(movie_emb, dtype=np.float64)
                 ) / adjusted_denom
-                similarity = _cosine_sim(adjusted_taste.tolist(), movie_emb)
+                embedding_similarity = _cosine_sim(adjusted_taste.tolist(), movie_emb)
             else:
-                similarity = _cosine_sim(taste_emb.tolist(), movie_emb)
-            neg_sim = _cosine_sim(movie_emb, negative_emb) if negative_emb else 0.0
+                embedding_similarity = _cosine_sim(taste_emb.tolist(), movie_emb)
+
+        cf_sim = cf_scores.get(tid)
+        similarity = (
+            blend_cf_similarity(cf_sim, embedding_similarity)
+            if cf_sim is not None
+            else embedding_similarity
+        )
+
+        if similarity is not None:
+            neg_sim = (
+                _cosine_sim(movie_emb, negative_emb)
+                if movie_emb and negative_emb
+                else 0.0
+            )
             raw = _compute_score(
                 movie, similarity, user_genres, top_directors, top_cast, neg_sim
             )
         else:
-            # Fallback: no embedding for this movie. Use non-cosine signals only.
+            # Fallback: no CF support and no embedding. Use other signals only.
             genre = _genre_overlap(movie.genres or [], user_genres)
             consensus = _consensus_score(movie.vote_average)
             director = _director_boost(movie.director, top_directors)

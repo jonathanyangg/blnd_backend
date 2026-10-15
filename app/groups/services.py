@@ -452,6 +452,7 @@ def get_group_recommendations(
         total_watches=combined_total,
         year_min=year_min,
         year_max=year_max,
+        cf_user_ids=[str(mid) for mid in member_ids],
     )
 
     results = run_recommendation_pipeline(ctx, db, limit, offset)
