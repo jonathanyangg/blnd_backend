@@ -17,6 +17,8 @@ from app.dependencies import (
 from app.groups import picks
 from app.groups import schemas, services
 from app.groups.models import Group, GroupMember
+from app.timeline import schemas as timeline_schemas
+from app.timeline import services as timeline_services
 from app.movies.models import Movie
 from app.notifications.services import (
     THREAD_GROUP_ACTIVITY,
@@ -61,6 +63,19 @@ async def get_group(
     db: Session = Depends(get_db),
 ):
     return services.get_group(group_id, user_id, db)
+
+
+@router.get("/{group_id}/timeline", response_model=timeline_schemas.TimelineResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def get_group_timeline(
+    request: Request,
+    group_id: int,
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=50),
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return timeline_services.get_blend_timeline(user_id, group_id, cursor, limit, db)
 
 
 @router.patch("/{group_id}", response_model=schemas.GroupDetailResponse)
