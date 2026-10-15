@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.auth.schemas import SignupRequest, UpdateProfileRequest
-from tests.conftest import TEST_USER_ID, TEST_USER_ID_2
+from tests.conftest import TEST_USER_ID, TEST_USER_ID_2, assert_error
 from tests.factories import make_profile
 
 
@@ -147,8 +147,7 @@ def test_update_profile_username_conflict(client: TestClient, db: Session) -> No
     make_profile(db, user_id=TEST_USER_ID, username="user1")
     make_profile(db, user_id=TEST_USER_ID_2, username="taken")
     resp = client.patch("/auth/profile", json={"username": "taken"})
-    assert resp.status_code == 400
-    assert "already taken" in resp.json()["detail"].lower()
+    assert_error(resp, status=400, code="BAD_REQUEST", contains="already taken")
 
 
 def test_update_profile_empty_body(client: TestClient, db: Session) -> None:
@@ -205,7 +204,8 @@ def test_refresh_invalid_token_returns_401(
 
     monkeypatch.setattr("app.auth.services.refresh_session", _raise)
     resp = client.post("/auth/refresh", json={"refresh_token": "bad"})
-    assert resp.status_code == 401
+    assert_error(resp, status=401, code="UNAUTHORIZED", message="Session refresh failed")
+    assert "Invalid Refresh Token" not in resp.text
 
 
 def test_refresh_generic_error_returns_401(
@@ -216,7 +216,8 @@ def test_refresh_generic_error_returns_401(
 
     monkeypatch.setattr("app.auth.services.refresh_session", _raise)
     resp = client.post("/auth/refresh", json={"refresh_token": "bad"})
-    assert resp.status_code == 401
+    assert_error(resp, status=401, code="UNAUTHORIZED", message="Session refresh failed")
+    assert "Refresh failed" not in resp.text
 
 
 def test_refresh_supabase_5xx_returns_503(
@@ -229,8 +230,10 @@ def test_refresh_supabase_5xx_returns_503(
 
     monkeypatch.setattr("app.auth.services.refresh_session", _raise)
     resp = client.post("/auth/refresh", json={"refresh_token": "any"})
-    assert resp.status_code == 503
-    assert "unavailable" in resp.json()["detail"].lower()
+    assert_error(
+        resp, status=503, code="SERVICE_UNAVAILABLE", contains="unavailable"
+    )
+    assert "Internal Server Error" not in resp.text
 
 
 def test_refresh_retryable_upstream_returns_503(
@@ -243,8 +246,12 @@ def test_refresh_retryable_upstream_returns_503(
 
     monkeypatch.setattr("app.auth.services.refresh_session", _raise)
     resp = client.post("/auth/refresh", json={"refresh_token": "any"})
-    assert resp.status_code == 503
-    assert "unavailable" in resp.json()["detail"].lower()
+    assert_error(
+        resp,
+        status=503,
+        code="SERVICE_UNAVAILABLE",
+        message="Auth service unavailable, try again",
+    )
 
 
 def test_refresh_network_error_returns_503(
@@ -257,4 +264,7 @@ def test_refresh_network_error_returns_503(
 
     monkeypatch.setattr("app.auth.services.refresh_session", _raise)
     resp = client.post("/auth/refresh", json={"refresh_token": "any"})
-    assert resp.status_code == 503
+    assert_error(
+        resp, status=503, code="SERVICE_UNAVAILABLE", contains="unavailable"
+    )
+    assert "connection refused" not in resp.text
