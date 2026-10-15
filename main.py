@@ -15,6 +15,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app import analytics
 from app.actors.views import router as actors_router
+from app.auth.views import admin_router as auth_admin_router
 from app.auth.views import router as auth_router
 from app.comments.views import router as comments_router
 from app.config import settings
@@ -105,6 +106,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # ty
 
 app.include_router(actors_router, prefix="/actors", tags=["actors"])
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
+app.include_router(auth_admin_router, tags=["auth"])
 app.include_router(comments_router, prefix="/comments", tags=["comments"])
 app.include_router(movies_router, prefix="/movies", tags=["movies"])
 app.include_router(tracking_router, prefix="/tracking", tags=["tracking"])

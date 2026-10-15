@@ -33,6 +33,9 @@ def make_profile(
     display_name: str | None = None,
     watchlist_id: int | None = None,
     favorite_genres: list[str] | None = None,
+    phone_number: str | None = None,
+    is_discoverable: bool = True,
+    is_test: bool = False,
 ) -> Profile:
     uid = uuid.UUID(user_id) if user_id else uuid.uuid4()
     _ensure_auth_user(db, uid)
@@ -42,6 +45,9 @@ def make_profile(
         display_name=display_name,
         watchlist_id=watchlist_id,
         favorite_genres=favorite_genres,
+        phone_number=phone_number,
+        is_discoverable=is_discoverable,
+        is_test=is_test,
     )
     db.add(profile)
     db.commit()

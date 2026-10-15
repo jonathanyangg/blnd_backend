@@ -10,11 +10,18 @@ from app.analytics import Event, track
 from app.auth import schemas, services
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.database import SessionLocal
-from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
+from app.dependencies import (
+    get_current_user,
+    get_db,
+    get_tmdb_client,
+    openai_client,
+    require_admin,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+admin_router = APIRouter()
 
 
 @router.get("/users/search", response_model=schemas.UserSearchResponse)
@@ -248,6 +255,7 @@ def me(
         phone_number=profile.phone_number,
         subscription_tier=profile.subscription_tier,
         subscription_expires_at=profile.subscription_expires_at,
+        is_discoverable=profile.is_discoverable,
     )
 
 
@@ -305,7 +313,26 @@ def update_profile(
         phone_number=profile.phone_number,
         subscription_tier=profile.subscription_tier,
         subscription_expires_at=profile.subscription_expires_at,
+        is_discoverable=profile.is_discoverable,
     )
+
+
+@admin_router.post(
+    "/admin/users/{user_id}/test",
+    response_model=schemas.AdminSetTestResponse,
+)
+def admin_set_test_account(
+    user_id: str,
+    is_test: bool = True,
+    _admin: str = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> schemas.AdminSetTestResponse:
+    """Mark or clear a test account. Same admin gate as subscription grants."""
+    try:
+        profile = services.admin_set_test_account(user_id, is_test, db)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return schemas.AdminSetTestResponse(user_id=str(profile.id), is_test=profile.is_test)
 
 
 @router.delete("/account", status_code=204)

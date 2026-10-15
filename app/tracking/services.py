@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
 from app.auth.models import Profile
+from app.auth.visibility import visible_user_ids
 from app.friends.models import Friendship
 from app.movies.models import Movie
 from app.movies.services import get_movie_details
@@ -384,6 +385,7 @@ def get_friends_who_watched(
     for f in friendships:
         fid = f.addressee_id if str(f.requester_id) == user_id else f.requester_id
         friend_ids.append(str(fid))
+    friend_ids = visible_user_ids(friend_ids, db)
 
     if not friend_ids:
         return {"results": [], "total": 0}
@@ -471,6 +473,7 @@ def get_friend_feed(
         str(f.addressee_id) if str(f.requester_id) == user_id else str(f.requester_id)
         for f in friendships
     ]
+    friend_ids = visible_user_ids(friend_ids, db)
     if not friend_ids:
         return {"results": []}
 

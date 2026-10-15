@@ -5,10 +5,11 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from aioapns import APNs, NotificationRequest
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
+from app.auth.visibility import notify_allowed, visible_user_ids
 from app.database import SessionLocal
 from app.friends.models import Friendship
 from app.movies.models import Movie
@@ -42,15 +43,21 @@ def fire_notification(
     data: dict[str, str] | None = None,
     thread: str | None = None,
     apns_client: APNs | None,
+    db: Session | None = None,
 ) -> None:
     """Fire-and-forget push + inbox write. One-liner from any view.
 
-    Handles its own DB session and error isolation.
+    Handles its own DB session and error isolation. Hidden and test actors
+    are dropped so they never show up as the person who did the thing.
     """
+    if db is not None and not notify_allowed(from_user, db):
+        return
 
     async def _dispatch() -> None:
         bg_db = SessionLocal()
         try:
+            if not notify_allowed(from_user, bg_db):
+                return
             await _send_push(
                 user_id=to,
                 notification_type=notification_type,
@@ -222,8 +229,11 @@ def fire_notification_to_friends(
     """Write a friend activity event to all friends' inboxes (no push, just inbox).
 
     Used for watches and low ratings that don't warrant a push notification
-    but should still appear in the unified feed.
+    but should still appear in the unified feed. Hidden and test actors
+    produce no inbox rows.
     """
+    if not notify_allowed(user_id, db):
+        return
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile:
         return
@@ -270,12 +280,23 @@ def fire_notification_to_friends(
     db.commit()
 
 
+def _inbox_actor_visible():
+    """Keep system notices and visible actors. Hide hidden and test actors."""
+    return or_(
+        NotificationInboxItem.from_user_id.is_(None),
+        and_(Profile.is_discoverable.is_(True), Profile.is_test.is_(False)),
+    )
+
+
 def get_inbox(user_id: str, db: Session, limit: int = 30, offset: int = 0) -> dict:
     """Get notification inbox with sender profile info."""
     rows = (
         db.query(NotificationInboxItem, Profile)
         .outerjoin(Profile, NotificationInboxItem.from_user_id == Profile.id)
-        .filter(NotificationInboxItem.user_id == user_id)
+        .filter(
+            NotificationInboxItem.user_id == user_id,
+            _inbox_actor_visible(),
+        )
         .order_by(NotificationInboxItem.created_at.desc())
         .offset(offset)
         .limit(limit)
@@ -284,9 +305,11 @@ def get_inbox(user_id: str, db: Session, limit: int = 30, offset: int = 0) -> di
 
     unread_count = (
         db.query(func.count(NotificationInboxItem.id))
+        .outerjoin(Profile, NotificationInboxItem.from_user_id == Profile.id)
         .filter(
             NotificationInboxItem.user_id == user_id,
             NotificationInboxItem.read == False,  # noqa: E712
+            _inbox_actor_visible(),
         )
         .scalar()
         or 0
@@ -332,10 +355,13 @@ def _build_digest_body(user_id: str, since: datetime, db: Session) -> str | None
         )
         .all()
     )
-    friend_ids = [
-        str(f.addressee_id) if str(f.requester_id) == user_id else str(f.requester_id)
-        for f in friendships
-    ]
+    friend_ids = visible_user_ids(
+        [
+            str(f.addressee_id) if str(f.requester_id) == user_id else str(f.requester_id)
+            for f in friendships
+        ],
+        db,
+    )
     if not friend_ids:
         return None
 

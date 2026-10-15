@@ -110,6 +110,7 @@ async def add_member(
             data={"type": "group_invite", "group_id": str(group_id)},
             thread=THREAD_GROUP_INVITES,
             apns_client=apns_client,
+            db=db,
         )
 
     return result
@@ -252,6 +253,7 @@ async def add_to_group_watchlist(
             },
             thread=THREAD_GROUP_ACTIVITY,
             apns_client=apns_client,
+            db=db,
         )
 
     return result
