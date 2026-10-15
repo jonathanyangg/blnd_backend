@@ -2,6 +2,8 @@
 
 Architecture: pgvector returns ~500 candidates by cosine similarity,
 then this module re-ranks using structured signals (genre, consensus, director, cast).
+The similarity term prefers the collaborative-filtering prediction for a
+candidate and falls back to the embedding cosine when CF has no support.
 Negative embedding penalty pushes down movies similar to disliked content.
 Probabilistic softmax sampling selects 200 from the pool (favoring higher scores),
 then candidates within the same score tier are shuffled for additional variety.
@@ -13,6 +15,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 from app.movies.models import Movie
+from app.recommendations.collaborative import blend_cf_similarity
 
 # Weights — easy to tune later
 W_SIMILARITY = 0.50
@@ -81,6 +84,7 @@ def rerank_candidates(
     top_cast: set[str],
     negative_embedding: list[float] | None = None,
     candidate_embeddings: dict[int, list[float]] | None = None,
+    cf_scores: dict[int, float] | None = None,
 ) -> list[dict]:
     """Re-rank pgvector candidates using structured signals + negative penalty.
 
@@ -89,7 +93,12 @@ def rerank_candidates(
     """
     for c in candidates:
         movie: Movie = c["movie"]
-        sim = c["similarity"]
+        cf_sim = cf_scores.get(c["tmdb_id"]) if cf_scores else None
+        sim = (
+            c["similarity"]
+            if cf_sim is None
+            else blend_cf_similarity(cf_sim, c["similarity"])
+        )
 
         genre = _genre_overlap(movie.genres or [], user_genres)
         consensus = _consensus_score(movie.vote_average)

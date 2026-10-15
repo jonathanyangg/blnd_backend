@@ -13,6 +13,8 @@ from app.dependencies import (
 )
 from app.analytics import Event, track
 from app.recommendations.services import increment_action_counter, rebuild_taste_profile
+from app.timeline import schemas as timeline_schemas
+from app.timeline import services as timeline_services
 from app.tracking import schemas, services
 
 router = APIRouter()
@@ -37,6 +39,7 @@ async def track_movie(
         db=db,
         tmdb_client=tmdb_client,
         source=body.source,
+        watched_with=body.watched_with,
     )
     track(
         user_id,
@@ -82,6 +85,18 @@ async def get_watch_history(
     return services.get_watch_history(user_id, limit, offset, db, q=q, sort=sort)
 
 
+@router.get("/timeline", response_model=timeline_schemas.TimelineResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def get_own_timeline(
+    request: Request,
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=50),
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return timeline_services.get_profile_timeline(user_id, user_id, cursor, limit, db)
+
+
 @router.get("/{tmdb_id}/friends", response_model=schemas.FriendsWhoWatchedResponse)
 @limiter.limit(LIMIT_DEFAULT)
 async def get_friends_who_watched(
@@ -93,6 +108,29 @@ async def get_friends_who_watched(
     offset: int = Query(default=0, ge=0),
 ):
     return services.get_friends_who_watched(user_id, tmdb_id, db, limit, offset)
+
+
+@router.get("/{tmdb_id}/watched-with", response_model=schemas.WatchedWithResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def get_watched_with(
+    request: Request,
+    tmdb_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return services.get_watched_with(user_id, tmdb_id, db)
+
+
+@router.put("/{tmdb_id}/watched-with", response_model=schemas.WatchedWithResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def replace_watched_with(
+    request: Request,
+    tmdb_id: int,
+    body: schemas.ReplaceWatchedWithRequest,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return services.replace_watched_with(user_id, tmdb_id, body.user_ids, db)
 
 
 @router.get("/{tmdb_id}", response_model=schemas.WatchedMovieResponse | None)

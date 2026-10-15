@@ -1,7 +1,23 @@
 from datetime import date, datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+
+class WatchedWithUser(BaseModel):
+    id: str
+    name: str
+    avatar: str | None = None
+
+
+class WatchedWithResponse(BaseModel):
+    watched_with: list[WatchedWithUser]
+
+
+class ReplaceWatchedWithRequest(BaseModel):
+    # shortcut: one log tags at most 50 people
+    user_ids: list[UUID] = Field(default_factory=list, max_length=50)
 
 
 class TrackMovieRequest(BaseModel):
@@ -10,12 +26,16 @@ class TrackMovieRequest(BaseModel):
     review: str | None = Field(default=None, max_length=10000)
     watched_date: date | None = None
     source: Literal["manual", "recommendation"] = "manual"
+    # shortcut: one log tags at most 50 people
+    watched_with: list[UUID] | None = Field(default=None, max_length=50)
 
 
 class UpdateTrackingRequest(BaseModel):
     rating: float | None = Field(default=None, ge=0.5, le=5.0)
     review: str | None = Field(default=None, max_length=10000)
     watched_date: date | None = None
+    # shortcut: one log tags at most 50 people
+    watched_with: list[UUID] | None = Field(default=None, max_length=50)
 
 
 class WatchedMovieResponse(BaseModel):
@@ -28,6 +48,7 @@ class WatchedMovieResponse(BaseModel):
     watched_date: date | None = None
     liked: bool = False
     created_at: datetime
+    watched_with: list[WatchedWithUser] = []
 
 
 class WatchHistoryResponse(BaseModel):

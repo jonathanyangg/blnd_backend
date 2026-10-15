@@ -43,6 +43,7 @@ class GroupDetailResponse(BaseModel):
 
 class GroupListResponse(BaseModel):
     groups: list[GroupResponse]
+    total: int | None = None
 
 
 class GroupFeedRequest(BaseModel):
