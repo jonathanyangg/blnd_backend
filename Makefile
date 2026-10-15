@@ -11,9 +11,14 @@ test-reset: db-up
 	supabase db reset --local
 	uv run pytest $(ARGS)
 
-# Start the local Supabase stack only if it isn't already running.
+# Start the local Supabase stack only if Postgres is not already accepting
+# connections. A database published on 54322 (supabase start, or compose)
+# is reused so a second start is not attempted.
 db-up:
-	@supabase status >/dev/null 2>&1 || supabase start
+	@python3 -c "import socket; s=socket.create_connection(('127.0.0.1', 54322), 2); s.close()" \
+		>/dev/null 2>&1 \
+		|| supabase status >/dev/null 2>&1 \
+		|| supabase start
 
 # Stop the local Supabase stack.
 db-down:
