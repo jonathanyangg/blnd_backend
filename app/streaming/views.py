@@ -1,3 +1,5 @@
+import logging
+
 import httpx
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -14,6 +16,7 @@ from app.dependencies import (
 from app.streaming import schemas, services
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get(
@@ -35,9 +38,15 @@ async def get_streaming_availability(
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
     country = country.lower()
-    result = await services.get_streaming_options(
-        tmdb_id, country, db, streaming_client
-    )
+    try:
+        result = await services.get_streaming_options(
+            tmdb_id, country, db, streaming_client
+        )
+    except httpx.HTTPError:
+        logger.warning(
+            "streaming options unavailable for movie %s", tmdb_id, exc_info=True
+        )
+        result = {"tmdb_id": tmdb_id, "country": country, "options": []}
     result["where_to_watch"] = await load_where_to_watch(
         "movie", tmdb_id, country, db, tmdb_client, offer_base(request)
     )
