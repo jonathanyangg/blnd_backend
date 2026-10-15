@@ -1,7 +1,8 @@
 """Offline eval of embedding ranking vs the collaborative-filtering blend.
 
-Run with `make eval`. It talks only to the local Supabase Postgres and
-replaces local movies, embeddings, watched rows, and `eval_%` users.
+Run with `make eval`. It talks only to the local Supabase Postgres.
+It deletes and reinserts movies 900001-900240 and users whose email ends in
+`@eval.local`. Other local movies and the simulator accounts stay.
 
 How the synthetic dataset is generated
 --------------------------------------
@@ -315,7 +316,21 @@ def _build_users(
 
 
 def _reset_local(connection: Session) -> None:
-    connection.execute(text("TRUNCATE TABLE public.movies RESTART IDENTITY CASCADE"))
+    """Delete only this script's rows. The simulator catalog stays in place."""
+    lo = TMDB_BASE
+    hi = TMDB_BASE + N_MOVIES - 1
+    connection.execute(
+        text("DELETE FROM public.watched_movies WHERE tmdb_id BETWEEN :lo AND :hi"),
+        {"lo": lo, "hi": hi},
+    )
+    connection.execute(
+        text("DELETE FROM public.watchlist_movies WHERE tmdb_id BETWEEN :lo AND :hi"),
+        {"lo": lo, "hi": hi},
+    )
+    connection.execute(
+        text("DELETE FROM public.movies WHERE tmdb_id BETWEEN :lo AND :hi"),
+        {"lo": lo, "hi": hi},
+    )
     connection.execute(text("DELETE FROM auth.users WHERE email LIKE '%@eval.local'"))
     connection.commit()
 
@@ -427,13 +442,21 @@ def _recommend(db, user: dict[str, Any], arm: str) -> tuple[list[int], float]:
     embedding = "[" + ",".join(str(value) for value in user["taste"]) + "]"
     rows = db.execute(
         text(
-            "SELECT * FROM match_movies("
-            "cast(:query_embedding AS vector(1536)), :match_count, :exclude_ids)"
+            "SELECT me.tmdb_id, "
+            "1 - (me.embedding <=> cast(:query_embedding AS vector(1536))::halfvec(1536)) "
+            "AS similarity "
+            "FROM movie_embeddings me "
+            "WHERE me.tmdb_id BETWEEN :lo AND :hi "
+            "AND me.tmdb_id != ALL(cast(:exclude_ids AS int[])) "
+            "ORDER BY me.embedding <=> cast(:query_embedding AS vector(1536))::halfvec(1536) "
+            "LIMIT :match_count"
         ),
         {
             "query_embedding": embedding,
             "match_count": CANDIDATE_POOL_SIZE,
-            "exclude_ids": [tmdb_id for tmdb_id, _, _ in user["train"]],
+            "exclude_ids": [tmdb_id for tmdb_id, _, _ in user["train"]] or [0],
+            "lo": TMDB_BASE,
+            "hi": TMDB_BASE + N_MOVIES - 1,
         },
     ).fetchall()
     tmdb_ids = [row[0] for row in rows]
