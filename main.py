@@ -10,14 +10,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from pythonjsonlogger.json import JsonFormatter  # pyright: ignore[reportMissingImports]
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
 
 from app import analytics
 from app.actors.views import router as actors_router
 from app.auth.views import router as auth_router
 from app.comments.views import router as comments_router
 from app.config import settings
+from app.core.errors import RequestIdMiddleware, register_exception_handlers
 from app.core.rate_limit import limiter
 from app.database import engine
 from app.friends.views import router as friends_router
@@ -98,10 +97,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
+app.add_middleware(RequestIdMiddleware)
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
+register_exception_handlers(app)
 
 app.include_router(actors_router, prefix="/actors", tags=["actors"])
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
