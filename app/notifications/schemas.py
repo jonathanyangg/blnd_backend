@@ -14,14 +14,34 @@ class MessageResponse(BaseModel):
     message: str
 
 
-class PreferencesResponse(BaseModel):
-    """Notification prefs for the shipped toggles and the iOS contract.
+class ChannelFlags(BaseModel):
+    """Per-type switches. ``friend_ratings`` is the iOS key.
 
-    ``share_ratings`` (everyone | friends | off) is stored in
-    ``notification_preferences.share_ratings_activity``.
-    ``watched_with_in_app`` / ``watched_with_push`` are stored in
-    ``watched_with_tags_in_app`` / ``watched_with_tags_push``.
-    The other in_app and push flags use those column names.
+    Stored as friends_ratings_in_app / friends_ratings_push. ``watched_with``
+    is stored as watched_with_tags_in_app / watched_with_tags_push.
+    """
+
+    friend_ratings: bool
+    blend_activity: bool
+    comments_likes: bool
+    watched_with: bool
+    recommendations: bool
+
+
+class ChannelFlagsPatch(BaseModel):
+    friend_ratings: bool | None = None
+    blend_activity: bool | None = None
+    comments_likes: bool | None = None
+    watched_with: bool | None = None
+    recommendations: bool | None = None
+
+
+class PreferencesResponse(BaseModel):
+    """Shipped toggles plus the iOS notification settings.
+
+    ``share_ratings`` (everyone | friends | off) is column
+    share_ratings_activity. ``in_app`` and ``push`` are the objects the app
+    sends; see ChannelFlags for the column names that differ.
     """
 
     friend_requests: bool
@@ -30,16 +50,8 @@ class PreferencesResponse(BaseModel):
     friend_activity: bool
     comment_replies: bool
     share_ratings: ShareAudience
-    friends_ratings_in_app: bool
-    friends_ratings_push: bool
-    blend_activity_in_app: bool
-    blend_activity_push: bool
-    comments_likes_in_app: bool
-    comments_likes_push: bool
-    watched_with_in_app: bool
-    watched_with_push: bool
-    recommendations_in_app: bool
-    recommendations_push: bool
+    in_app: ChannelFlags
+    push: ChannelFlags
 
 
 class UpdatePreferencesRequest(BaseModel):
@@ -49,16 +61,8 @@ class UpdatePreferencesRequest(BaseModel):
     friend_activity: bool | None = None
     comment_replies: bool | None = None
     share_ratings: ShareAudience | None = None
-    friends_ratings_in_app: bool | None = None
-    friends_ratings_push: bool | None = None
-    blend_activity_in_app: bool | None = None
-    blend_activity_push: bool | None = None
-    comments_likes_in_app: bool | None = None
-    comments_likes_push: bool | None = None
-    watched_with_in_app: bool | None = None
-    watched_with_push: bool | None = None
-    recommendations_in_app: bool | None = None
-    recommendations_push: bool | None = None
+    in_app: ChannelFlagsPatch | None = None
+    push: ChannelFlagsPatch | None = None
 
 
 class DigestStatusResponse(BaseModel):

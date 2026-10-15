@@ -123,25 +123,38 @@ def test_groups_likes_and_marks_the_group_read(client: TestClient, db: Session) 
     )
 
     body = client.get("/notifications/inbox").json()
-    four = next(item for item in body["results"] if item["actor_count"] == 4)
-    two = next(item for item in body["results"] if item["actor_count"] == 2)
-    assert four["body"] == "Alex and 3 others liked your review"
-    assert four["type"] == "comment_like"
-    assert four["from_username"] == "nalex"
-    assert four["avatar_url"] == "https://cdn.example/alex.jpg"
-    assert four["poster_url"] == "https://image.tmdb.org/t/p/w185/poster.jpg"
-    assert four["group_key"] == "like:comment:9"
-    assert four["target"] == {"type": "comment", "id": "9"}
-    assert two["body"] == "Alex and Sam liked your review"
+    four = [item for item in body["results"] if item["group_key"] == "like:comment:9"]
+    pair = [item for item in body["results"] if item["group_key"] == "like:comment:8"]
+    assert len(four) == 4
+    assert len(pair) == 2
+    assert all(item["type"] == "like" and item["actor_count"] == 1 for item in four)
+    assert all(item["target"] == {"type": "comment", "id": "9"} for item in four)
+    assert all(
+        item["poster_url"] == "https://image.tmdb.org/t/p/w185/poster.jpg"
+        and item["data"]["poster_path"] == "/poster.jpg"
+        and item["data"]["poster_url"] == item["poster_url"]
+        for item in four
+    )
+    alex_row = next(item for item in four if item["from_username"] == "nalex")
+    assert alex_row["avatar_url"] == "https://cdn.example/alex.jpg"
+    assert alex_row["from_avatar_url"] == alex_row["avatar_url"]
+    assert alex_row["body"] == "Alex liked your review"
     assert body["unread_count"] == 6
 
-    marked = client.post(f"/notifications/inbox/{four['id']}/read")
+    marked = client.post(f"/notifications/inbox/{alex_row['id']}/read")
     assert marked.status_code == 200
     assert marked.json()["unread_count"] == 2
     again = client.get("/notifications/inbox").json()
-    reread = next(item for item in again["results"] if item["actor_count"] == 4)
-    assert reread["read"] is True
-    assert next(item for item in again["results"] if item["actor_count"] == 2)["read"] is False
+    assert all(
+        item["read"] is True
+        for item in again["results"]
+        if item["group_key"] == "like:comment:9"
+    )
+    assert all(
+        item["read"] is False
+        for item in again["results"]
+        if item["group_key"] == "like:comment:8"
+    )
 
 
 def test_pagination_is_newest_first(client: TestClient, db: Session) -> None:
@@ -279,7 +292,7 @@ def test_like_fanout_and_in_app_toggle(client: TestClient, db: Session) -> None:
 
     like_comment(TARGET_ID, comment.id, db)
     listed = client.get("/notifications/inbox").json()["results"]
-    assert listed[0]["type"] == "comment_like"
+    assert listed[0]["type"] == "like"
     assert listed[0]["body"] == "Alex liked your review"
     assert listed[0]["actor_count"] == 1
 
@@ -293,13 +306,13 @@ def test_like_fanout_and_in_app_toggle(client: TestClient, db: Session) -> None:
         db.query(NotificationInboxItem)
         .filter(
             NotificationInboxItem.user_id == CALLER_ID,
-            NotificationInboxItem.type == "comment_like",
+            NotificationInboxItem.type == "like",
         )
         .count()
     )
     assert stored == 1
     types = [item["type"] for item in client.get("/notifications/inbox").json()["results"]]
-    assert "comment_like" not in types
+    assert "like" not in types
 
 
 def test_accept_and_decline_friend_request(client: TestClient, db: Session) -> None:
@@ -354,6 +367,10 @@ def test_accept_and_decline_friend_request(client: TestClient, db: Session) -> N
 
     again = client.post(f"/notifications/inbox/{accept_note.id}/accept")
     assert again.status_code == 400
+    err = again.json()
+    assert err["error"]["code"] == "BAD_REQUEST"
+    assert err["detail"] == err["error"]["message"]
+    assert err["error"]["request_id"]
 
     stranger = _note(
         db,
@@ -381,18 +398,21 @@ def test_new_follower_is_informational(client: TestClient, db: Session) -> None:
     listed = client.get("/notifications/inbox").json()["results"][0]
     assert listed["actions"] == []
     assert listed["target"] == {"type": "user", "id": TARGET_ID}
-    assert client.post(f"/notifications/inbox/{note.id}/accept").status_code == 400
+    denied = client.post(f"/notifications/inbox/{note.id}/accept")
+    assert denied.status_code == 400
+    assert denied.json()["error"]["code"] == "BAD_REQUEST"
+    assert denied.json()["detail"] == denied.json()["error"]["message"]
     assert client.post(f"/notifications/inbox/{note.id}/decline").status_code == 400
 
 
 @pytest.mark.parametrize(
     ("field", "inbox_type", "also"),
     [
-        ("friends_ratings_in_app", "friend_activity", []),
-        ("blend_activity_in_app", "group_invite", ["group_watchlist", "blend_activity"]),
-        ("comments_likes_in_app", "comment_like", ["comment_reply", "comment_mention"]),
-        ("watched_with_in_app", "watched_with", []),
-        ("recommendations_in_app", "match", ["recommendation", "weekly_digest"]),
+        ("friend_ratings", "friend_activity", []),
+        ("blend_activity", "group_invite", ["group_watchlist", "blend_activity"]),
+        ("comments_likes", "like", ["comment_reply", "comment_mention"]),
+        ("watched_with", "watched_with", []),
+        ("recommendations", "match", ["recommendation", "weekly_digest"]),
     ],
 )
 def test_each_in_app_preference_hides_its_types(
@@ -422,9 +442,9 @@ def test_each_in_app_preference_hides_its_types(
         return {item["type"] for item in client.get("/notifications/inbox").json()["results"]}
 
     assert set(types) <= seen()
-    client.patch("/notifications/preferences", json={field: False})
+    client.patch("/notifications/preferences", json={"in_app": {field: False}})
     assert seen().isdisjoint(types)
-    client.patch("/notifications/preferences", json={field: True})
+    client.patch("/notifications/preferences", json={"in_app": {field: True}})
     assert set(types) <= seen()
 
 
@@ -465,17 +485,18 @@ def test_preference_defaults_are_lazy_and_old_fields_remain(
     assert body["friend_activity"] is True
     assert body["comment_replies"] is True
     assert body["share_ratings"] == "friends"
-    assert "share_ratings_activity" not in body
-    assert body["friends_ratings_in_app"] is True
-    assert body["friends_ratings_push"] is False
-    assert body["blend_activity_in_app"] is True
-    assert body["blend_activity_push"] is True
-    assert body["comments_likes_in_app"] is True
-    assert body["comments_likes_push"] is True
-    assert body["watched_with_in_app"] is True
-    assert body["watched_with_push"] is True
-    assert body["recommendations_in_app"] is True
-    assert body["recommendations_push"] is True
+    assert body["in_app"] == {
+        "friend_ratings": True,
+        "blend_activity": True,
+        "comments_likes": True,
+        "watched_with": True,
+        "recommendations": True,
+    }
+    assert body["push"]["friend_ratings"] is False
+    assert body["push"]["blend_activity"] is True
+    assert body["push"]["comments_likes"] is True
+    assert body["push"]["watched_with"] is True
+    assert body["push"]["recommendations"] is True
     assert (
         db.query(NotificationPreference)
         .filter(NotificationPreference.user_id == CALLER_ID)
@@ -485,11 +506,17 @@ def test_preference_defaults_are_lazy_and_old_fields_remain(
 
     patched = client.patch(
         "/notifications/preferences",
-        json={"friend_requests": False, "share_ratings": "off"},
+        json={
+            "friend_requests": False,
+            "share_ratings": "off",
+            "push": {"friend_ratings": True},
+        },
     )
     assert patched.status_code == 200
     assert patched.json()["friend_requests"] is False
     assert patched.json()["share_ratings"] == "off"
+    assert patched.json()["push"]["friend_ratings"] is True
+    assert patched.json()["in_app"]["watched_with"] is True
     stored = (
         db.query(NotificationPreference.share_ratings_activity)
         .filter(NotificationPreference.user_id == CALLER_ID)
@@ -505,6 +532,9 @@ def test_preference_defaults_are_lazy_and_old_fields_remain(
     )
     bad = client.patch("/notifications/preferences", json={"share_ratings": "public"})
     assert bad.status_code == 422
+    assert bad.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert bad.json()["detail"] == bad.json()["error"]["message"]
+    assert bad.json()["error"]["request_id"]
     blends = client.patch("/notifications/preferences", json={"share_ratings": "blends"})
     assert blends.status_code == 422
 
