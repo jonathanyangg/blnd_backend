@@ -93,6 +93,26 @@ def test_insufficient_co_raters(db: Session) -> None:
     assert compute_cf_scores([user_id], CANDIDATES, db) == {}
 
 
+def test_rating_on_the_user_mean_still_counts_as_co_rater(db: Session) -> None:
+    """A centered 0 is a real rating, so it still counts toward MIN_CO_RATERS.
+
+    Two neighbours supply the similarity. A third rates a liked movie and the
+    liked candidate at the same score, which mean-centering stores as 0. That
+    pair is still a co-rating; without it the candidate is dropped.
+    """
+    _make_movies(db, LIKED + DISLIKED + CANDIDATES)
+    user_id = _make_user(db, "user")
+    _rate(db, user_id, _target_ratings())
+    _make_neighbours(db, MIN_CO_RATERS - 1)
+    flat = _make_user(db, "flat")
+    _rate(db, flat, {LIKED[0]: 3.0, LIKED_CANDIDATE: 3.0})
+
+    scores = compute_cf_scores([user_id], CANDIDATES, db)
+
+    assert LIKED_CANDIDATE in scores
+    assert DISLIKED_CANDIDATE not in scores
+
+
 def test_predicts_from_neighbour_ratings(db: Session) -> None:
     """Neighbours who share the user's taste drive the prediction.
 
