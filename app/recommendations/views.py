@@ -21,13 +21,17 @@ from app.recommendations.pipeline import (
     RecommendationContext,
     run_recommendation_pipeline,
 )
+from app.content_filters import ContentFilters, get_content_filters
 from app.tracking.models import WatchedMovie, WatchlistMovie
 
 router = APIRouter()
 
 
 def _build_user_context(
-    user_id: str, profile: Profile, db: Session
+    user_id: str,
+    profile: Profile,
+    db: Session,
+    filters: ContentFilters | None = None,
 ) -> RecommendationContext:
     """Build a RecommendationContext for a single user."""
     watched_ids = [
@@ -65,6 +69,8 @@ def _build_user_context(
         top_cast=top_cast,
         genre_watch_counts=genre_counts,
         total_watches=total_watches,
+        year_min=None if filters is None else filters.year_min,
+        year_max=None if filters is None else filters.year_max,
     )
 
 
@@ -76,7 +82,10 @@ def get_recommendations(
     db: Session = Depends(get_db),
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    filters: ContentFilters = Depends(get_content_filters),
 ):
+    if not filters.wants_movies:
+        return {"results": [], "taste_bio": None}
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile:
         return {"results": [], "taste_bio": None}
@@ -86,7 +95,7 @@ def get_recommendations(
         if not profile or profile.taste_embedding is None:
             return {"results": [], "taste_bio": profile.taste_bio if profile else None}
 
-    ctx = _build_user_context(user_id, profile, db)
+    ctx = _build_user_context(user_id, profile, db, filters)
     results = run_recommendation_pipeline(ctx, db, limit, offset)
     return {"results": results, "taste_bio": profile.taste_bio}
 
@@ -98,8 +107,11 @@ def get_feed(
     body: schemas.FeedRequest,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
+    filters: ContentFilters = Depends(get_content_filters),
 ):
     """Infinite scroll feed. Accepts previously-seen tmdb_ids to exclude."""
+    if not filters.wants_movies:
+        return {"results": [], "taste_bio": None}
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile:
         return {"results": [], "taste_bio": None}
@@ -109,7 +121,7 @@ def get_feed(
         if not profile or profile.taste_embedding is None:
             return {"results": [], "taste_bio": profile.taste_bio if profile else None}
 
-    ctx = _build_user_context(user_id, profile, db)
+    ctx = _build_user_context(user_id, profile, db, filters)
     # Add frontend's already-seen IDs to exclusion list
     ctx.exclude_ids = list(set(ctx.exclude_ids + body.exclude))
     results = run_recommendation_pipeline(ctx, db, body.limit, 0)
@@ -123,13 +135,16 @@ def refresh_recommendations(
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     limit: int = Query(default=20, ge=1, le=100),
+    filters: ContentFilters = Depends(get_content_filters),
 ):
+    if not filters.wants_movies:
+        return {"results": [], "taste_bio": None}
     # Force rebuild taste profile synchronously, then return fresh recs
     profile = services.rebuild_taste_profile(user_id, db, openai_client)
     if not profile or profile.taste_embedding is None:
         return {"results": [], "taste_bio": profile.taste_bio if profile else None}
 
-    ctx = _build_user_context(user_id, profile, db)
+    ctx = _build_user_context(user_id, profile, db, filters)
     results = run_recommendation_pipeline(ctx, db, limit, 0)
     return {"results": results, "taste_bio": profile.taste_bio}
 
@@ -155,14 +170,23 @@ def find_movie_now(
     exclude: str = Query(
         default="", description="Comma-separated tmdb_ids to skip (re-roll)"
     ),
+    filters: ContentFilters = Depends(get_content_filters),
 ):
     """One movie for right now, plus a short reason.
 
     Skips titles the user has watched, rated, hidden, or saved to their watchlist.
+    media_type=tv returns no pick: TV titles are not in this scorer.
     """
+    if not filters.wants_movies:
+        raise HTTPException(status_code=404, detail="No movie to recommend")
     genre_name = genre.strip() if genre and genre.strip() else None
     pick = services.pick_movie_now(
-        user_id, db, genre=genre_name, exclude_ids=_parse_exclude_ids(exclude)
+        user_id,
+        db,
+        genre=genre_name,
+        exclude_ids=_parse_exclude_ids(exclude),
+        year_min=filters.year_min,
+        year_max=filters.year_max,
     )
     if pick is None:
         raise HTTPException(status_code=404, detail="No movie to recommend")

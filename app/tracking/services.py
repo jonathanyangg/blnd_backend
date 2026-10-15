@@ -78,6 +78,8 @@ def get_watch_history(
     db: Session,
     q: str | None = None,
     sort: str | None = None,
+    year_min: int | None = None,
+    year_max: int | None = None,
 ) -> dict:
     """Get paginated watch history for a user, with optional title filter + sort."""
     base = (
@@ -87,6 +89,10 @@ def get_watch_history(
     )
     if q:
         base = base.filter(Movie.title.ilike(f"%{q}%"))
+    if year_min is not None:
+        base = base.filter(Movie.year >= year_min)
+    if year_max is not None:
+        base = base.filter(Movie.year <= year_max)
 
     total = base.with_entities(func.count(WatchedMovie.id)).scalar() or 0
 
@@ -192,6 +198,8 @@ def get_watchlist(
     offset: int = 0,
     q: str | None = None,
     sort: str | None = None,
+    year_min: int | None = None,
+    year_max: int | None = None,
 ) -> dict:
     """Get paginated watchlist movies, with optional title filter + sort."""
     base = (
@@ -201,6 +209,10 @@ def get_watchlist(
     )
     if q:
         base = base.filter(Movie.title.ilike(f"%{q}%"))
+    if year_min is not None:
+        base = base.filter(Movie.year >= year_min)
+    if year_max is not None:
+        base = base.filter(Movie.year <= year_max)
 
     total = base.with_entities(func.count(WatchlistMovie.id)).scalar() or 0
 

@@ -12,6 +12,7 @@ from app.dependencies import (
     openai_client,
 )
 from app.analytics import Event, track
+from app.content_filters import ContentFilters, get_content_filters
 from app.recommendations.services import increment_action_counter, rebuild_taste_profile
 from app.tracking import schemas, services
 
@@ -78,8 +79,20 @@ async def get_watch_history(
     offset: int = Query(default=0, ge=0),
     q: str | None = Query(default=None, max_length=100),
     sort: str | None = Query(default=None),
+    filters: ContentFilters = Depends(get_content_filters),
 ):
-    return services.get_watch_history(user_id, limit, offset, db, q=q, sort=sort)
+    if not filters.wants_movies:
+        return {"results": [], "total": 0}
+    return services.get_watch_history(
+        user_id,
+        limit,
+        offset,
+        db,
+        q=q,
+        sort=sort,
+        year_min=filters.year_min,
+        year_max=filters.year_max,
+    )
 
 
 @router.get("/{tmdb_id}/friends", response_model=schemas.FriendsWhoWatchedResponse)

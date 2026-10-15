@@ -11,7 +11,9 @@ from app.dependencies import (
     get_tmdb_client,
 )
 from app.comments.services import get_comment_count
+from app.content_filters import ContentFilters, get_content_filters
 from app.movies import schemas, services
+from app.tv import services as tv_services
 
 router = APIRouter()
 
@@ -184,11 +186,40 @@ async def search_movies(
     page: int = Query(default=1, ge=1, le=500),
     _user_id: str = Depends(get_current_user),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+    filters: ContentFilters = Depends(get_content_filters),
 ):
     try:
-        return await services.search_movies(query, page, tmdb_client)
+        if filters.media_type == "tv":
+            data = await tv_services.search_tv_shows(query, page, tmdb_client)
+        else:
+            data = await services.search_movies(query, page, tmdb_client)
+            for row in data["results"]:
+                row["media_type"] = "movie"
+            if filters.wants_tv:
+                tv_data = await tv_services.search_tv_shows(query, page, tmdb_client)
+                data["results"].extend(tv_data["results"])
+                data["total_results"] += tv_data["total_results"]
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
+    data["results"] = [
+        row
+        for row in data["results"]
+        if _year_in_range(row.get("year"), filters.year_min, filters.year_max)
+    ]
+    data["total_results"] = len(data["results"]) if filters.year_min or filters.year_max else data["total_results"]
+    return data
+
+
+def _year_in_range(year: int | None, year_min: int | None, year_max: int | None) -> bool:
+    if year_min is None and year_max is None:
+        return True
+    if year is None:
+        return False
+    if year_min is not None and year < year_min:
+        return False
+    if year_max is not None and year > year_max:
+        return False
+    return True
 
 
 @router.get("/{tmdb_id}", response_model=schemas.MovieResponse)

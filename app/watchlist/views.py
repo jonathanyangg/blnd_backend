@@ -9,6 +9,7 @@ from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.database import SessionLocal
 from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
 from app.recommendations.services import increment_action_counter, rebuild_taste_profile
+from app.content_filters import ContentFilters, get_content_filters
 from app.tracking import schemas, services
 
 router = APIRouter()
@@ -24,12 +25,22 @@ async def get_watchlist(
     offset: int = Query(default=0, ge=0),
     q: str | None = Query(default=None, max_length=100),
     sort: str | None = Query(default=None),
+    filters: ContentFilters = Depends(get_content_filters),
 ):
+    if not filters.wants_movies:
+        return {"results": [], "total": 0}
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile or not profile.watchlist_id:
         return {"results": [], "total": 0}
     return services.get_watchlist(
-        profile.watchlist_id, db, limit, offset, q=q, sort=sort
+        profile.watchlist_id,
+        db,
+        limit,
+        offset,
+        q=q,
+        sort=sort,
+        year_min=filters.year_min,
+        year_max=filters.year_max,
     )
 
 

@@ -309,6 +309,8 @@ def get_group_recommendations(
     limit: int = 20,
     offset: int = 0,
     extra_exclude: list[int] | None = None,
+    year_min: int | None = None,
+    year_max: int | None = None,
 ) -> dict:
     """Generate group recommendations using the shared pipeline."""
     group = db.query(Group).filter(Group.id == group_id).first()
@@ -448,6 +450,8 @@ def get_group_recommendations(
         top_cast=all_cast,
         genre_watch_counts=combined_counts,
         total_watches=combined_total,
+        year_min=year_min,
+        year_max=year_max,
     )
 
     results = run_recommendation_pipeline(ctx, db, limit, offset)

@@ -48,6 +48,8 @@ class RecommendationContext:
     top_cast: set[str] = field(default_factory=set)
     genre_watch_counts: dict[str, int] = field(default_factory=dict)
     total_watches: int = 0
+    year_min: int | None = None
+    year_max: int | None = None
 
 
 def run_recommendation_pipeline(
@@ -103,19 +105,47 @@ def run_recommendation_pipeline(
 def _run_main_algorithm(ctx: RecommendationContext, db: Session) -> list[dict]:
     """Steps 1-2: pgvector candidates → rerank → probabilistic sample."""
     embedding_str = "[" + ",".join(str(v) for v in ctx.positive_embedding) + "]"
-
-    result = db.execute(
-        text(
-            "SELECT * FROM match_movies("
-            "cast(:query_embedding AS vector(1536)), :match_count, :exclude_ids"
-            ")"
-        ),
-        {
-            "query_embedding": embedding_str,
-            "match_count": CANDIDATE_POOL_SIZE,
-            "exclude_ids": ctx.exclude_ids if ctx.exclude_ids else [],
-        },
-    )
+    exclude_ids = ctx.exclude_ids if ctx.exclude_ids else []
+    if ctx.year_min is None and ctx.year_max is None:
+        result = db.execute(
+            text(
+                "SELECT * FROM match_movies("
+                "cast(:query_embedding AS vector(1536)), :match_count, :exclude_ids"
+                ")"
+            ),
+            {
+                "query_embedding": embedding_str,
+                "match_count": CANDIDATE_POOL_SIZE,
+                "exclude_ids": exclude_ids,
+            },
+        )
+    else:
+        # Year predicate is inside the similarity query so the pool is not
+        # the unfiltered top N with the years removed afterwards.
+        result = db.execute(
+            text(
+                "SELECT me.tmdb_id, "
+                "1 - (me.embedding <=> cast(:query_embedding AS vector(1536))::halfvec(1536)) "
+                "AS similarity "
+                "FROM movie_embeddings me "
+                "JOIN movies ON movies.tmdb_id = me.tmdb_id "
+                "WHERE (cardinality(cast(:exclude_ids AS int[])) = 0 "
+                "OR me.tmdb_id != ALL(cast(:exclude_ids AS int[]))) "
+                "AND (cast(:year_min AS int) IS NULL OR "
+                "COALESCE(EXTRACT(YEAR FROM movies.release_date)::int, movies.year) >= :year_min) "
+                "AND (cast(:year_max AS int) IS NULL OR "
+                "COALESCE(EXTRACT(YEAR FROM movies.release_date)::int, movies.year) <= :year_max) "
+                "ORDER BY me.embedding <=> cast(:query_embedding AS vector(1536))::halfvec(1536) "
+                "LIMIT :match_count"
+            ),
+            {
+                "query_embedding": embedding_str,
+                "match_count": CANDIDATE_POOL_SIZE,
+                "exclude_ids": exclude_ids,
+                "year_min": ctx.year_min,
+                "year_max": ctx.year_max,
+            },
+        )
     rows = result.fetchall()
     if not rows:
         return []

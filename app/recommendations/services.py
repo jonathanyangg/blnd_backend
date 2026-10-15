@@ -540,6 +540,8 @@ def pick_movie_now(
     *,
     genre: str | None = None,
     exclude_ids: list[int] | None = None,
+    year_min: int | None = None,
+    year_max: int | None = None,
 ) -> dict | None:
     """Return one movie and a short reason, or None when nothing qualifies.
 
@@ -557,10 +559,14 @@ def pick_movie_now(
     picked: dict | None = None
     used_fallback = profile is None or profile.taste_embedding is None
     if profile is not None and profile.taste_embedding is not None:
-        picked = _score_now_candidate(profile, blocked, genre, db)
+        picked = _score_now_candidate(
+            profile, blocked, genre, db, year_min=year_min, year_max=year_max
+        )
         used_fallback = picked is None
     if picked is None:
-        movie = _popular_now_movie(blocked, genre, db)
+        movie = _popular_now_movie(
+            blocked, genre, db, year_min=year_min, year_max=year_max
+        )
         if movie is None:
             return None
         picked = {"movie": movie, "score": round((movie.vote_average or 0) / 10.0, 4)}
@@ -612,17 +618,50 @@ def _matches_genre(movie: Movie, genre: str | None) -> bool:
 
 
 def _score_now_candidate(
-    profile: Profile, blocked: set[int], genre: str | None, db: Session
+    profile: Profile,
+    blocked: set[int],
+    genre: str | None,
+    db: Session,
+    *,
+    year_min: int | None = None,
+    year_max: int | None = None,
 ) -> dict | None:
     embedding_str = "[" + ",".join(str(v) for v in list(profile.taste_embedding)) + "]"
-    rows = db.execute(
-        _MATCH_MOVIES,
-        {
-            "query_embedding": embedding_str,
-            "match_count": NOW_MATCH_COUNT,
-            "exclude_ids": list(blocked),
-        },
-    ).fetchall()
+    exclude_ids = list(blocked)
+    if year_min is None and year_max is None:
+        rows = db.execute(
+            _MATCH_MOVIES,
+            {
+                "query_embedding": embedding_str,
+                "match_count": NOW_MATCH_COUNT,
+                "exclude_ids": exclude_ids,
+            },
+        ).fetchall()
+    else:
+        rows = db.execute(
+            text(
+                "SELECT me.tmdb_id, "
+                "1 - (me.embedding <=> cast(:query_embedding AS vector(1536))::halfvec(1536)) "
+                "AS similarity "
+                "FROM movie_embeddings me "
+                "JOIN movies ON movies.tmdb_id = me.tmdb_id "
+                "WHERE (cardinality(cast(:exclude_ids AS int[])) = 0 "
+                "OR me.tmdb_id != ALL(cast(:exclude_ids AS int[]))) "
+                "AND (cast(:year_min AS int) IS NULL OR "
+                "COALESCE(EXTRACT(YEAR FROM movies.release_date)::int, movies.year) >= :year_min) "
+                "AND (cast(:year_max AS int) IS NULL OR "
+                "COALESCE(EXTRACT(YEAR FROM movies.release_date)::int, movies.year) <= :year_max) "
+                "ORDER BY me.embedding <=> cast(:query_embedding AS vector(1536))::halfvec(1536) "
+                "LIMIT :match_count"
+            ),
+            {
+                "query_embedding": embedding_str,
+                "match_count": NOW_MATCH_COUNT,
+                "exclude_ids": exclude_ids,
+                "year_min": year_min,
+                "year_max": year_max,
+            },
+        ).fetchall()
     if not rows:
         return None
 
@@ -676,7 +715,12 @@ def _score_now_candidate(
 
 
 def _popular_now_movie(
-    blocked: set[int], genre: str | None, db: Session
+    blocked: set[int],
+    genre: str | None,
+    db: Session,
+    *,
+    year_min: int | None = None,
+    year_max: int | None = None,
 ) -> Movie | None:
     query = db.query(Movie).filter(
         Movie.vote_average.isnot(None),
@@ -684,6 +728,10 @@ def _popular_now_movie(
         Movie.vote_count >= 50,
         Movie.runtime >= 45,
     )
+    if year_min is not None:
+        query = query.filter(Movie.year >= year_min)
+    if year_max is not None:
+        query = query.filter(Movie.year <= year_max)
     if blocked:
         query = query.filter(Movie.tmdb_id.notin_(list(blocked)))
     if genre:
