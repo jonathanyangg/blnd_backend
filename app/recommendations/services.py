@@ -11,7 +11,7 @@ from app.movies.models import Movie
 from app.recommendations.models import HiddenMovie
 from app.recommendations.pipeline import _format_candidate, _has_excluded_genre
 from app.recommendations.ranking import rerank_candidates
-from app.tracking.models import WatchedMovie, WatchlistMovie
+from app.tracking.models import InterestedMovie, WatchedMovie, WatchlistMovie
 
 logger = logging.getLogger(__name__)
 
@@ -585,14 +585,20 @@ def _now_blocked_ids(
     extra: list[int],
     profile: Profile | None,
 ) -> set[int]:
-    """Ids that must not be returned: watched, hidden, watchlisted, plus caller excludes."""
+    """Ids that must not be returned: watched, hidden, watchlisted, interested, plus caller excludes."""
     watched = {
         row[0]
         for row in db.query(WatchedMovie.tmdb_id)
         .filter(WatchedMovie.user_id == user_id)
         .all()
     }
-    blocked = watched | set(get_hidden_movie_ids(user_id, db)) | set(extra)
+    interested = {
+        row[0]
+        for row in db.query(InterestedMovie.tmdb_id)
+        .filter(InterestedMovie.user_id == user_id)
+        .all()
+    }
+    blocked = watched | interested | set(get_hidden_movie_ids(user_id, db)) | set(extra)
     if profile is not None and profile.watchlist_id:
         blocked |= {
             row[0]

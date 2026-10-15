@@ -6,8 +6,9 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.import_data.schemas import NotesMovie
 from app.import_data.workflows import parse_note_lines
-from app.tracking.models import WatchlistMovie
+from app.tracking.models import InterestedMovie, WatchedMovie, WatchlistMovie
 from tests.conftest import TEST_USER_ID
 from tests.factories import (
     make_movie,
@@ -143,16 +144,47 @@ class _FakeNotesTMDBClient:
 
     async def get(self, url: str, params: dict | None = None) -> _FakeResponse:
         if url == "/search/movie":
-            entry = _CATALOG.get((params or {})["query"].lower())
+            query = (params or {}).get("query", "").lower()
+            if query == "heat":
+                return _FakeResponse(
+                    {
+                        "results": [
+                            {
+                                "id": 949,
+                                "title": "Heat",
+                                "release_date": "1995-12-15",
+                                "poster_path": "/heat.jpg",
+                            },
+                            {
+                                "id": 950,
+                                "title": "Heat",
+                                "release_date": "1986-01-01",
+                                "poster_path": None,
+                            },
+                        ]
+                    }
+                )
+            entry = _CATALOG.get(query)
             results = (
-                [{"id": entry[0], "title": entry[1], "release_date": entry[2]}]
+                [
+                    {
+                        "id": entry[0],
+                        "title": entry[1],
+                        "release_date": entry[2],
+                        "poster_path": f"/poster-{entry[0]}.jpg",
+                    }
+                ]
                 if entry
                 else []
             )
             return _FakeResponse({"results": results})
 
         tmdb_id = int(url.rstrip("/").split("/")[-1])
-        for cat_id, title, release_date in _CATALOG.values():
+        known = list(_CATALOG.values()) + [
+            (949, "Heat", "1995-12-15"),
+            (950, "Heat", "1986-01-01"),
+        ]
+        for cat_id, title, release_date in known:
             if cat_id == tmdb_id:
                 return _FakeResponse(
                     {
@@ -203,47 +235,86 @@ def test_import_notes_returns_candidates_without_writing(
     resp = notes_client.post("/import/notes", json={"text": text})
     assert resp.status_code == 200
     data = resp.json()
-    assert data["truncated"] is False
-    assert len(data["lines"]) == 3
-    godfather = data["lines"][0]
-    assert godfather["title"] == "The Godfather"
-    assert godfather["year"] == 1972
-    assert godfather["candidates"][0]["tmdb_id"] == 238
-    assert godfather["candidates"][0]["confidence"] >= 0.9
-    assert data["lines"][1]["candidates"][0]["tmdb_id"] == 438631
-    assert data["lines"][2]["candidates"] == []
+    assert set(data) == {"items"}
+    assert len(data["items"]) == 3
+    godfather = data["items"][0]
+    assert set(godfather) == {"query", "confidence", "candidates"}
+    assert godfather["query"] == "The Godfather"
+    assert godfather["confidence"] == "high"
+    movie = godfather["candidates"][0]
+    assert set(movie) == {"tmdb_id", "title", "year", "poster_path"}
+    assert movie["tmdb_id"] == 238
+    assert movie["year"] == 1972
+    assert data["items"][1]["confidence"] == "high"
+    assert data["items"][1]["candidates"][0]["tmdb_id"] == 438631
+    assert data["items"][2]["confidence"] == "none"
+    assert data["items"][2]["candidates"] == []
     assert (
         db.query(WatchlistMovie).filter(WatchlistMovie.watchlist_id == wl.id).count()
         == 0
     )
 
 
-def test_confirm_notes_adds_to_watchlist(notes_client: TestClient, db: Session) -> None:
+def test_import_notes_low_confidence_keeps_top_three(
+    notes_client: TestClient, db: Session
+) -> None:
+    make_profile(db, user_id=TEST_USER_ID, username="user1")
+    resp = notes_client.post("/import/notes", json={"text": "Heat"})
+    assert resp.status_code == 200
+    item = resp.json()["items"][0]
+    assert item["confidence"] == "low"
+    assert [row["tmdb_id"] for row in item["candidates"]] == [949, 950]
+
+
+def test_commit_notes_adds_to_watchlist(notes_client: TestClient, db: Session) -> None:
     wl = make_watchlist(db)
     make_profile(db, user_id=TEST_USER_ID, username="user1", watchlist_id=wl.id)
     resp = notes_client.post(
-        "/import/notes/confirm",
-        json={
-            "items": [
-                {"tmdb_id": 238, "media_type": "movie", "destination": "watchlist"},
-                {
-                    "tmdb_id": 438631,
-                    "media_type": "movie",
-                    "destination": "watched",
-                    "rating": 4.5,
-                },
-            ]
-        },
+        "/import/notes/commit",
+        json={"bucket": "watchlist", "tmdb_ids": [238]},
     )
     assert resp.status_code == 200
-    assert resp.json()["added"] == 2
-    assert resp.json()["failed"] == []
+    body = resp.json()
+    assert body["saved"] == 1
+    assert body["recommendations"] == []
     saved = db.query(WatchlistMovie).filter(WatchlistMovie.watchlist_id == wl.id).one()
     assert saved.tmdb_id == 238
     assert saved.source == "notes_import"
 
 
-def test_confirm_notes_skips_duplicate_watchlist(
+def test_commit_notes_marks_watched_and_interested(
+    notes_client: TestClient, db: Session
+) -> None:
+    make_profile(db, user_id=TEST_USER_ID, username="user1")
+    watched = notes_client.post(
+        "/import/notes/commit",
+        json={"bucket": "watched", "tmdb_ids": [438631]},
+    )
+    interested = notes_client.post(
+        "/import/notes/commit",
+        json={"bucket": "interested", "tmdb_ids": [238]},
+    )
+    assert watched.status_code == 200
+    assert watched.json()["saved"] == 1
+    assert interested.status_code == 200
+    assert interested.json()["saved"] == 1
+    assert (
+        db.query(WatchedMovie)
+        .filter(WatchedMovie.user_id == TEST_USER_ID, WatchedMovie.tmdb_id == 438631)
+        .one()
+        .source
+        == "notes_import"
+    )
+    assert (
+        db.query(InterestedMovie)
+        .filter(InterestedMovie.user_id == TEST_USER_ID, InterestedMovie.tmdb_id == 238)
+        .one()
+        .source
+        == "notes_import"
+    )
+
+
+def test_commit_notes_does_not_count_a_duplicate(
     notes_client: TestClient, db: Session
 ) -> None:
     wl = make_watchlist(db)
@@ -251,16 +322,56 @@ def test_confirm_notes_skips_duplicate_watchlist(
     make_movie(db, tmdb_id=940550, title="Fight Club", poster_path="/poster.jpg")
     make_watchlist_movie(db, watchlist_id=wl.id, tmdb_id=940550)
     resp = notes_client.post(
-        "/import/notes/confirm",
-        json={"items": [{"tmdb_id": 940550, "destination": "watchlist"}]},
+        "/import/notes/commit",
+        json={"bucket": "watchlist", "tmdb_ids": [940550]},
     )
     assert resp.status_code == 200
-    assert resp.json()["added"] == 0
-    assert resp.json()["skipped"] == 1
+    assert resp.json()["saved"] == 0
+    assert (
+        db.query(WatchlistMovie).filter(WatchlistMovie.watchlist_id == wl.id).count()
+        == 1
+    )
+
+
+def test_commit_notes_returns_recommendations(
+    notes_client: TestClient, db: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_profile(db, user_id=TEST_USER_ID, username="user1")
+
+    def _recs(
+        user_id: str, extra_exclude: list[int], session: Session
+    ) -> list[NotesMovie]:
+        assert extra_exclude == [238]
+        return [
+            NotesMovie(
+                tmdb_id=680, title="Pulp Fiction", year=1994, poster_path="/p.jpg"
+            )
+        ]
+
+    monkeypatch.setattr("app.import_data.workflows._notes_recommendations", _recs)
+    resp = notes_client.post(
+        "/import/notes/commit",
+        json={"bucket": "interested", "tmdb_ids": [238]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["saved"] == 1
+    assert resp.json()["recommendations"] == [
+        {
+            "tmdb_id": 680,
+            "title": "Pulp Fiction",
+            "year": 1994,
+            "poster_path": "/p.jpg",
+        }
+    ]
 
 
 def test_import_notes_text_too_long(notes_client: TestClient) -> None:
-    resp = notes_client.post("/import/notes", json={"text": "a" * 20_001})
+    resp = notes_client.post("/import/notes", json={"text": "a" * 50_001})
+    assert resp.status_code == 422
+
+
+def test_import_notes_blank_text(notes_client: TestClient) -> None:
+    resp = notes_client.post("/import/notes", json={"text": "   \n"})
     assert resp.status_code == 422
 
 
@@ -268,13 +379,14 @@ def test_import_notes_only_headers(notes_client: TestClient, db: Session) -> Non
     make_profile(db, user_id=TEST_USER_ID, username="user1")
     resp = notes_client.post("/import/notes", json={"text": "To watch:\n\n"})
     assert resp.status_code == 200
-    assert resp.json() == {"lines": [], "truncated": False}
+    assert resp.json() == {"items": []}
 
 
-def test_import_notes_truncates_at_cap(notes_client: TestClient) -> None:
+def test_import_notes_caps_at_one_hundred_titles(notes_client: TestClient) -> None:
     text = "\n".join(f"Unknown Movie {i}" for i in range(101))
     resp = notes_client.post("/import/notes", json={"text": text})
     assert resp.status_code == 200
     data = resp.json()
-    assert data["truncated"] is True
-    assert len(data["lines"]) == 100
+    assert set(data) == {"items"}
+    assert len(data["items"]) == 100
+    assert data["items"][0]["confidence"] == "none"

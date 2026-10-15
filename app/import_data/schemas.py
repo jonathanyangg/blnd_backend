@@ -1,5 +1,7 @@
-from pydantic import BaseModel, Field
 from datetime import date
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 
 class SeedStatusResponse(BaseModel):
@@ -33,7 +35,9 @@ class FilmRecord(BaseModel):
 
 
 class ImportNotesRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=20_000)
+    """Free-form note text. 50_000 matches the iOS client's own cap."""
+
+    text: str = Field(min_length=1, max_length=50_000)
 
 
 class ParsedTitle(BaseModel):
@@ -42,39 +46,30 @@ class ParsedTitle(BaseModel):
     year: int | None = None
 
 
-class NoteCandidate(BaseModel):
+class NotesMovie(BaseModel):
+    """Movie object the iOS notes screen decodes. No other fields."""
+
     tmdb_id: int
-    media_type: str
     title: str
     year: int | None = None
     poster_path: str | None = None
-    confidence: float
 
 
-class NoteLineMatches(BaseModel):
-    raw_line: str
-    title: str
-    year: int | None = None
-    candidates: list[NoteCandidate]
+class NotesImportItem(BaseModel):
+    query: str
+    confidence: Literal["high", "low", "none"]
+    candidates: list[NotesMovie]
 
 
 class ImportNotesResponse(BaseModel):
-    lines: list[NoteLineMatches]
-    truncated: bool = False
+    items: list[NotesImportItem]
 
 
-class NoteConfirmItem(BaseModel):
-    tmdb_id: int = Field(gt=0)
-    media_type: str = "movie"
-    destination: str
-    rating: float | None = Field(default=None, ge=0.5, le=5)
+class NotesCommitRequest(BaseModel):
+    bucket: Literal["watched", "watchlist", "interested"]
+    tmdb_ids: list[int] = Field(min_length=1, max_length=100)
 
 
-class NoteConfirmRequest(BaseModel):
-    items: list[NoteConfirmItem] = Field(min_length=1, max_length=100)
-
-
-class NoteConfirmResponse(BaseModel):
-    added: int
-    skipped: int
-    failed: list[str]
+class NotesCommitResponse(BaseModel):
+    saved: int
+    recommendations: list[NotesMovie]
