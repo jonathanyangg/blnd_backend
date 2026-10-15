@@ -4,7 +4,7 @@ import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from starlette.requests import Request
-from supabase_auth.errors import AuthApiError
+from supabase_auth.errors import AuthApiError, AuthRetryableError
 
 from app.analytics import Event, track
 from app.auth import schemas, services
@@ -90,6 +90,13 @@ def login(request: Request, body: schemas.LoginRequest):
 def refresh(request: Request, body: schemas.RefreshRequest):
     try:
         return services.refresh_session(body.refresh_token)
+    except AuthRetryableError:
+        # supabase-py turns upstream 502/503/504 into AuthRetryableError
+        # rather than AuthApiError. Those are transient and must not log the
+        # client out.
+        raise HTTPException(
+            status_code=503, detail="Auth service unavailable, try again"
+        )
     except AuthApiError as e:
         # Supabase rejected the call: 4xx = bad/expired refresh token (the
         # session is truly dead), 5xx = Supabase itself is having issues

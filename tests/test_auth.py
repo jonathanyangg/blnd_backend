@@ -233,6 +233,20 @@ def test_refresh_supabase_5xx_returns_503(
     assert "unavailable" in resp.json()["detail"].lower()
 
 
+def test_refresh_retryable_upstream_returns_503(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from supabase_auth.errors import AuthRetryableError
+
+    def _raise(refresh_token: str) -> None:
+        raise AuthRetryableError("Service Unavailable", 503)
+
+    monkeypatch.setattr("app.auth.services.refresh_session", _raise)
+    resp = client.post("/auth/refresh", json={"refresh_token": "any"})
+    assert resp.status_code == 503
+    assert "unavailable" in resp.json()["detail"].lower()
+
+
 def test_refresh_network_error_returns_503(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
