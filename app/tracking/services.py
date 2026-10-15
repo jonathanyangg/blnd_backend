@@ -71,8 +71,9 @@ async def track_movie(
         )
         db.add(entry)
     db.flush()
+    added: list[str] = []
     if companion_ids is not None:
-        _replace_companions(entry.id, user_id, companion_ids, db)
+        added = _replace_companions(entry.id, user_id, companion_ids, db)
 
     # Remove from user's personal watchlist if present
     profile = db.query(Profile).filter(Profile.id == user_id).first()
@@ -82,6 +83,7 @@ async def track_movie(
             WatchlistMovie.tmdb_id == tmdb_id,
         ).delete()
 
+    _notify_watched_with(db, user_id, tmdb_id, added)
     db.commit()
     db.refresh(entry)
 
@@ -192,9 +194,11 @@ def update_watched_movie(
         entry.review = data["review"]
     if "watched_date" in data:
         entry.watched_date = data["watched_date"]
+    added: list[str] = []
     if companion_ids is not None:
-        _replace_companions(entry.id, user_id, companion_ids, db)
+        added = _replace_companions(entry.id, user_id, companion_ids, db)
 
+    _notify_watched_with(db, user_id, tmdb_id, added)
     db.commit()
     db.refresh(entry)
 
@@ -563,11 +567,21 @@ def _taggable_user_ids(owner_id: str, db: Session) -> set[str]:
 
 def _replace_companions(
     watched_movie_id: int, owner_id: str, companion_ids: list[str], db: Session
-) -> None:
-    """Replace the companion set for one watch log. Caller commits."""
+) -> list[str]:
+    """Replace the companion set. Returns ids that were not already tagged.
+
+    Caller commits.
+    """
+    previous = {
+        str(row[0])
+        for row in db.query(WatchedWith.user_id)
+        .filter(WatchedWith.watched_movie_id == watched_movie_id)
+        .all()
+    }
     db.query(WatchedWith).filter(
         WatchedWith.watched_movie_id == watched_movie_id
     ).delete(synchronize_session=False)
+    added: list[str] = []
     for companion_id in companion_ids:
         db.add(
             WatchedWith(
@@ -576,6 +590,27 @@ def _replace_companions(
                 user_id=companion_id,
             )
         )
+        if companion_id not in previous:
+            added.append(companion_id)
+    return added
+
+
+def _notify_watched_with(
+    db: Session, actor_id: str, tmdb_id: int, added: list[str]
+) -> None:
+    """Tell newly tagged people, if the notification center is installed.
+
+    PR #24 defines notify_watched_with. This branch imports it by name and
+    skips the call when that name is absent, so #19 runs before #24 is merged.
+    The function does not commit; the caller does.
+    """
+    if not added:
+        return
+    try:
+        from app.notifications.services import notify_watched_with
+    except ImportError:
+        return
+    notify_watched_with(db, actor_id=actor_id, tagged_user_ids=added, tmdb_id=tmdb_id)
 
 
 def _companions_for(entry_ids: list[int], db: Session) -> dict[int, list[dict]]:
@@ -616,7 +651,8 @@ def replace_watched_with(
     """Replace the companion set on the caller's log for one movie."""
     entry = _owned_log(user_id, tmdb_id, db)
     ids = _validate_companion_ids(user_id, companion_ids, db)
-    _replace_companions(entry.id, user_id, ids, db)
+    added = _replace_companions(entry.id, user_id, ids, db)
+    _notify_watched_with(db, user_id, tmdb_id, added)
     db.commit()
     return {"watched_with": _companions_for([entry.id], db).get(entry.id, [])}
 

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.friends.models import UserBlock
 from app.groups.models import GroupMember
 from app.tracking.models import WatchedWith
-from tests.conftest import TEST_USER_ID, TEST_USER_ID_2
+from tests.conftest import TEST_USER_ID, TEST_USER_ID_2, assert_error
 from tests.factories import (
     make_friendship,
     make_group,
@@ -96,11 +96,14 @@ def test_track_rejects_people_who_are_not_friends_or_blend_members(
     resp = client_with_tmdb.post(
         "/tracking/", json={"tmdb_id": 550, "watched_with": [companion_id]}
     )
-    assert resp.status_code == 400
-    assert resp.json()["detail"] == "Can only tag friends or Blend members"
+    assert_error(
+        resp,
+        status=400,
+        code="BAD_REQUEST",
+        message="Can only tag friends or Blend members",
+    )
     assert (
-        db.query(WatchedWith).filter(WatchedWith.owner_id == TEST_USER_ID).count()
-        == 0
+        db.query(WatchedWith).filter(WatchedWith.owner_id == TEST_USER_ID).count() == 0
     )
 
 
@@ -116,10 +119,14 @@ def test_track_rejects_blocked_blend_member(
     resp = client_with_tmdb.post(
         "/tracking/", json={"tmdb_id": 550, "watched_with": [TEST_USER_ID_2]}
     )
-    assert resp.status_code == 400
+    assert_error(
+        resp,
+        status=400,
+        code="BAD_REQUEST",
+        message="Can only tag friends or Blend members",
+    )
     assert (
-        db.query(WatchedWith).filter(WatchedWith.owner_id == TEST_USER_ID).count()
-        == 0
+        db.query(WatchedWith).filter(WatchedWith.owner_id == TEST_USER_ID).count() == 0
     )
 
 
@@ -152,7 +159,9 @@ def test_put_replaces_watched_with(
 ) -> None:
     make_friendship(db, TEST_USER_ID, TEST_USER_ID_2, status="accepted")
     missing = client.get("/tracking/550/watched-with")
-    assert missing.status_code == 404
+    assert_error(
+        missing, status=404, code="NOT_FOUND", message="Movie not in watch history"
+    )
 
     make_watched(db, user_id=TEST_USER_ID, tmdb_id=550)
     put = client.put("/tracking/550/watched-with", json={"user_ids": [TEST_USER_ID_2]})
@@ -168,7 +177,12 @@ def test_put_replaces_watched_with(
     rejected = client.put(
         "/tracking/550/watched-with", json={"user_ids": [STRANGER_ID]}
     )
-    assert rejected.status_code == 400
+    assert_error(
+        rejected,
+        status=400,
+        code="BAD_REQUEST",
+        message="Can only tag friends or Blend members",
+    )
     assert client.get("/tracking/550/watched-with").json()["watched_with"][0]["id"] == (
         TEST_USER_ID_2
     )
@@ -176,6 +190,42 @@ def test_put_replaces_watched_with(
     cleared = client.put("/tracking/550/watched-with", json={"user_ids": []})
     assert cleared.status_code == 200
     assert cleared.json()["watched_with"] == []
+
+
+def test_notify_watched_with_only_new_ids(
+    client: TestClient, db: Session, people: None, monkeypatch
+) -> None:
+    import app.notifications.services as notifications
+
+    make_friendship(db, TEST_USER_ID, TEST_USER_ID_2, status="accepted")
+    beau = make_profile(db, username="wwbeau2", display_name="Beau")
+    make_friendship(db, TEST_USER_ID, str(beau.id), status="accepted")
+    make_watched(db, user_id=TEST_USER_ID, tmdb_id=550)
+    calls: list[list[str]] = []
+
+    def fake(
+        db, *, actor_id, tagged_user_ids, tmdb_id, movie_title=None, poster_path=None
+    ):
+        assert actor_id == TEST_USER_ID
+        assert tmdb_id == 550
+        calls.append(list(tagged_user_ids))
+
+    monkeypatch.setattr(notifications, "notify_watched_with", fake, raising=False)
+
+    first = client.put(
+        "/tracking/550/watched-with", json={"user_ids": [TEST_USER_ID_2]}
+    )
+    assert first.status_code == 200
+    second = client.put(
+        "/tracking/550/watched-with",
+        json={"user_ids": [TEST_USER_ID_2, str(beau.id)]},
+    )
+    assert second.status_code == 200
+    same = client.patch(
+        "/tracking/550", json={"watched_with": [TEST_USER_ID_2, str(beau.id)]}
+    )
+    assert same.status_code == 200
+    assert calls == [[TEST_USER_ID_2], [str(beau.id)]]
 
 
 @patch(REBUILD_PATH)
@@ -204,8 +254,7 @@ def test_delete_log_removes_companions(
     deleted = client.delete("/tracking/550")
     assert deleted.status_code == 204
     assert (
-        db.query(WatchedWith).filter(WatchedWith.owner_id == TEST_USER_ID).count()
-        == 0
+        db.query(WatchedWith).filter(WatchedWith.owner_id == TEST_USER_ID).count() == 0
     )
 
 
