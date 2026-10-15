@@ -331,6 +331,16 @@ def _reset_local(connection: Session) -> None:
         text("DELETE FROM public.movies WHERE tmdb_id BETWEEN :lo AND :hi"),
         {"lo": lo, "hi": hi},
     )
+    # groups.created_by does not cascade, so a group owned by an eval user
+    # blocks deleting that user.
+    connection.execute(
+        text(
+            "DELETE FROM public.groups WHERE created_by IN ("
+            "SELECT p.id FROM public.profiles p "
+            "JOIN auth.users u ON u.id = p.id "
+            "WHERE u.email LIKE '%@eval.local')"
+        )
+    )
     connection.execute(text("DELETE FROM auth.users WHERE email LIKE '%@eval.local'"))
     connection.commit()
 

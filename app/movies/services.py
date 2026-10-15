@@ -144,9 +144,10 @@ def compute_match_scores(
     (similarity term becomes 0, remaining signals renormalized so the
     fallback can still reach ~100%).
 
-    For movies that contributed to the user's taste embedding (rated positive or
-    currently in watchlist), we apply a leave-one-out adjustment so a movie isn't
-    being compared against a taste vector that contains itself.
+    For movies that contributed to the user's taste embedding (a positive rating,
+    a watchlist save, or an interested swipe), we apply a leave-one-out
+    adjustment so a movie isn't being compared against a taste vector that
+    contains itself. That cosine is what gets blended with a CF score.
     """
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile or profile.taste_embedding is None:
