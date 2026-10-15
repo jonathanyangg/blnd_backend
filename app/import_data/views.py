@@ -29,8 +29,8 @@ from app.import_data.schemas import (
     ImportNotesRequest,
     ImportNotesResponse,
     ImportSummaryResponse,
-    NoteConfirmRequest,
-    NoteConfirmResponse,
+    NotesCommitRequest,
+    NotesCommitResponse,
     SeedStatusResponse,
 )
 
@@ -121,20 +121,28 @@ async def import_notes(
     user_id: str = Depends(get_current_user),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
-    """Parse a Notes list and return ranked matches. Nothing is saved yet."""
+    """Match each note line to movies. Nothing is saved yet."""
+    if not body.text.strip():
+        raise HTTPException(status_code=422, detail="text is empty")
     result = await workflows.run_notes_import(body.text, tmdb_client)
-    track(user_id, Event.NOTES_IMPORTED, {"lines": len(result.lines)})
+    track(user_id, Event.NOTES_IMPORTED, {"lines": len(result.items)})
     return result
 
 
-@router.post("/notes/confirm", response_model=NoteConfirmResponse)
+@router.post("/notes/commit", response_model=NotesCommitResponse)
 @limiter.limit(LIMIT_IMPORT)
-async def confirm_notes(
+async def commit_notes(
     request: Request,
-    body: NoteConfirmRequest,
+    body: NotesCommitRequest,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
-    """Save titles the user confirmed onto the watchlist or watched list."""
-    return await workflows.confirm_notes_import(user_id, body, db, tmdb_client)
+    """Save the chosen movies as watched, watchlist, or interested."""
+    result = await workflows.commit_notes_import(user_id, body, db, tmdb_client)
+    track(
+        user_id,
+        Event.NOTES_IMPORTED,
+        {"saved": result.saved, "bucket": body.bucket},
+    )
+    return result

@@ -5,6 +5,7 @@ import logging
 import re
 import zipfile
 from datetime import date
+from typing import Literal
 
 import httpx
 from fastapi import HTTPException
@@ -15,14 +16,14 @@ from app.import_data.schemas import (
     FilmRecord,
     ImportNotesResponse,
     ImportSummaryResponse,
-    NoteCandidate,
-    NoteConfirmRequest,
-    NoteConfirmResponse,
-    NoteLineMatches,
+    NotesCommitRequest,
+    NotesCommitResponse,
+    NotesImportItem,
+    NotesMovie,
     ParsedTitle,
 )
 from app.movies.services import get_movie_details
-from app.tracking.models import WatchedMovie, WatchlistMovie
+from app.tracking.models import InterestedMovie, WatchedMovie, WatchlistMovie
 from app.tracking.services import add_to_watchlist
 
 logger = logging.getLogger(__name__)
@@ -334,6 +335,11 @@ def _result_year(item: dict, media_type: str) -> int | None:
         return None
 
 
+# An exact title (and the same year, when the note gave one) is confident
+# enough for the iOS screen to pre-check it. Anything weaker stays a choice.
+_HIGH_CONFIDENCE = 0.9
+
+
 def _candidate_confidence(
     query_title: str, query_year: int | None, result_title: str, result_year: int | None
 ) -> float:
@@ -353,171 +359,251 @@ def _candidate_confidence(
     return 0.55
 
 
-async def _search_candidates(
-    title: str, year: int | None, media_type: str, tmdb_client: httpx.AsyncClient
-) -> list[NoteCandidate]:
-    path = "/search/movie" if media_type == "movie" else "/search/tv"
+def _confidence_label(scores: list[float]) -> Literal["high", "low", "none"]:
+    """high pre-checks one movie. low offers a choice. none is a miss."""
+    if not scores:
+        return "none"
+    second = scores[1] if len(scores) > 1 else 0.0
+    if scores[0] >= _HIGH_CONFIDENCE and second < _HIGH_CONFIDENCE:
+        return "high"
+    return "low"
+
+
+async def _search_movie_candidates(
+    title: str, year: int | None, tmdb_client: httpx.AsyncClient
+) -> list[tuple[float, NotesMovie]]:
+    """Search TMDB movies. A year filter that finds nothing is searched again."""
     params: dict[str, str] = {"query": title}
     if year is not None:
-        key = "primary_release_year" if media_type == "movie" else "first_air_date_year"
-        params[key] = str(year)
-    response = await tmdb_client.get(path, params=params)
+        params["primary_release_year"] = str(year)
+    response = await tmdb_client.get("/search/movie", params=params)
     response.raise_for_status()
-    found: list[NoteCandidate] = []
-    for item in response.json().get("results", [])[:8]:
-        result_title = item.get("title") if media_type == "movie" else item.get("name")
-        if not result_title:
+    found = _scored_movies(title, year, response.json().get("results", []))
+    if found or year is None:
+        return found
+    await asyncio.sleep(TMDB_RATE_LIMIT_DELAY)
+    retry = await tmdb_client.get("/search/movie", params={"query": title})
+    retry.raise_for_status()
+    return _scored_movies(title, year, retry.json().get("results", []))
+
+
+def _scored_movies(
+    title: str, year: int | None, results: list[dict]
+) -> list[tuple[float, NotesMovie]]:
+    found: list[tuple[float, NotesMovie]] = []
+    seen: set[int] = set()
+    for item in results[:8]:
+        result_title = item.get("title")
+        tmdb_id = item.get("id")
+        if not result_title or not isinstance(tmdb_id, int) or tmdb_id in seen:
             continue
-        result_year = _result_year(item, media_type)
+        result_year = _result_year(item, "movie")
         confidence = _candidate_confidence(title, year, result_title, result_year)
         if confidence <= 0:
             continue
+        seen.add(tmdb_id)
         found.append(
-            NoteCandidate(
-                tmdb_id=item["id"],
-                media_type=media_type,
-                title=result_title,
-                year=result_year,
-                poster_path=item.get("poster_path"),
-                confidence=confidence,
+            (
+                confidence,
+                NotesMovie(
+                    tmdb_id=tmdb_id,
+                    title=result_title,
+                    year=result_year,
+                    poster_path=item.get("poster_path"),
+                ),
             )
         )
+    found.sort(key=lambda pair: pair[0], reverse=True)
     return found
 
 
 async def run_notes_import(
     text: str, tmdb_client: httpx.AsyncClient
 ) -> ImportNotesResponse:
-    """Parse note text and return ranked TMDB candidates. Does not write."""
-    from app.config import settings
+    """Parse note text and return ranked movie matches. Does not write.
 
-    parsed = parse_note_lines(text)
-    truncated = len(parsed) > MAX_NOTES_TITLES
-    parsed = parsed[:MAX_NOTES_TITLES]
-    lines: list[NoteLineMatches] = []
+    The iOS screen only decodes movies, so TV search is not used here.
+    More than MAX_NOTES_TITLES lines are dropped. One note should not fan
+    out into hundreds of TMDB searches.
+    """
+    parsed = parse_note_lines(text)[:MAX_NOTES_TITLES]
+    items: list[NotesImportItem] = []
     for candidate in parsed:
-        matches = await _search_candidates(
-            candidate.title, candidate.year, "movie", tmdb_client
+        scored = await _search_movie_candidates(
+            candidate.title, candidate.year, tmdb_client
         )
         await asyncio.sleep(TMDB_RATE_LIMIT_DELAY)
-        if settings.tv_support_enabled:
-            matches.extend(
-                await _search_candidates(
-                    candidate.title, candidate.year, "tv", tmdb_client
-                )
-            )
-            await asyncio.sleep(TMDB_RATE_LIMIT_DELAY)
-        matches.sort(key=lambda item: item.confidence, reverse=True)
-        lines.append(
-            NoteLineMatches(
-                raw_line=candidate.raw_line,
-                title=candidate.title,
-                year=candidate.year,
-                candidates=matches[:3],
-            )
+        label = _confidence_label([score for score, _movie in scored])
+        if label == "none":
+            movies: list[NotesMovie] = []
+        elif label == "high":
+            movies = [scored[0][1]]
+        else:
+            movies = [movie for _score, movie in scored[:3]]
+        items.append(
+            NotesImportItem(query=candidate.title, confidence=label, candidates=movies)
         )
-    return ImportNotesResponse(lines=lines, truncated=truncated)
+    return ImportNotesResponse(items=items)
 
 
-async def confirm_notes_import(
+def _already_saved(model: type, user_id: str, tmdb_id: int, db: Session) -> bool:
+    return (
+        db.query(model)
+        .filter(model.user_id == user_id, model.tmdb_id == tmdb_id)
+        .first()
+        is not None
+    )
+
+
+async def commit_notes_import(
     user_id: str,
-    body: NoteConfirmRequest,
+    body: NotesCommitRequest,
     db: Session,
     tmdb_client: httpx.AsyncClient,
-) -> NoteConfirmResponse:
-    """Save the titles the user confirmed, to the watchlist or watched list."""
-    from app.config import settings
-    from app.tv.models import WatchedTVShow
-    from app.tv.services import get_tv_show_details
+) -> NotesCommitResponse:
+    """Save every id into one bucket, then return new recommendations.
 
+    `saved` counts rows stored by this call. An id already in that bucket
+    is left as it is and is not counted. A TMDB miss is skipped. Either
+    way the response is still the commit shape, so a partial save does not
+    look like a failure the client would retry.
+    """
     profile = db.query(Profile).filter(Profile.id == user_id).first()
-    added = 0
-    skipped = 0
-    failed: list[str] = []
-    for item in body.items:
+    watchlist_id = None if profile is None else profile.watchlist_id
+    if body.bucket == "watchlist" and watchlist_id is None:
+        raise HTTPException(status_code=404, detail="No watchlist")
+
+    saved = 0
+    for tmdb_id in body.tmdb_ids:
         try:
-            if item.destination not in ("watchlist", "watched"):
-                failed.append(
-                    f"{item.tmdb_id}: destination must be watchlist or watched"
-                )
-                continue
-            if item.media_type == "tv":
-                if not settings.tv_support_enabled:
-                    failed.append(f"{item.tmdb_id}: TV support is disabled")
-                    continue
-                if item.destination != "watched":
-                    failed.append(
-                        f"{item.tmdb_id}: TV titles can only be saved as watched"
-                    )
-                    continue
-                await get_tv_show_details(item.tmdb_id, db, tmdb_client)
-                exists = (
-                    db.query(WatchedTVShow)
-                    .filter(
-                        WatchedTVShow.user_id == user_id,
-                        WatchedTVShow.tmdb_id == item.tmdb_id,
-                    )
-                    .first()
-                )
-                if exists:
-                    skipped += 1
-                    continue
-                db.add(
-                    WatchedTVShow(
-                        user_id=user_id,
-                        tmdb_id=item.tmdb_id,
-                        rating=item.rating,
-                        source="notes_import",
-                    )
-                )
-                added += 1
-                continue
-            if item.media_type != "movie":
-                failed.append(f"{item.tmdb_id}: media_type must be movie or tv")
-                continue
-            await get_movie_details(item.tmdb_id, db, tmdb_client)
-            if item.destination == "watchlist":
-                if profile is None or profile.watchlist_id is None:
-                    failed.append(f"{item.tmdb_id}: no watchlist")
-                    continue
+            await get_movie_details(tmdb_id, db, tmdb_client)
+            if body.bucket == "watchlist":
+                if watchlist_id is None:
+                    raise HTTPException(status_code=404, detail="No watchlist")
                 try:
                     await add_to_watchlist(
-                        profile.watchlist_id,
-                        item.tmdb_id,
+                        watchlist_id,
+                        tmdb_id,
                         user_id,
                         db,
                         tmdb_client,
                         source="notes_import",
                     )
-                    added += 1
                 except HTTPException as exc:
                     if exc.status_code != 400:
                         raise
-                    skipped += 1
-                continue
-            exists = (
-                db.query(WatchedMovie)
-                .filter(
-                    WatchedMovie.user_id == user_id,
-                    WatchedMovie.tmdb_id == item.tmdb_id,
+                    continue
+            elif body.bucket == "watched":
+                if _already_saved(WatchedMovie, user_id, tmdb_id, db):
+                    continue
+                db.add(
+                    WatchedMovie(
+                        user_id=user_id, tmdb_id=tmdb_id, source="notes_import"
+                    )
                 )
-                .first()
-            )
-            if exists:
-                skipped += 1
-                continue
-            db.add(
-                WatchedMovie(
-                    user_id=user_id,
-                    tmdb_id=item.tmdb_id,
-                    rating=item.rating,
-                    source="notes_import",
+                db.commit()
+            else:
+                if _already_saved(InterestedMovie, user_id, tmdb_id, db):
+                    continue
+                db.add(
+                    InterestedMovie(
+                        user_id=user_id, tmdb_id=tmdb_id, source="notes_import"
+                    )
                 )
-            )
-            added += 1
+                db.commit()
+            saved += 1
         except Exception:
             db.rollback()
-            logger.warning("Notes confirm failed for %s", item.tmdb_id, exc_info=True)
-            failed.append(str(item.tmdb_id))
-    db.commit()
-    return NoteConfirmResponse(added=added, skipped=skipped, failed=failed)
+            logger.warning("Notes commit skipped %s", tmdb_id, exc_info=True)
+    return NotesCommitResponse(
+        saved=saved,
+        recommendations=_notes_recommendations(user_id, body.tmdb_ids, db),
+    )
+
+
+def _notes_recommendations(
+    user_id: str, extra_exclude: list[int], db: Session
+) -> list[NotesMovie]:
+    """Up to eight picks after a save. Empty when the user has no taste yet."""
+    from app.recommendations.pipeline import (
+        RecommendationContext,
+        run_recommendation_pipeline,
+    )
+    from app.recommendations.services import (
+        compute_genre_watch_counts,
+        get_hidden_movie_ids,
+        get_user_signal_context,
+    )
+
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if profile is None or profile.taste_embedding is None:
+        return []
+
+    watched = [
+        row[0]
+        for row in db.query(WatchedMovie.tmdb_id)
+        .filter(WatchedMovie.user_id == user_id)
+        .all()
+    ]
+    watchlist = (
+        [
+            row[0]
+            for row in db.query(WatchlistMovie.tmdb_id)
+            .filter(WatchlistMovie.watchlist_id == profile.watchlist_id)
+            .all()
+        ]
+        if profile.watchlist_id
+        else []
+    )
+    interested = [
+        row[0]
+        for row in db.query(InterestedMovie.tmdb_id)
+        .filter(InterestedMovie.user_id == user_id)
+        .all()
+    ]
+    exclude = list(
+        set(
+            watched
+            + watchlist
+            + interested
+            + get_hidden_movie_ids(user_id, db)
+            + extra_exclude
+        )
+    )
+    user_genres, top_directors, top_cast = get_user_signal_context(
+        user_id, db, profile=profile
+    )
+    genre_counts, total_watches = compute_genre_watch_counts(user_id, db)
+    # The integration branch also passes cf_user_ids. This checkout's
+    # context does not have that field until that branch is merged.
+    extra: dict = {}
+    if "cf_user_ids" in RecommendationContext.__dataclass_fields__:
+        extra["cf_user_ids"] = [str(user_id)]
+    ctx = RecommendationContext(
+        positive_embedding=list(profile.taste_embedding),
+        negative_embedding=list(profile.negative_embedding)
+        if profile.negative_embedding is not None
+        else None,
+        exclude_ids=exclude,
+        user_genres=user_genres,
+        top_directors=top_directors,
+        top_cast=top_cast,
+        genre_watch_counts=genre_counts,
+        total_watches=total_watches,
+        **extra,
+    )
+    try:
+        results = run_recommendation_pipeline(ctx, db, limit=8, offset=0)
+    except Exception:
+        logger.warning("Notes recommendations failed", exc_info=True)
+        return []
+    return [
+        NotesMovie(
+            tmdb_id=row["tmdb_id"],
+            title=row["title"],
+            year=row.get("year"),
+            poster_path=row.get("poster_path"),
+        )
+        for row in results
+        if row.get("tmdb_id") not in set(extra_exclude)
+    ]

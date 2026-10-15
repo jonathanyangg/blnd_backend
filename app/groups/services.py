@@ -22,7 +22,12 @@ from app.recommendations.pipeline import (
     run_recommendation_pipeline,
 )
 from app.subscriptions.services import is_premium
-from app.tracking.models import Watchlist, WatchedMovie, WatchlistMovie
+from app.tracking.models import (
+    InterestedMovie,
+    Watchlist,
+    WatchedMovie,
+    WatchlistMovie,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -382,6 +387,7 @@ def get_group_recommendations(
     exclude_stmts = [
         select(WatchedMovie.tmdb_id).where(WatchedMovie.user_id.in_(member_ids)),
         select(HiddenMovie.tmdb_id).where(HiddenMovie.user_id.in_(member_ids)),
+        select(InterestedMovie.tmdb_id).where(InterestedMovie.user_id.in_(member_ids)),
     ]
     if group.watchlist_id:
         exclude_stmts.append(
