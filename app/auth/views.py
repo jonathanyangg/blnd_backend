@@ -9,6 +9,8 @@ from supabase_auth.errors import AuthApiError, AuthRetryableError
 from app.analytics import Event, track
 from app.auth import schemas, services
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
+from app.timeline import schemas as timeline_schemas
+from app.timeline import services as timeline_services
 from app.database import SessionLocal
 from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
 
@@ -343,6 +345,19 @@ def get_user_watched(
     db: Session = Depends(get_db),
 ):
     return services.get_public_watched(user_id, id, limit, offset, db, q=q, sort=sort)
+
+
+@router.get("/users/{id}/timeline", response_model=timeline_schemas.TimelineResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def get_user_timeline(
+    request: Request,
+    id: str,
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=50),
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return timeline_services.get_profile_timeline(user_id, id, cursor, limit, db)
 
 
 @router.get("/users/{id}/friends", response_model=schemas.PublicFriendsListResponse)
