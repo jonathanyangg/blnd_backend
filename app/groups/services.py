@@ -108,7 +108,8 @@ def list_groups(user_id: str, db: Session) -> dict:
 
 def get_group(group_id: int, user_id: str, db: Session) -> dict:
     """Get group detail, verifying membership."""
-    group = db.query(Group).filter(Group.id == group_id).first()
+    # Lock the group before the cap check so simultaneous adds serialize.
+    group = db.query(Group).filter(Group.id == group_id).with_for_update().first()
     if not group:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Group not found"
