@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import date, datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CreateGroupRequest(BaseModel):
@@ -68,3 +68,42 @@ class GroupRecMovieResponse(BaseModel):
 
 class GroupRecommendationsResponse(BaseModel):
     results: list[GroupRecMovieResponse]
+
+
+class PickMovie(BaseModel):
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    poster_path: str | None = None
+    overview: str | None = None
+    genres: list[dict] = []
+    director: str | None = None
+    runtime: int | None = None
+    vote_average: float | None = None
+
+
+class VetoItem(BaseModel):
+    tmdb_id: int
+    title: str
+    user_id: str
+    username: str
+    reason: str
+
+
+class PickTonightResponse(BaseModel):
+    date: date
+    pick: PickMovie | None
+    vetoes: list[VetoItem]
+
+
+class VetoRequest(BaseModel):
+    tmdb_id: int
+    reason: str = Field(min_length=1, max_length=280)
+
+    @field_validator("reason")
+    @classmethod
+    def strip_reason(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Reason is required")
+        return v
