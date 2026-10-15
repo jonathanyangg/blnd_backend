@@ -47,8 +47,10 @@ def compute_cf_scores(
     if not candidates:
         return {}
 
-    centered, item_index = _centered_rating_matrix(user_ids, rated_ids, candidates, db)
-    if centered is None:
+    centered, observed, item_index = _centered_rating_matrix(
+        user_ids, rated_ids, candidates, db
+    )
+    if centered is None or observed is None:
         return {}
 
     rated_cols = [item_index[t] for t in rated_ids if t in item_index]
@@ -60,9 +62,9 @@ def compute_cf_scores(
     cand_matrix = centered[:, cand_cols]
 
     similarity = _item_similarity(cand_matrix, rated_matrix)
-    co_raters = (cand_matrix != 0).astype(np.float64).T @ (rated_matrix != 0).astype(
-        np.float64
-    )
+    # Co-raters come from the observed mask. A centered 0 is a real rating
+    # that landed on the user's mean, not a missing value.
+    co_raters = observed[:, cand_cols].T @ observed[:, rated_cols]
     similarity *= co_raters / (co_raters + SHRINKAGE)
     np.clip(similarity, 0.0, None, out=similarity)
 
@@ -109,12 +111,13 @@ def _centered_rating_matrix(
     rated_ids: list[int],
     candidate_ids: list[int],
     db: Session,
-) -> tuple[np.ndarray | None, dict[int, int]]:
+) -> tuple[np.ndarray | None, np.ndarray | None, dict[int, int]]:
     """Build the (neighbour × movie) matrix of mean-centered ratings.
 
     Neighbours are users — excluding the target profile — who rated at least
     one of the profile's movies. Unrated cells stay 0 so they drop out of the
-    dot products that form item-item similarities.
+    dot products that form item-item similarities. The boolean matrix says
+    which cells were actually rated.
     """
     neighbour_ids = (
         db.query(WatchedMovie.user_id)
@@ -136,7 +139,7 @@ def _centered_rating_matrix(
         .all()
     )
     if not rows:
-        return None, {}
+        return None, None, {}
 
     user_index: dict[str, int] = {}
     item_index: dict[int, int] = {}
@@ -148,15 +151,16 @@ def _centered_rating_matrix(
     for user_id, tmdb_id, rating in rows:
         matrix[user_index[str(user_id)], item_index[tmdb_id]] = float(rating)
 
-    rated_mask = matrix != 0
-    counts = rated_mask.sum(axis=1, keepdims=True)
+    observed = matrix != 0
+    counts = observed.sum(axis=1, keepdims=True)
     means = np.divide(
         matrix.sum(axis=1, keepdims=True),
         counts,
         out=np.zeros_like(counts, dtype=np.float64),
         where=counts > 0,
     )
-    return np.where(rated_mask, matrix - means, 0.0), item_index
+    centered = np.where(observed, matrix - means, 0.0)
+    return centered, observed.astype(np.float64), item_index
 
 
 def _item_similarity(columns: np.ndarray, other: np.ndarray) -> np.ndarray:
