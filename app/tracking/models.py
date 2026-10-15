@@ -35,6 +35,19 @@ class WatchedMovie(Base):
     )
 
 
+class WatchedWith(Base):
+    """Companion tagged on a movie watch log. The log owner is watched_movies.user_id."""
+
+    __tablename__ = "watched_with"
+
+    watched_movie_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    owner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class ActivityFeedItem(Base):
     __tablename__ = "activity_feed"
 

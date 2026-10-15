@@ -38,6 +38,7 @@ async def track_movie(
         db=db,
         tmdb_client=tmdb_client,
         source=body.source,
+        watched_with=body.watched_with,
     )
     track(
         user_id,
@@ -106,6 +107,29 @@ async def get_friends_who_watched(
     offset: int = Query(default=0, ge=0),
 ):
     return services.get_friends_who_watched(user_id, tmdb_id, db, limit, offset)
+
+
+@router.get("/{tmdb_id}/watched-with", response_model=schemas.WatchedWithResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def get_watched_with(
+    request: Request,
+    tmdb_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return services.get_watched_with(user_id, tmdb_id, db)
+
+
+@router.put("/{tmdb_id}/watched-with", response_model=schemas.WatchedWithResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def replace_watched_with(
+    request: Request,
+    tmdb_id: int,
+    body: schemas.ReplaceWatchedWithRequest,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return services.replace_watched_with(user_id, tmdb_id, body.user_ids, db)
 
 
 @router.get("/{tmdb_id}", response_model=schemas.WatchedMovieResponse | None)
