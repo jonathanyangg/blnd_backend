@@ -29,6 +29,11 @@ class RecommendationsResponse(BaseModel):
     taste_bio: str | None = None
 
 
+class NowPickResponse(BaseModel):
+    movie: RecommendedMovieResponse
+    reason: str
+
+
 class SemanticSearchRequest(BaseModel):
     query: str = Field(min_length=3, max_length=200)
     limit: int = Field(default=30, ge=10, le=50)

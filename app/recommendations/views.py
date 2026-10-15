@@ -235,6 +235,41 @@ def unmark_not_for_me(
     _schedule_taste_rebuild(background_tasks, user_id, db)
 
 
+def _parse_exclude_ids(exclude: str) -> list[int]:
+    if not exclude.strip():
+        return []
+    try:
+        return [int(part) for part in exclude.split(",") if part.strip()]
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail="exclude must be comma-separated tmdb ids"
+        )
+
+
+@router.get("/now", response_model=schemas.NowPickResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def find_movie_now(
+    request: Request,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    genre: str | None = Query(default=None, max_length=40),
+    exclude: str = Query(
+        default="", description="Comma-separated tmdb_ids to skip (re-roll)"
+    ),
+):
+    """One movie for right now, plus a short reason.
+
+    Skips titles the user has watched, rated, hidden, or saved to their watchlist.
+    """
+    genre_name = genre.strip() if genre and genre.strip() else None
+    pick = services.pick_movie_now(
+        user_id, db, genre=genre_name, exclude_ids=_parse_exclude_ids(exclude)
+    )
+    if pick is None:
+        raise HTTPException(status_code=404, detail="No movie to recommend")
+    return pick
+
+
 # --- Hidden Movies ---
 
 

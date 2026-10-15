@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 from openai import OpenAI
-from sqlalchemy import case
+from sqlalchemy import case, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -11,6 +11,8 @@ from app.auth.models import Profile
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
 from app.recommendations.models import HiddenMovie, MovieInteraction
+from app.recommendations.pipeline import _format_candidate, _has_excluded_genre
+from app.recommendations.ranking import rerank_candidates
 from app.tracking.models import WatchedMovie, WatchlistMovie
 
 logger = logging.getLogger(__name__)
@@ -661,3 +663,233 @@ def compute_genre_watch_counts(user_id: str, db: Session) -> tuple[dict[str, int
             if name:
                 genre_counts[name] = genre_counts.get(name, 0) + 1
     return genre_counts, total
+
+
+# shortcut: cosine pool is 40, not the feed's 500; raise it if the single pick feels stale.
+NOW_MATCH_COUNT = 40
+_HIGH_RATING = 4.0
+
+_MATCH_MOVIES = text(
+    "SELECT * FROM match_movies("
+    "cast(:query_embedding AS vector(1536)), :match_count, :exclude_ids)"
+)
+_GENRE_MATCH = text(
+    "exists (select 1 from jsonb_array_elements("
+    "coalesce(movies.genres, '[]'::jsonb)) elem "
+    "where lower(elem->>'name') = :genre_name)"
+)
+
+
+def pick_movie_now(
+    user_id: str,
+    db: Session,
+    *,
+    genre: str | None = None,
+    exclude_ids: list[int] | None = None,
+) -> dict | None:
+    """Return one movie and a short reason, or None when nothing qualifies.
+
+    Reuses main-path reranking on a small cosine pool when the user has a taste
+    embedding. With no embedding, or when that pool is empty, returns a popular
+    title instead. Watched, rated, hidden, and watchlisted movies are skipped.
+    """
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    blocked = _now_blocked_ids(user_id, db, exclude_ids or [], profile)
+    top_rated = get_top_rated_movies(user_id, db, limit=8)
+    favorite_genres = (
+        list(profile.favorite_genres) if profile and profile.favorite_genres else []
+    )
+
+    picked: dict | None = None
+    used_fallback = profile is None or profile.taste_embedding is None
+    if profile is not None and profile.taste_embedding is not None:
+        picked = _score_now_candidate(profile, blocked, genre, db)
+        used_fallback = picked is None
+    if picked is None:
+        movie = _popular_now_movie(blocked, genre, db)
+        if movie is None:
+            return None
+        picked = {"movie": movie, "score": round((movie.vote_average or 0) / 10.0, 4)}
+
+    return {
+        "movie": _format_candidate(picked),
+        "reason": _now_reason(
+            picked["movie"], top_rated, favorite_genres, used_fallback, genre
+        ),
+    }
+
+
+def _now_blocked_ids(
+    user_id: str,
+    db: Session,
+    extra: list[int],
+    profile: Profile | None,
+) -> set[int]:
+    """Ids that must not be returned: watched, hidden, watchlisted, plus caller excludes."""
+    watched = {
+        row[0]
+        for row in db.query(WatchedMovie.tmdb_id)
+        .filter(WatchedMovie.user_id == user_id)
+        .all()
+    }
+    blocked = watched | set(get_hidden_movie_ids(user_id, db)) | set(extra)
+    if profile is not None and profile.watchlist_id:
+        blocked |= {
+            row[0]
+            for row in db.query(WatchlistMovie.tmdb_id)
+            .filter(WatchlistMovie.watchlist_id == profile.watchlist_id)
+            .all()
+        }
+    return blocked
+
+
+def _genre_names(movie: Movie) -> set[str]:
+    return {
+        g.get("name", "").lower()
+        for g in (movie.genres or [])
+        if isinstance(g, dict) and g.get("name")
+    }
+
+
+def _matches_genre(movie: Movie, genre: str | None) -> bool:
+    if not genre:
+        return True
+    return genre.lower() in _genre_names(movie)
+
+
+def _score_now_candidate(
+    profile: Profile, blocked: set[int], genre: str | None, db: Session
+) -> dict | None:
+    embedding_str = "[" + ",".join(str(v) for v in list(profile.taste_embedding)) + "]"
+    rows = db.execute(
+        _MATCH_MOVIES,
+        {
+            "query_embedding": embedding_str,
+            "match_count": NOW_MATCH_COUNT,
+            "exclude_ids": list(blocked),
+        },
+    ).fetchall()
+    if not rows:
+        return None
+
+    tmdb_ids = [row[0] for row in rows]
+    similarity_map = {row[0]: float(row[1]) for row in rows}
+    movies = db.query(Movie).filter(Movie.tmdb_id.in_(tmdb_ids)).all()
+    movie_map = {movie.tmdb_id: movie for movie in movies}
+
+    negative = None
+    candidate_embeddings = None
+    if profile.negative_embedding is not None:
+        negative = list(profile.negative_embedding)
+        emb_rows = (
+            db.query(MovieEmbedding).filter(MovieEmbedding.tmdb_id.in_(tmdb_ids)).all()
+        )
+        candidate_embeddings = {row.tmdb_id: list(row.embedding) for row in emb_rows}
+
+    candidates = []
+    for tmdb_id in tmdb_ids:
+        movie = movie_map.get(tmdb_id)
+        if movie is None:
+            continue
+        if (movie.runtime or 0) < 45 or (movie.vote_average or 0) < 1.0:
+            continue
+        if _has_excluded_genre(movie) or not _matches_genre(movie, genre):
+            continue
+        candidates.append(
+            {
+                "tmdb_id": tmdb_id,
+                "similarity": similarity_map[tmdb_id],
+                "movie": movie,
+            }
+        )
+    if not candidates:
+        return None
+
+    user_genres, top_directors, top_cast = get_user_signal_context(
+        str(profile.id), db, profile=profile
+    )
+    ranked = rerank_candidates(
+        candidates,
+        user_genres,
+        top_directors,
+        top_cast,
+        negative_embedding=negative,
+        candidate_embeddings=candidate_embeddings,
+    )
+    return max(
+        ranked, key=lambda candidate: (candidate["score"], -candidate["tmdb_id"])
+    )
+
+
+def _popular_now_movie(
+    blocked: set[int], genre: str | None, db: Session
+) -> Movie | None:
+    query = db.query(Movie).filter(
+        Movie.vote_average.isnot(None),
+        Movie.vote_average >= 6.0,
+        Movie.vote_count >= 50,
+        Movie.runtime >= 45,
+    )
+    if blocked:
+        query = query.filter(Movie.tmdb_id.notin_(list(blocked)))
+    if genre:
+        query = query.filter(_GENRE_MATCH).params(genre_name=genre.lower())
+    movies = (
+        query.order_by(Movie.vote_count.desc(), Movie.vote_average.desc())
+        .limit(NOW_MATCH_COUNT)
+        .all()
+    )
+    for movie in movies:
+        if not _has_excluded_genre(movie):
+            return movie
+    return None
+
+
+def _shares_signal(movie: Movie, rated: dict) -> bool:
+    director = rated.get("director")
+    if movie.director and director and movie.director.lower() == str(director).lower():
+        return True
+    rated_genres = {name.lower() for name in rated.get("genres") or [] if name}
+    return bool(_genre_names(movie) & rated_genres)
+
+
+def _matching_genre_name(
+    movie: Movie, genre_filter: str | None, favorite_genres: list[str]
+) -> str | None:
+    names: list[str] = []
+    for genre_entry in movie.genres or []:
+        if not isinstance(genre_entry, dict):
+            continue
+        name = genre_entry.get("name")
+        if isinstance(name, str) and name:
+            names.append(name)
+    if genre_filter:
+        for name in names:
+            if name.lower() == genre_filter.lower():
+                return name
+        return genre_filter
+    for favorite in favorite_genres:
+        for name in names:
+            if name.lower() == favorite.lower():
+                return name
+    return None
+
+
+def _now_reason(
+    movie: Movie,
+    top_rated: list[dict],
+    favorite_genres: list[str],
+    used_fallback: bool,
+    genre_filter: str | None,
+) -> str:
+    for rated in top_rated:
+        if (rated.get("rating") or 0) < _HIGH_RATING:
+            continue
+        if _shares_signal(movie, rated):
+            return f"Because you rated {rated['title']} highly"
+    liked = _matching_genre_name(movie, genre_filter, favorite_genres)
+    if liked and (used_fallback or favorite_genres):
+        return f"Popular with people who like {liked}"
+    if used_fallback:
+        return "Popular right now"
+    return "Because it matches your taste"
