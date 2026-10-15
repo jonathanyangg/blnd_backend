@@ -1,5 +1,5 @@
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
@@ -35,18 +35,9 @@ async def get_streaming_availability(
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
 ):
     country = country.lower()
-    try:
-        result = await services.get_streaming_options(
-            tmdb_id, country, db, streaming_client
-        )
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 429:
-            raise HTTPException(
-                status_code=429, detail="Streaming API rate limit exceeded"
-            )
-        raise HTTPException(
-            status_code=502, detail="Streaming availability service error"
-        )
+    result = await services.get_streaming_options(
+        tmdb_id, country, db, streaming_client
+    )
     result["where_to_watch"] = await load_where_to_watch(
         "movie", tmdb_id, country, db, tmdb_client, offer_base(request)
     )

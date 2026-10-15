@@ -37,7 +37,7 @@ from app.streaming.schemas import (
     StreamingOption,
     StreamingServiceInfo,
 )
-from tests.conftest import TEST_USER_ID
+from tests.conftest import TEST_USER_ID, assert_error
 from tests.factories import make_movie, make_profile
 
 TITLE = Title("Fight Club", 1999, "movie", 550)
@@ -612,7 +612,7 @@ def test_streaming_options_survive_watch_builder_bug(
 def test_tv_streaming_is_disabled_by_default(with_tmdb) -> None:
     client, _fake = with_tmdb
     response = client.get("/tv/1399/streaming")
-    assert response.status_code == 404
+    assert_error(response, status=404, code="NOT_FOUND", message="Not Found")
 
 
 def test_tv_streaming_uses_same_shape(
@@ -717,18 +717,61 @@ def test_failed_click_log_does_not_redirect(
         lambda url, status_code=307: built.append(url),
     )
 
-    with pytest.raises(RuntimeError, match="db down"):
-        client.get("/out/119/movie/550", follow_redirects=False)
+    # ServerErrorMiddleware re-raises after the envelope is sent. Turn that
+    # off so the test can read the 500 body.
+    from main import app
 
+    probe = TestClient(app, raise_server_exceptions=False)
+    response = probe.get("/out/119/movie/550", follow_redirects=False)
+
+    assert_error(
+        response, status=500, code="INTERNAL_ERROR", message="Internal server error"
+    )
     assert built == []
     assert db.query(AffiliateClick).count() == 0
+
+
+def test_out_missing_title_uses_error_envelope(with_tmdb, db: Session) -> None:
+    client, fake = with_tmdb
+    fake.fail_title = True
+
+    response = client.get("/out/119/movie/424242", follow_redirects=False)
+
+    assert_error(response, status=404, code="NOT_FOUND", message="Not found")
+    assert "location" not in response.headers
+    assert db.query(AffiliateClick).count() == 0
+
+
+def test_streaming_upstream_error_uses_envelope(client: TestClient) -> None:
+    from app.dependencies import get_streaming_client, get_tmdb_client
+    from main import app
+
+    class _Down:
+        async def get(self, url: str, params: dict | None = None) -> _Resp:
+            request = httpx.Request("GET", "https://streaming.example/shows/movie/1")
+            response = httpx.Response(503, request=request)
+            raise httpx.HTTPStatusError("down", request=request, response=response)
+
+    app.dependency_overrides[get_streaming_client] = lambda: _Down()
+    app.dependency_overrides[get_tmdb_client] = lambda: FakeTMDB()
+    try:
+        response = client.get("/movies/550/streaming")
+    finally:
+        app.dependency_overrides.pop(get_streaming_client, None)
+        app.dependency_overrides.pop(get_tmdb_client, None)
+
+    assert_error(
+        response,
+        status=503,
+        code="SERVICE_UNAVAILABLE",
+        message="Upstream service unavailable, try again",
+    )
 
 
 def test_unknown_provider_is_not_a_redirect(with_tmdb, db: Session) -> None:
     client, _fake = with_tmdb
     response = client.get("/out/8/movie/550", follow_redirects=False)
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Unknown provider"
+    assert_error(response, status=404, code="NOT_FOUND", message="Unknown provider")
     assert "location" not in response.headers
     assert db.query(AffiliateClick).count() == 0
 
@@ -745,22 +788,21 @@ def test_redirect_rejects_foreign_host_without_click(
     monkeypatch.setattr("app.affiliate.views.outbound_url", refuse)
     response = client.get("/out/119/movie/550", follow_redirects=False)
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == "Refusing redirect"
+    assert_error(response, status=400, code="BAD_REQUEST", message="Refusing redirect")
     assert db.query(AffiliateClick).count() == 0
 
 
 def test_redirect_rejects_bad_media_type(with_tmdb, db: Session) -> None:
     client, _fake = with_tmdb
     response = client.get("/out/119/podcast/550", follow_redirects=False)
-    assert response.status_code == 404
+    assert_error(response, status=404, code="NOT_FOUND", message="Not found")
     assert db.query(AffiliateClick).count() == 0
 
 
 def test_tv_redirect_is_disabled_by_default(with_tmdb, db: Session) -> None:
     client, _fake = with_tmdb
     response = client.get("/out/119/tv/1399", follow_redirects=False)
-    assert response.status_code == 404
+    assert_error(response, status=404, code="NOT_FOUND", message="Not Found")
     assert db.query(AffiliateClick).count() == 0
 
 

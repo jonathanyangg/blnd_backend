@@ -32,14 +32,7 @@ async def affiliate_redirect(
     if provider not in REGISTRY:
         raise HTTPException(status_code=404, detail="Unknown provider")
 
-    try:
-        title = await load_title(media_type, tmdb_id, db, tmdb_client)
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            raise HTTPException(status_code=404, detail="Title not found")
-        raise HTTPException(
-            status_code=exc.response.status_code, detail="TMDB API error"
-        )
+    title = await load_title(media_type, tmdb_id, db, tmdb_client)
 
     try:
         url = outbound_url(title, provider)
