@@ -58,6 +58,22 @@ class SemanticSearchResponse(BaseModel):
     results: list[SemanticSearchResultItem]
 
 
+class InterestedMovieResponse(BaseModel):
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    poster_path: str | None = None
+    interested_at: str
+
+
+class NotForMeMovieResponse(BaseModel):
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    poster_path: str | None = None
+    not_for_me_at: str
+
+
 class HiddenMovieResponse(BaseModel):
     tmdb_id: int
     title: str
