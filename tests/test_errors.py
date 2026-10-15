@@ -145,7 +145,9 @@ def test_unknown_route_is_not_found(error_client: TestClient) -> None:
     assert_error(response, status=404, code="NOT_FOUND", message="Not Found")
 
 
-def test_validation_error_is_per_field_and_hides_input(error_client: TestClient) -> None:
+def test_validation_error_is_per_field_and_hides_input(
+    error_client: TestClient,
+) -> None:
     secret = "supersecretleak"
     response = error_client.post(
         "/auth/signup",
