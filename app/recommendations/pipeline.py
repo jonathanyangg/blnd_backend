@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
+from app.recommendations.collaborative import compute_cf_scores
 from app.recommendations.ranking import (
     EXPLORE_TEMPERATURE,
     probabilistic_sample,
@@ -48,6 +49,9 @@ class RecommendationContext:
     top_cast: set[str] = field(default_factory=set)
     genre_watch_counts: dict[str, int] = field(default_factory=dict)
     total_watches: int = 0
+    # Users whose ratings drive collaborative filtering — one for a personal
+    # feed, every member for a group feed.
+    cf_user_ids: list[str] = field(default_factory=list)
 
 
 def run_recommendation_pipeline(
@@ -161,6 +165,9 @@ def _run_main_algorithm(ctx: RecommendationContext, db: Session) -> list[dict]:
         ctx.top_cast,
         negative_embedding=ctx.negative_embedding,
         candidate_embeddings=candidate_embeddings,
+        cf_scores=compute_cf_scores(
+            ctx.cf_user_ids, [c["tmdb_id"] for c in candidates], db
+        ),
     )
 
     # Probabilistic sample 500 → 200

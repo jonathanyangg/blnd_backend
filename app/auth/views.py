@@ -9,13 +9,22 @@ from supabase_auth.errors import AuthApiError, AuthRetryableError
 from app.analytics import Event, track
 from app.auth import schemas, services
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
+from app.timeline import schemas as timeline_schemas
+from app.timeline import services as timeline_services
 from app.database import SessionLocal
-from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
+from app.dependencies import (
+    get_current_user,
+    get_db,
+    get_tmdb_client,
+    openai_client,
+    require_admin,
+)
 from app.subscriptions.services import is_premium
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+admin_router = APIRouter()
 
 
 @router.get("/users/search", response_model=schemas.UserSearchResponse)
@@ -23,11 +32,13 @@ router = APIRouter()
 def search_users(
     request: Request,
     q: str = Query(min_length=1, max_length=30),
+    limit: int = Query(default=10, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    results = services.search_users(q, user_id, db)
-    return {"results": results}
+    results, total = services.search_users(q, user_id, db, limit, offset)
+    return {"results": results, "total": total}
 
 
 @router.get(
@@ -249,6 +260,7 @@ def me(
         phone_number=profile.phone_number,
         subscription_tier=profile.subscription_tier,
         subscription_expires_at=profile.subscription_expires_at,
+        is_discoverable=profile.is_discoverable,
         is_premium=is_premium(profile),
     )
 
@@ -307,8 +319,27 @@ def update_profile(
         phone_number=profile.phone_number,
         subscription_tier=profile.subscription_tier,
         subscription_expires_at=profile.subscription_expires_at,
+        is_discoverable=profile.is_discoverable,
         is_premium=is_premium(profile),
     )
+
+
+@admin_router.post(
+    "/admin/users/{user_id}/test",
+    response_model=schemas.AdminSetTestResponse,
+)
+def admin_set_test_account(
+    user_id: str,
+    is_test: bool = True,
+    _admin: str = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> schemas.AdminSetTestResponse:
+    """Mark or clear a test account. Same admin gate as subscription grants."""
+    try:
+        profile = services.admin_set_test_account(user_id, is_test, db)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return schemas.AdminSetTestResponse(user_id=str(profile.id), is_test=profile.is_test)
 
 
 @router.delete("/account", status_code=204)
@@ -346,6 +377,21 @@ def get_user_watched(
     db: Session = Depends(get_db),
 ):
     return services.get_public_watched(user_id, id, limit, offset, db, q=q, sort=sort)
+
+
+@router.get(
+    "/users/{user_id}/timeline", response_model=timeline_schemas.TimelineResponse
+)
+@limiter.limit(LIMIT_DEFAULT)
+def get_user_timeline(
+    request: Request,
+    user_id: str,
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=50),
+    caller_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return timeline_services.get_profile_timeline(caller_id, user_id, cursor, limit, db)
 
 
 @router.get("/users/{id}/friends", response_model=schemas.PublicFriendsListResponse)

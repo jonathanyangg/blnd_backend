@@ -35,9 +35,14 @@ async def send_friend_request(
             notification_type="friend_requests",
             title="Friend Request",
             body=f"{requester_username} sent you a friend request",
-            data={"type": "friend_request", "user_id": user_id},
+            data={
+                "type": "friend_request",
+                "user_id": user_id,
+                "friendship_id": str(result["id"]),
+            },
             thread=THREAD_FRIEND_REQUESTS,
             apns_client=apns_client,
+            db=db,
         )
 
     return result
@@ -69,6 +74,7 @@ async def accept_friend_request(
             data={"type": "friend_accepted", "user_id": user_id},
             thread=THREAD_FRIEND_REQUESTS,
             apns_client=apns_client,
+            db=db,
         )
 
     return result

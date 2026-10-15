@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
+from app.auth.visibility import is_hidden_profile
 from app.groups.models import BlendPick, BlendVeto, Group
 from app.groups.services import _verify_membership
 from app.movies.models import Movie
@@ -30,6 +31,8 @@ SELECT 1
 FROM watched_movies w
 JOIN group_members mem
   ON mem.user_id = w.user_id AND mem.group_id = :group_id
+JOIN profiles p ON p.id = mem.user_id
+  AND p.is_discoverable AND NOT p.is_test
 JOIN movies m ON m.tmdb_id = w.tmdb_id
 WHERE w.rating >= :high
   AND (
@@ -50,6 +53,8 @@ WITH loved AS (
     JOIN movies m ON m.tmdb_id = w.tmdb_id
     JOIN group_members mem
       ON mem.user_id = w.user_id AND mem.group_id = :group_id
+    JOIN profiles p ON p.id = mem.user_id
+      AND p.is_discoverable AND NOT p.is_test
     WHERE w.rating >= :high
 ),
 genre_weights AS (
@@ -70,11 +75,15 @@ blocked AS (
     FROM watched_movies w
     JOIN group_members mem
       ON mem.user_id = w.user_id AND mem.group_id = :group_id
+    JOIN profiles p ON p.id = mem.user_id
+      AND p.is_discoverable AND NOT p.is_test
     UNION
     SELECT h.tmdb_id
     FROM hidden_movies h
     JOIN group_members mem
       ON mem.user_id = h.user_id AND mem.group_id = :group_id
+    JOIN profiles p ON p.id = mem.user_id
+      AND p.is_discoverable AND NOT p.is_test
     UNION
     SELECT v.tmdb_id
     FROM blend_vetoes v
@@ -106,11 +115,15 @@ WITH blocked AS (
     FROM watched_movies w
     JOIN group_members mem
       ON mem.user_id = w.user_id AND mem.group_id = :group_id
+    JOIN profiles p ON p.id = mem.user_id
+      AND p.is_discoverable AND NOT p.is_test
     UNION
     SELECT h.tmdb_id
     FROM hidden_movies h
     JOIN group_members mem
       ON mem.user_id = h.user_id AND mem.group_id = :group_id
+    JOIN profiles p ON p.id = mem.user_id
+      AND p.is_discoverable AND NOT p.is_test
     UNION
     SELECT v.tmdb_id
     FROM blend_vetoes v
@@ -287,6 +300,7 @@ def _payload(group_id: int, day, tmdb_id: int | None, db: Session) -> dict:
         names = {
             profile.id: profile.username
             for profile in db.query(Profile).filter(Profile.id.in_(user_ids)).all()
+            if not is_hidden_profile(profile)
         }
     return {
         "date": day,
@@ -296,10 +310,11 @@ def _payload(group_id: int, day, tmdb_id: int | None, db: Session) -> dict:
                 "tmdb_id": veto.tmdb_id,
                 "title": title,
                 "user_id": str(veto.user_id),
-                "username": names.get(veto.user_id, ""),
+                "username": names[veto.user_id],
                 "reason": veto.reason,
             }
             for veto, title in rows
+            if veto.user_id in names
         ],
     }
 
