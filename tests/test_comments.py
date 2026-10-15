@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
 
-from tests.conftest import CALLER_ID, TARGET_ID  # noqa: F401
+from tests.conftest import CALLER_ID, TARGET_ID, assert_error  # noqa: F401
 
 
 def _make_comment_mock(
@@ -88,13 +88,16 @@ def test_create_comment_body_too_long(
 ) -> None:
     """POST /comments/ with 1001-char body returns 422."""
     response = app_client.post("/comments/", json={"tmdb_id": 550, "body": "x" * 1001})
-    assert response.status_code == 422
+    body = assert_error(response, status=422, code="VALIDATION_ERROR")
+    assert "body.body" in body["detail"]
+    assert "x" * 40 not in response.text
 
 
 def test_create_comment_empty_body(app_client: MagicMock, mock_db: MagicMock) -> None:
     """POST /comments/ with empty body returns 422."""
     response = app_client.post("/comments/", json={"tmdb_id": 550, "body": ""})
-    assert response.status_code == 422
+    body = assert_error(response, status=422, code="VALIDATION_ERROR")
+    assert "body.body" in body["detail"]
 
 
 @patch("app.comments.views.services.get_comments")
