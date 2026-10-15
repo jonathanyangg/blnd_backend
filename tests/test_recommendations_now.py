@@ -146,14 +146,18 @@ def test_now_exclude_rerolls(client: TestClient, db: Session) -> None:
     profile.taste_embedding = _vec(10)
     db.commit()
 
-    first = make_movie(db, tmdb_id=910002, title="Dune", genres=SCI_FI, vote_average=8.0)
+    first = make_movie(
+        db, tmdb_id=910002, title="Dune", genres=SCI_FI, vote_average=8.0
+    )
     _with_embedding(db, first, _vec(10, (11, 0.2)))
     second = make_movie(
         db, tmdb_id=910003, title="Arrival", genres=SCI_FI, vote_average=7.6
     )
     _with_embedding(db, second, _vec(10, (12, 1.2)))
 
-    response = client.get("/recommendations/now", params={"exclude": str(first.tmdb_id)})
+    response = client.get(
+        "/recommendations/now", params={"exclude": str(first.tmdb_id)}
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["movie"]["tmdb_id"] == second.tmdb_id
@@ -163,7 +167,11 @@ def test_now_exclude_rerolls(client: TestClient, db: Session) -> None:
 def test_now_fallback_without_history(client: TestClient, db: Session) -> None:
     make_profile(db, user_id=TEST_USER_ID, username="nowcold")
     popular = make_movie(
-        db, tmdb_id=910010, title="The Godfather", vote_average=9.2, genres=[{"id": 18, "name": "Drama"}]
+        db,
+        tmdb_id=930010,
+        title="The Godfather",
+        vote_average=9.2,
+        genres=[{"id": 18, "name": "Drama"}],
     )
     _outrank(db, popular)
 
@@ -179,7 +187,11 @@ def test_now_genre_filter_uses_fallback(client: TestClient, db: Session) -> None
     profile.taste_embedding = _vec(10)
     db.commit()
     comedy = make_movie(
-        db, tmdb_id=910020, title="Superbad", genres=COMEDY, vote_average=7.6
+        db,
+        tmdb_id=930020,
+        title="Superbad",
+        genres=COMEDY,
+        vote_average=7.6,
     )
     _outrank(db, comedy)
 

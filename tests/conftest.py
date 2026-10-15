@@ -15,6 +15,7 @@ os.environ["BLND_DISABLE_RATE_LIMITS"] = "true"
 # construct. Supply placeholders so the suite runs without a real .env (e.g. CI).
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
 os.environ.setdefault("SUPABASE_KEY", "test-anon-key")
+os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
 
 # Tests run against the local Supabase Postgres (supabase start). Override the
 # default to point elsewhere, but it must stay local — we refuse remote/prod.
