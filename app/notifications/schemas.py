@@ -16,6 +16,7 @@ class PreferencesResponse(BaseModel):
     recommendations: bool
     friend_activity: bool
     comment_replies: bool
+    new_followers: bool
 
 
 class UpdatePreferencesRequest(BaseModel):
@@ -24,6 +25,7 @@ class UpdatePreferencesRequest(BaseModel):
     recommendations: bool | None = None
     friend_activity: bool | None = None
     comment_replies: bool | None = None
+    new_followers: bool | None = None
 
 
 class DigestStatusResponse(BaseModel):

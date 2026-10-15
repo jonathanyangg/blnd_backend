@@ -2,11 +2,14 @@ import uuid as _uuid
 from collections import Counter
 
 from fastapi import HTTPException, status
-from sqlalchemy import or_
+from sqlalchemy import func, or_
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
-from app.friends.models import Friendship, UserBlock, UserContact
+from app.friends.models import Follow, Friendship, UserBlock, UserContact
+
+_BIGINT_MAX = 9223372036854775807
 
 
 def send_friend_request(user_id: str, addressee_username: str, db: Session) -> dict:
@@ -151,6 +154,14 @@ def block_user(user_id: str, target_id: str, db: Session) -> None:
             & (Friendship.addressee_id == target_id),
             (Friendship.requester_id == target_id)
             & (Friendship.addressee_id == user_id),
+        )
+    ).delete(synchronize_session=False)
+
+    # Follows are independent of friendships, but a block clears both directions.
+    db.query(Follow).filter(
+        or_(
+            (Follow.follower_id == user_id) & (Follow.followee_id == target_id),
+            (Follow.follower_id == target_id) & (Follow.followee_id == user_id),
         )
     ).delete(synchronize_session=False)
 
@@ -570,3 +581,234 @@ def get_mutual_friends(user_id: str, target_id: str, db: Session) -> dict:
         for p in profiles
     ]
     return {"mutuals": mutuals, "count": len(mutuals)}
+
+
+# --- Follows ---
+# One-way. Not created or removed when a friendship changes, except that
+# block_user deletes follows in both directions along with the friendship.
+
+
+def follow_counts_by_user(
+    user_ids: list[str], db: Session
+) -> dict[str, tuple[int, int]]:
+    """Return (followers_count, following_count) for each id. Missing ids are (0, 0)."""
+    if not user_ids:
+        return {}
+    follower_rows = (
+        db.query(Follow.followee_id, func.count(Follow.id))
+        .filter(Follow.followee_id.in_(user_ids))
+        .group_by(Follow.followee_id)
+        .all()
+    )
+    following_rows = (
+        db.query(Follow.follower_id, func.count(Follow.id))
+        .filter(Follow.follower_id.in_(user_ids))
+        .group_by(Follow.follower_id)
+        .all()
+    )
+    followers = {str(uid).lower(): int(count) for uid, count in follower_rows}
+    following = {str(uid).lower(): int(count) for uid, count in following_rows}
+    return {
+        str(uid): (
+            followers.get(str(uid).lower(), 0),
+            following.get(str(uid).lower(), 0),
+        )
+        for uid in user_ids
+    }
+
+
+def _same_user(user_id: str, target_id: str) -> bool:
+    """True when both strings are the same account, ignoring UUID letter case."""
+    try:
+        return _uuid.UUID(user_id) == _uuid.UUID(target_id)
+    except ValueError:
+        return False
+
+
+def follow_user(user_id: str, target_id: str, db: Session) -> dict:
+    """Follow target. Idempotent. Returns created=False when the row already exists."""
+    if _same_user(user_id, target_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot follow yourself"
+        )
+
+    target = db.query(Profile).filter(Profile.id == target_id).first()
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+    is_blocked_by_me, has_blocked_me = get_block_state(user_id, target_id, db)
+    if is_blocked_by_me or has_blocked_me:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+    stmt = (
+        pg_insert(Follow)
+        .values(follower_id=user_id, followee_id=target_id)
+        .on_conflict_do_nothing(index_elements=["follower_id", "followee_id"])
+        .returning(Follow.id)
+    )
+    created = db.execute(stmt).first() is not None
+    db.commit()
+
+    username = ""
+    if created:
+        follower = db.query(Profile).filter(Profile.id == user_id).first()
+        username = follower.username if follower else ""
+    return {"created": created, "follower_username": username}
+
+
+def unfollow_user(user_id: str, target_id: str, db: Session) -> None:
+    """Stop following target. Idempotent when no follow row exists."""
+    if _same_user(user_id, target_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot unfollow yourself"
+        )
+    target = db.query(Profile).filter(Profile.id == target_id).first()
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+    db.query(Follow).filter(
+        Follow.follower_id == user_id, Follow.followee_id == target_id
+    ).delete(synchronize_session=False)
+    db.commit()
+
+
+def remove_follower(user_id: str, owner_id: str, follower_id: str, db: Session) -> None:
+    """Remove someone from the caller's followers. Idempotent. Only the owner can."""
+    if user_id != owner_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only remove your own followers",
+        )
+    db.query(Follow).filter(
+        Follow.followee_id == user_id, Follow.follower_id == follower_id
+    ).delete(synchronize_session=False)
+    db.commit()
+
+
+def _parse_cursor(cursor: str | None) -> int | None:
+    if cursor is None:
+        return None
+    try:
+        value = int(cursor)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid cursor"
+        )
+    if value < 1 or value > _BIGINT_MAX:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid cursor"
+        )
+    return value
+
+
+def _assert_follow_list_visible(viewer_id: str, target_id: str, db: Session) -> None:
+    """404 when the profile is missing or the owner has blocked the viewer.
+
+    Profiles have no private flag. Lists are public aside from blocks.
+    """
+    profile = db.query(Profile).filter(Profile.id == target_id).first()
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+    _, has_blocked_me = get_block_state(viewer_id, target_id, db)
+    if has_blocked_me:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+
+def list_follow_users(
+    viewer_id: str,
+    target_id: str,
+    db: Session,
+    *,
+    direction: str,
+    limit: int,
+    cursor: str | None,
+) -> dict:
+    """Cursor page of followers (direction='followers') or following ('following').
+
+    is_following_me / am_following are relative to the viewer, not the profile owner.
+    Users in a block with the viewer are omitted.
+    """
+    _assert_follow_list_visible(viewer_id, target_id, db)
+    cursor_id = _parse_cursor(cursor)
+    blocked = get_blocked_user_ids(viewer_id, db)
+
+    if direction == "followers":
+        listed_col = Follow.follower_id
+        owner_filter = Follow.followee_id == target_id
+    else:
+        listed_col = Follow.followee_id
+        owner_filter = Follow.follower_id == target_id
+
+    query = db.query(Follow).filter(owner_filter)
+    if blocked:
+        query = query.filter(listed_col.notin_(list(blocked)))
+    if cursor_id is not None:
+        query = query.filter(Follow.id < cursor_id)
+    rows = query.order_by(Follow.id.desc()).limit(limit + 1).all()
+
+    has_more = len(rows) > limit
+    page = rows[:limit]
+    next_cursor = str(page[-1].id) if has_more and page else None
+
+    listed_ids = [
+        row.follower_id if direction == "followers" else row.followee_id for row in page
+    ]
+    profiles = (
+        db.query(Profile).filter(Profile.id.in_(listed_ids)).all() if listed_ids else []
+    )
+    profile_map = {p.id: p for p in profiles}
+    am_following, is_following_me = _follow_flags(viewer_id, listed_ids, db)
+
+    results = []
+    for uid in listed_ids:
+        profile = profile_map.get(uid)
+        if profile is None:
+            continue
+        sid = str(profile.id)
+        results.append(
+            {
+                "id": sid,
+                "username": profile.username,
+                "display_name": profile.display_name,
+                "avatar_url": profile.avatar_url,
+                "is_following_me": sid.lower() in is_following_me,
+                "am_following": sid.lower() in am_following,
+            }
+        )
+    return {"results": results, "next_cursor": next_cursor}
+
+
+def _follow_flags(
+    viewer_id: str, user_ids: list, db: Session
+) -> tuple[set[str], set[str]]:
+    """Return (am_following ids, is_following_me ids) for the page."""
+    if not user_ids:
+        return set(), set()
+    rows = (
+        db.query(Follow.follower_id, Follow.followee_id)
+        .filter(
+            or_(
+                (Follow.follower_id == viewer_id) & (Follow.followee_id.in_(user_ids)),
+                (Follow.followee_id == viewer_id) & (Follow.follower_id.in_(user_ids)),
+            )
+        )
+        .all()
+    )
+    am_following: set[str] = set()
+    is_following_me: set[str] = set()
+    viewer_key = str(viewer_id).lower()
+    for follower_id, followee_id in rows:
+        if str(follower_id).lower() == viewer_key:
+            am_following.add(str(followee_id).lower())
+        if str(followee_id).lower() == viewer_key:
+            is_following_me.add(str(follower_id).lower())
+    return am_following, is_following_me

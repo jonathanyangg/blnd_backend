@@ -78,3 +78,21 @@ class BlockedUserResponse(BaseModel):
 
 class BlockedUsersResponse(BaseModel):
     blocked: list[BlockedUserResponse]
+
+
+class FollowStateResponse(BaseModel):
+    following: bool
+
+
+class FollowUserResponse(BaseModel):
+    id: str
+    username: str
+    display_name: str | None = None
+    avatar_url: str | None = None
+    is_following_me: bool
+    am_following: bool
+
+
+class FollowListResponse(BaseModel):
+    results: list[FollowUserResponse]
+    next_cursor: str | None = None

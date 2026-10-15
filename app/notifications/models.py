@@ -53,6 +53,7 @@ class NotificationPreference(Base):
     friend_activity: Mapped[bool] = mapped_column(Boolean, default=True)
     comment_replies: Mapped[bool] = mapped_column(Boolean, default=True)
     comment_mentions: Mapped[bool] = mapped_column(Boolean, default=True)
+    new_followers: Mapped[bool] = mapped_column(Boolean, default=True)
     last_digest_sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -54,6 +54,7 @@ async def get_preferences(
         recommendations=pref.recommendations,
         friend_activity=pref.friend_activity,
         comment_replies=pref.comment_replies,
+        new_followers=pref.new_followers,
     )
 
 
@@ -72,6 +73,7 @@ async def update_preferences(
         recommendations=pref.recommendations,
         friend_activity=pref.friend_activity,
         comment_replies=pref.comment_replies,
+        new_followers=pref.new_followers,
     )
 
 

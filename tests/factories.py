@@ -6,7 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
-from app.friends.models import Friendship
+from app.friends.models import Follow, Friendship
 from app.groups.models import Group, GroupMember
 from app.movies.models import Movie
 from app.tracking.models import Watchlist, WatchedMovie, WatchlistMovie
@@ -139,6 +139,14 @@ def make_friendship(
     db.commit()
     db.refresh(f)
     return f
+
+
+def make_follow(db: Session, follower_id: str, followee_id: str) -> Follow:
+    row = Follow(follower_id=follower_id, followee_id=followee_id)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 def make_group(

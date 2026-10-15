@@ -30,6 +30,7 @@ THREAD_FRIEND_ACTIVITY = "friend_activity"
 THREAD_GROUP_ACTIVITY = "group_activity"
 THREAD_COMMENT_REPLIES = "comment_replies"
 THREAD_COMMENT_MENTIONS = "comment_mentions"
+THREAD_NEW_FOLLOWERS = "new_followers"
 
 
 def fire_notification(
