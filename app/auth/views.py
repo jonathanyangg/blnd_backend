@@ -12,6 +12,8 @@ from app.auth.models import Profile
 from app.content_filters import ContentFilters, get_content_filters
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
 from app.subscriptions.services import is_premium as profile_is_premium
+from app.timeline import schemas as timeline_schemas
+from app.timeline import services as timeline_services
 from app.database import SessionLocal
 from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
 
@@ -354,6 +356,21 @@ def get_user_watched(
         year_max=filters.year_max,
         media_type=filters.media_type,
     )
+
+
+@router.get(
+    "/users/{user_id}/timeline", response_model=timeline_schemas.TimelineResponse
+)
+@limiter.limit(LIMIT_DEFAULT)
+def get_user_timeline(
+    request: Request,
+    user_id: str,
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=50),
+    caller_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return timeline_services.get_profile_timeline(caller_id, user_id, cursor, limit, db)
 
 
 @router.get("/users/{id}/friends", response_model=schemas.PublicFriendsListResponse)

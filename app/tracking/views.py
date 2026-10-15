@@ -14,6 +14,8 @@ from app.dependencies import (
 from app.analytics import Event, track
 from app.content_filters import ContentFilters, get_content_filters
 from app.recommendations.services import increment_action_counter, rebuild_taste_profile
+from app.timeline import schemas as timeline_schemas
+from app.timeline import services as timeline_services
 from app.tracking import schemas, services
 
 router = APIRouter()
@@ -94,6 +96,18 @@ async def get_watch_history(
         year_min=filters.year_min,
         year_max=filters.year_max,
     )
+
+
+@router.get("/timeline", response_model=timeline_schemas.TimelineResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def get_own_timeline(
+    request: Request,
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=50),
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return timeline_services.get_profile_timeline(user_id, user_id, cursor, limit, db)
 
 
 @router.get("/{tmdb_id}/friends", response_model=schemas.FriendsWhoWatchedResponse)
