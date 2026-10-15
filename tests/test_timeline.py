@@ -10,7 +10,7 @@ from app.config import settings
 from app.friends.models import UserBlock
 from app.groups.models import GroupMember
 from app.tv.models import TVShow, WatchedTVShow
-from tests.conftest import TEST_USER_ID, TEST_USER_ID_2
+from tests.conftest import TEST_USER_ID, TEST_USER_ID_2, assert_error
 from tests.factories import (
     make_friendship,
     make_group,
@@ -118,7 +118,9 @@ def test_profile_timeline_privacy(client_user2: TestClient, db: Session) -> None
     )
 
     stranger = client_user2.get(f"/auth/users/{TEST_USER_ID}/timeline")
-    assert stranger.status_code == 403
+    assert_error(
+        stranger, status=403, code="FORBIDDEN", message="Not friends with this user"
+    )
 
     make_friendship(db, TEST_USER_ID, TEST_USER_ID_2, status="accepted")
     friend = client_user2.get(f"/auth/users/{TEST_USER_ID}/timeline")
@@ -128,7 +130,7 @@ def test_profile_timeline_privacy(client_user2: TestClient, db: Session) -> None
     db.add(UserBlock(blocker_id=TEST_USER_ID, blocked_id=TEST_USER_ID_2))
     db.commit()
     hidden = client_user2.get(f"/auth/users/{TEST_USER_ID}/timeline")
-    assert hidden.status_code == 404
+    assert_error(hidden, status=404, code="NOT_FOUND", message="User not found")
 
 
 def test_invalid_cursor(client: TestClient, db: Session) -> None:
@@ -136,8 +138,7 @@ def test_invalid_cursor(client: TestClient, db: Session) -> None:
     resp = client.get(
         f"/auth/users/{TEST_USER_ID}/timeline", params={"cursor": "not-a-cursor"}
     )
-    assert resp.status_code == 400
-    assert resp.json()["detail"] == "Invalid cursor"
+    assert_error(resp, status=400, code="BAD_REQUEST", message="Invalid cursor")
 
 
 def test_blend_timeline_respects_friendship_and_blocks(
@@ -185,8 +186,10 @@ def test_blend_timeline_respects_friendship_and_blocks(
     missing = client.get("/groups/999999/timeline")
     other, _wl = make_group(db, name="Closed", created_by=STRANGER_ID)
     denied = client.get(f"/groups/{other.id}/timeline")
-    assert missing.status_code == 404
-    assert denied.status_code == 403
+    assert_error(missing, status=404, code="NOT_FOUND", message="Group not found")
+    assert_error(
+        denied, status=403, code="FORBIDDEN", message="Not a member of this group"
+    )
 
 
 def test_blocked_companion_is_omitted(client: TestClient, db: Session) -> None:
