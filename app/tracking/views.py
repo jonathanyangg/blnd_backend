@@ -37,6 +37,7 @@ async def track_movie(
         db=db,
         tmdb_client=tmdb_client,
         source=body.source,
+        watched_with=body.watched_with,
     )
     track(
         user_id,
