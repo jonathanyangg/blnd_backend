@@ -27,6 +27,7 @@ from app.movies.views import router as movies_router
 from app.notifications.views import router as notifications_router
 from app.recommendations.views import router as recommendations_router
 from app.reports.views import router as reports_router
+from app.stats.views import router as stats_router
 from app.streaming.views import router as streaming_router
 from app.subscriptions.views import router as subscriptions_router
 from app.tracking.views import router as tracking_router
@@ -122,6 +123,7 @@ app.include_router(
 app.include_router(streaming_router, prefix="/movies", tags=["streaming"])
 app.include_router(reports_router, prefix="/reports", tags=["reports"])
 app.include_router(subscriptions_router, tags=["subscriptions"])
+app.include_router(stats_router, prefix="/stats", tags=["stats"])
 
 
 @app.get("/health")
