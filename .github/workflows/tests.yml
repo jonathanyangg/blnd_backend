@@ -11,13 +11,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.13"
-          cache: pip
+          version: "0.9.9"
+          enable-cache: true
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: uv sync --locked --all-groups
 
       - name: Start local Supabase (applies migrations)
         uses: supabase/setup-cli@v1
@@ -29,4 +29,6 @@ jobs:
         env:
           # conftest defaults to this and refuses any non-local host.
           TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
-        run: python -m pytest -q
+          # OpenAI 3 validates credentials when the client is constructed.
+          OPENAI_API_KEY: test-key
+        run: uv run --locked pytest -q

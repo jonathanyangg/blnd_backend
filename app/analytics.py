@@ -39,7 +39,7 @@ def init() -> None:
         logger.info("PostHog disabled — no POSTHOG_API_KEY set")
         return
     _client = Posthog(
-        api_key=settings.posthog_api_key,
+        project_api_key=settings.posthog_api_key,
         host=settings.posthog_host or "https://us.i.posthog.com",
     )
     logger.info("PostHog initialized")

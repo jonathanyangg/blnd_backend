@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     posthog_api_key: str = ""
     posthog_host: str = ""
+    tv_support_enabled: bool = False
 
     model_config = {"env_file": ".env"}
 
