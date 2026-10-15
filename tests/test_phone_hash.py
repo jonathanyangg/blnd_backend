@@ -48,6 +48,56 @@ def test_profile_stores_hash_and_response_omits_it(
     assert me.json()["phone_number"] is None
 
 
+def _stored_phone(db: Session) -> str | None:
+    from app.auth.models import Profile
+
+    return db.query(Profile).filter(Profile.id == TEST_USER_ID).one().phone_number
+
+
+def test_omit_phone_leaves_stored_hash(client: TestClient, db: Session) -> None:
+    make_profile(db, user_id=TEST_USER_ID, username="phoneuser")
+    assert client.patch("/auth/profile", json={"phone_number": RAW}).status_code == 200
+    digest = hash_phone(RAW)
+
+    resp = client.patch("/auth/profile", json={"display_name": "Still Here"})
+
+    assert resp.status_code == 200
+    assert resp.json()["display_name"] == "Still Here"
+    assert _stored_phone(db) == digest
+
+
+def test_null_phone_clears_stored_hash(client: TestClient, db: Session) -> None:
+    make_profile(db, user_id=TEST_USER_ID, username="phoneuser")
+    assert client.patch("/auth/profile", json={"phone_number": RAW}).status_code == 200
+
+    resp = client.patch("/auth/profile", json={"phone_number": None})
+
+    assert resp.status_code == 200
+    assert _stored_phone(db) is None
+
+
+def test_empty_phone_clears_stored_hash(client: TestClient, db: Session) -> None:
+    make_profile(db, user_id=TEST_USER_ID, username="phoneuser")
+    assert client.patch("/auth/profile", json={"phone_number": RAW}).status_code == 200
+
+    resp = client.patch("/auth/profile", json={"phone_number": ""})
+
+    assert resp.status_code == 200
+    assert _stored_phone(db) is None
+
+
+def test_new_phone_replaces_stored_hash(client: TestClient, db: Session) -> None:
+    make_profile(db, user_id=TEST_USER_ID, username="phoneuser")
+    assert client.patch("/auth/profile", json={"phone_number": RAW}).status_code == 200
+    replacement = "+15557654321"
+
+    resp = client.patch("/auth/profile", json={"phone_number": replacement})
+
+    assert resp.status_code == 200
+    assert _stored_phone(db) == hash_phone(replacement)
+    assert _stored_phone(db) != hash_phone(RAW)
+
+
 def test_contacts_match_on_hash(client: TestClient, db: Session) -> None:
     from app.auth.models import Profile
     from app.friends.models import UserContact

@@ -115,8 +115,9 @@ class UpdateProfileRequest(BaseModel):
     @field_validator("phone_number")
     @classmethod
     def check_phone(cls, v: str | None) -> str | None:
-        if v is None:
-            return v
+        # Omitted stays unset. null and "" both mean clear.
+        if v is None or not v.strip():
+            return None
         return validate_phone_number(v)
 
     @field_validator("avatar_url")
