@@ -19,6 +19,7 @@ from app.movies.models import Movie
 from app.movies.services import get_movie_details
 from app.recommendations import schemas, services
 from app.recommendations.services import increment_action_counter
+from app.content_filters import ContentFilters, get_content_filters, year_in_range
 from app.recommendations.pipeline import (
     RecommendationContext,
     run_recommendation_pipeline,
@@ -29,7 +30,10 @@ router = APIRouter()
 
 
 def _build_user_context(
-    user_id: str, profile: Profile, db: Session
+    user_id: str,
+    profile: Profile,
+    db: Session,
+    filters: ContentFilters | None = None,
 ) -> RecommendationContext:
     """Build a RecommendationContext for a single user."""
     watched_ids = [
@@ -70,6 +74,8 @@ def _build_user_context(
         top_cast=top_cast,
         genre_watch_counts=genre_counts,
         total_watches=total_watches,
+        year_min=None if filters is None else filters.year_min,
+        year_max=None if filters is None else filters.year_max,
         cf_user_ids=[user_id],
     )
 
@@ -82,7 +88,10 @@ def get_recommendations(
     db: Session = Depends(get_db),
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    filters: ContentFilters = Depends(get_content_filters),
 ):
+    if not filters.wants_movies:
+        return {"results": [], "taste_bio": None}
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile:
         return {"results": [], "taste_bio": None}
@@ -92,7 +101,7 @@ def get_recommendations(
         if not profile or profile.taste_embedding is None:
             return {"results": [], "taste_bio": profile.taste_bio if profile else None}
 
-    ctx = _build_user_context(user_id, profile, db)
+    ctx = _build_user_context(user_id, profile, db, filters)
     results = run_recommendation_pipeline(ctx, db, limit, offset)
     return {"results": results, "taste_bio": profile.taste_bio}
 
@@ -104,8 +113,11 @@ def get_feed(
     body: schemas.FeedRequest,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
+    filters: ContentFilters = Depends(get_content_filters),
 ):
     """Infinite scroll feed. Accepts previously-seen tmdb_ids to exclude."""
+    if not filters.wants_movies:
+        return {"results": [], "taste_bio": None}
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile:
         return {"results": [], "taste_bio": None}
@@ -115,7 +127,7 @@ def get_feed(
         if not profile or profile.taste_embedding is None:
             return {"results": [], "taste_bio": profile.taste_bio if profile else None}
 
-    ctx = _build_user_context(user_id, profile, db)
+    ctx = _build_user_context(user_id, profile, db, filters)
     # Add frontend's already-seen IDs to exclusion list
     ctx.exclude_ids = list(set(ctx.exclude_ids + body.exclude))
     results = run_recommendation_pipeline(ctx, db, body.limit, 0)
@@ -129,13 +141,16 @@ def refresh_recommendations(
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     limit: int = Query(default=20, ge=1, le=100),
+    filters: ContentFilters = Depends(get_content_filters),
 ):
     # Force rebuild taste profile synchronously, then return fresh recs
+    if not filters.wants_movies:
+        return {"results": [], "taste_bio": None}
     profile = services.rebuild_taste_profile(user_id, db, openai_client)
     if not profile or profile.taste_embedding is None:
         return {"results": [], "taste_bio": profile.taste_bio if profile else None}
 
-    ctx = _build_user_context(user_id, profile, db)
+    ctx = _build_user_context(user_id, profile, db, filters)
     results = run_recommendation_pipeline(ctx, db, limit, 0)
     return {"results": results, "taste_bio": profile.taste_bio}
 
@@ -257,14 +272,23 @@ def find_movie_now(
     exclude: str = Query(
         default="", description="Comma-separated tmdb_ids to skip (re-roll)"
     ),
+    filters: ContentFilters = Depends(get_content_filters),
 ):
     """One movie for right now, plus a short reason.
 
     Skips titles the user has watched, rated, hidden, or saved to their watchlist.
+    media_type=tv returns no pick: TV titles are not in this scorer.
     """
+    if not filters.wants_movies:
+        raise HTTPException(status_code=404, detail="No movie to recommend")
     genre_name = genre.strip() if genre and genre.strip() else None
     pick = services.pick_movie_now(
-        user_id, db, genre=genre_name, exclude_ids=_parse_exclude_ids(exclude)
+        user_id,
+        db,
+        genre=genre_name,
+        exclude_ids=_parse_exclude_ids(exclude),
+        year_min=filters.year_min,
+        year_max=filters.year_max,
     )
     if pick is None:
         raise HTTPException(status_code=404, detail="No movie to recommend")
@@ -345,8 +369,15 @@ def semantic_discover(
     body: schemas.SemanticSearchRequest,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
+    filters: ContentFilters = Depends(get_content_filters),
 ):
-    """AI-powered semantic movie search. Free: 2/day, Premium: 50/day."""
+    """AI-powered semantic movie search. Free: 2/day, Premium: 50/day.
+
+    The catalog is movies. media_type=tv returns no rows. Year bounds drop
+    titles outside the window. Omitting the params leaves the list unchanged.
+    """
+    if filters.media_type == "tv":
+        return {"query": body.query, "results": []}
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
@@ -360,7 +391,7 @@ def semantic_discover(
 
     from app.recommendations.semantic_search import run_semantic_discover
 
-    return run_semantic_discover(
+    result = run_semantic_discover(
         query=body.query,
         user_id=user_id,
         profile=profile,
@@ -368,3 +399,12 @@ def semantic_discover(
         exclude_ids=body.exclude,
         limit=body.limit,
     )
+    if filters.year_min is not None or filters.year_max is not None:
+        result["results"] = [
+            row
+            for row in result["results"]
+            if year_in_range(row.get("year"), filters.year_min, filters.year_max)
+        ]
+    for row in result["results"]:
+        row["media_type"] = "movie"
+    return result
