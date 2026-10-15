@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from typing import cast
 
 import httpx
 import jwt
@@ -7,13 +8,19 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from openai import OpenAI
 from sqlalchemy.orm import Session
-from supabase import create_client
+from supabase import Client, create_client
 
 from app.config import settings
 from app.database import SessionLocal
 
-# Clients
-supabase = create_client(settings.supabase_url, settings.supabase_key)
+# Clients. An empty URL/key is logged at startup; skip construction so a
+# non-strict boot can finish. Call sites still expect a client when configured.
+supabase = cast(
+    Client,
+    create_client(settings.supabase_url, settings.supabase_key)
+    if settings.supabase_url and settings.supabase_key
+    else None,
+)
 openai_client = OpenAI(api_key=settings.openai_api_key)
 
 # Admin client for privileged operations (e.g. account deletion, Apple token revocation)

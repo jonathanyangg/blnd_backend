@@ -8,6 +8,7 @@ import httpx
 from aioapns import APNs
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from pythonjsonlogger.json import JsonFormatter  # pyright: ignore[reportMissingImports]
 from slowapi import _rate_limit_exceeded_handler
@@ -17,9 +18,9 @@ from app import analytics
 from app.actors.views import router as actors_router
 from app.auth.views import router as auth_router
 from app.comments.views import router as comments_router
-from app.config import settings
+from app.config import settings, validate_required_settings
 from app.core.rate_limit import limiter
-from app.database import engine
+from app.database import engine, ping_database
 from app.friends.views import router as friends_router
 from app.groups.views import router as groups_router
 from app.import_data.views import router as import_router
@@ -41,10 +42,12 @@ handler.setFormatter(
 )
 logging.root.handlers = [handler]
 logging.root.setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    validate_required_settings()
     app.state.tmdb_client = httpx.AsyncClient(
         base_url="https://api.themoviedb.org/3",
         headers={"Authorization": f"Bearer {settings.tmdb_api_key}"},
@@ -125,3 +128,22 @@ app.include_router(subscriptions_router, tags=["subscriptions"])
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/health/deep")
+def health_deep():
+    """Readiness probe. Render liveness stays on /health."""
+    try:
+        ping_database()
+    except Exception as exc:
+        # Class name only. Exception text can include the database URL.
+        logger.error("deep health check failed: %s", type(exc).__name__)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "degraded",
+                "db": "error",
+                "error": type(exc).__name__,
+            },
+        )
+    return {"status": "ok", "db": "ok"}
