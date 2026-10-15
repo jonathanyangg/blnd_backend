@@ -8,7 +8,7 @@ user being viewed.
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from tests.conftest import CALLER_ID, TARGET_ID
+from tests.conftest import CALLER_ID, TARGET_ID, assert_error
 from tests.factories import make_friendship, make_movie, make_profile, make_watched
 
 FRIEND_A = "33333333-3333-3333-3333-333333333333"
@@ -97,8 +97,9 @@ def test_get_public_watched_403_not_friends(client: TestClient, db: Session) -> 
 
     response = client.get(f"/auth/users/{TARGET_ID}/watched")
 
-    assert response.status_code == 403
-    assert response.json()["detail"] == "Not friends with this user"
+    assert_error(
+        response, status=403, code="FORBIDDEN", message="Not friends with this user"
+    )
 
 
 def test_get_public_watched_pagination(client: TestClient, db: Session) -> None:
@@ -149,8 +150,9 @@ def test_get_public_friends_403_not_friends(client: TestClient, db: Session) -> 
 
     response = client.get(f"/auth/users/{TARGET_ID}/friends")
 
-    assert response.status_code == 403
-    assert response.json()["detail"] == "Not friends with this user"
+    assert_error(
+        response, status=403, code="FORBIDDEN", message="Not friends with this user"
+    )
 
 
 def test_get_public_friends_only_caller(client: TestClient, db: Session) -> None:
