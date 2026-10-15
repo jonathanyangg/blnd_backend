@@ -11,9 +11,17 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
-from app.import_data.schemas import FilmRecord, ImportSummaryResponse
+from app.import_data.schemas import (
+    FilmRecord,
+    ImportedNoteMovie,
+    ImportNotesResponse,
+    ImportSummaryResponse,
+    ParsedTitle,
+    UnmatchedNoteLine,
+)
 from app.movies.services import get_movie_details
 from app.tracking.models import WatchedMovie, WatchlistMovie
+from app.tracking.services import add_to_watchlist
 
 logger = logging.getLogger(__name__)
 
@@ -245,4 +253,144 @@ async def run_letterboxd_import(
         skipped=skipped,
         failed=failed,
         failed_titles=failed_titles,
+    )
+
+
+# --- Notes import ---
+
+MAX_NOTES_TITLES = 100
+MAX_NOTE_LINE_LENGTH = 80  # cleaned lines longer than this are likely prose
+MAX_PLAUSIBLE_YEAR = 2027  # bare trailing years past this stay in the title
+
+# Leading bullets, numbering ("1." / "1)"), markdown headers, and checklist marks
+_LINE_PREFIX_RE = re.compile(r"^(?:[-*•·]+|\d{1,3}[.)]|#+|\[[ xX✓]?\]|[☐☑✅✔✓])\s*")
+_EMPHASIS_RE = re.compile(r"\*\*|__|\*")
+# ZWJ, misc symbols/dingbats, symbols+arrows, variation selector, SMP pictographs
+_EMOJI_RE = re.compile(r"[\u200d\u2600-\u27bf\u2b00-\u2bff\ufe0f\U0001f000-\U0001faff]")
+_ANNOTATION_SPLIT_RE = re.compile(r"\s+[-–—]\s+")
+_WATCHED_MARKER_RE = re.compile(r"\((?:watched|seen)\)|\b(?:watched|seen)\s*$", re.I)
+_PAREN_YEAR_RE = re.compile(r"\(((?:19|20)\d{2})\)")
+_BARE_YEAR_RE = re.compile(r"[\s,]+((?:19|20)\d{2})$")
+
+
+def _clean_note_line(line: str) -> tuple[str, int | None]:
+    """Strip note formatting from one line, returning (title, year hint)."""
+    s = line
+    while match := _LINE_PREFIX_RE.match(s):
+        s = s[match.end() :]
+    s = _EMPHASIS_RE.sub("", s)
+    s = _EMOJI_RE.sub("", s)
+    s = _ANNOTATION_SPLIT_RE.split(s, maxsplit=1)[0]
+    s = _WATCHED_MARKER_RE.sub("", s).strip()
+
+    year: int | None = None
+    if match := _PAREN_YEAR_RE.search(s):
+        year = int(match.group(1))
+        s = (s[: match.start()] + s[match.end() :]).strip()
+    elif match := _BARE_YEAR_RE.search(s):
+        candidate = int(match.group(1))
+        # "Blade Runner 2049" — a far-future trailing number is part of the title
+        if candidate <= MAX_PLAUSIBLE_YEAR and s[: match.start()].strip():
+            year = candidate
+            s = s[: match.start()]
+
+    s = re.sub(r"\s+", " ", s).strip(" \t,;.")
+    return s, year
+
+
+def parse_note_lines(text: str) -> list[ParsedTitle]:
+    """Parse free-form note text into candidate movie titles.
+
+    Strips checklist artifacts, bullets/numbering, markdown emphasis, emoji,
+    trailing annotations, and watched markers; extracts year hints. Drops empty
+    lines, header-ish lines ending in ":", and prose-length lines.
+    """
+    parsed: list[ParsedTitle] = []
+    for line in text.splitlines():
+        raw_line = line.strip()
+        if not raw_line:
+            continue
+        title, year = _clean_note_line(raw_line)
+        if not title or title.endswith(":") or len(title) > MAX_NOTE_LINE_LENGTH:
+            continue
+        parsed.append(ParsedTitle(raw_line=raw_line, title=title, year=year))
+    return parsed
+
+
+async def run_notes_import(
+    user_id: str,
+    watchlist_id: int,
+    text: str,
+    db: Session,
+    tmdb_client: httpx.AsyncClient,
+) -> ImportNotesResponse:
+    """Parse note text, resolve titles on TMDB, and add matches to the watchlist."""
+    parsed = parse_note_lines(text)
+    truncated = len(parsed) > MAX_NOTES_TITLES
+    parsed = parsed[:MAX_NOTES_TITLES]
+    logger.info("Parsed %d candidate titles from notes import", len(parsed))
+
+    added: list[ImportedNoteMovie] = []
+    already_in_watchlist: list[ImportedNoteMovie] = []
+    unmatched: list[UnmatchedNoteLine] = []
+
+    for candidate in parsed:
+        try:
+            tmdb_id = await _resolve_tmdb_id(
+                candidate.title, candidate.year, tmdb_client
+            )
+            await asyncio.sleep(TMDB_RATE_LIMIT_DELAY)
+            if tmdb_id is None:
+                unmatched.append(
+                    UnmatchedNoteLine(
+                        raw_line=candidate.raw_line, cleaned_title=candidate.title
+                    )
+                )
+                continue
+
+            movie = await get_movie_details(tmdb_id, db, tmdb_client)
+            await asyncio.sleep(TMDB_RATE_LIMIT_DELAY)
+            item = ImportedNoteMovie(
+                tmdb_id=tmdb_id,
+                title=movie.title,
+                year=movie.year,
+                poster_path=movie.poster_path,
+                raw_line=candidate.raw_line,
+            )
+
+            try:
+                await add_to_watchlist(
+                    watchlist_id,
+                    tmdb_id,
+                    user_id,
+                    db,
+                    tmdb_client,
+                    source="notes_import",
+                )
+                added.append(item)
+            except HTTPException as exc:
+                if exc.status_code != 400:
+                    raise
+                already_in_watchlist.append(item)
+
+        except Exception:
+            db.rollback()
+            logger.warning(
+                "Notes import failed for %r (%s)",
+                candidate.title,
+                candidate.year,
+                exc_info=True,
+            )
+            unmatched.append(
+                UnmatchedNoteLine(
+                    raw_line=candidate.raw_line, cleaned_title=candidate.title
+                )
+            )
+            continue
+
+    return ImportNotesResponse(
+        added=added,
+        already_in_watchlist=already_in_watchlist,
+        unmatched=unmatched,
+        truncated=truncated,
     )

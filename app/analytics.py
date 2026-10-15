@@ -29,6 +29,7 @@ class Event(StrEnum):
 
     # Features
     LETTERBOXD_IMPORTED = "letterboxd_imported"
+    NOTES_IMPORTED = "notes_imported"
     SEMANTIC_DISCOVER_USED = "semantic_discover_used"
 
 

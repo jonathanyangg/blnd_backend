@@ -24,8 +24,14 @@ from app.dependencies import (
     openai_client,
     require_admin,
 )
+from app.auth.models import Profile
 from app.import_data import services, workflows
-from app.import_data.schemas import ImportSummaryResponse, SeedStatusResponse
+from app.import_data.schemas import (
+    ImportNotesRequest,
+    ImportNotesResponse,
+    ImportSummaryResponse,
+    SeedStatusResponse,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -102,5 +108,34 @@ async def import_letterboxd(
         user_id,
         Event.LETTERBOXD_IMPORTED,
         {"movies_imported": result.imported},
+    )
+    return result
+
+
+@router.post("/notes", response_model=ImportNotesResponse)
+@limiter.limit(LIMIT_IMPORT)
+async def import_notes(
+    request: Request,
+    body: ImportNotesRequest,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+):
+    """Import a free-form movie list (e.g. from Apple Notes) into the watchlist."""
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if not profile or not profile.watchlist_id:
+        raise HTTPException(status_code=404, detail="No personal watchlist found")
+
+    result = await workflows.run_notes_import(
+        user_id, profile.watchlist_id, body.text, db, tmdb_client
+    )
+    track(
+        user_id,
+        Event.NOTES_IMPORTED,
+        {
+            "movies_added": len(result.added),
+            "already_in_watchlist": len(result.already_in_watchlist),
+            "unmatched": len(result.unmatched),
+        },
     )
     return result
