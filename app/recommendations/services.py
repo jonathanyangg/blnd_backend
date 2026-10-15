@@ -545,10 +545,10 @@ def pick_movie_now(
 
     Reuses main-path reranking on a small cosine pool when the user has a taste
     embedding. With no embedding, or when that pool is empty, returns a popular
-    title instead. Watched, rated, and hidden movies are skipped.
+    title instead. Watched, rated, hidden, and watchlisted movies are skipped.
     """
     profile = db.query(Profile).filter(Profile.id == user_id).first()
-    blocked = _now_blocked_ids(user_id, db, exclude_ids or [])
+    blocked = _now_blocked_ids(user_id, db, exclude_ids or [], profile)
     top_rated = get_top_rated_movies(user_id, db, limit=8)
     favorite_genres = (
         list(profile.favorite_genres) if profile and profile.favorite_genres else []
@@ -573,14 +573,28 @@ def pick_movie_now(
     }
 
 
-def _now_blocked_ids(user_id: str, db: Session, extra: list[int]) -> set[int]:
+def _now_blocked_ids(
+    user_id: str,
+    db: Session,
+    extra: list[int],
+    profile: Profile | None,
+) -> set[int]:
+    """Ids that must not be returned: watched, hidden, watchlisted, plus caller excludes."""
     watched = {
         row[0]
         for row in db.query(WatchedMovie.tmdb_id)
         .filter(WatchedMovie.user_id == user_id)
         .all()
     }
-    return watched | set(get_hidden_movie_ids(user_id, db)) | set(extra)
+    blocked = watched | set(get_hidden_movie_ids(user_id, db)) | set(extra)
+    if profile is not None and profile.watchlist_id:
+        blocked |= {
+            row[0]
+            for row in db.query(WatchlistMovie.tmdb_id)
+            .filter(WatchlistMovie.watchlist_id == profile.watchlist_id)
+            .all()
+        }
+    return blocked
 
 
 def _genre_names(movie: Movie) -> set[str]:

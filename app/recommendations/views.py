@@ -156,7 +156,10 @@ def find_movie_now(
         default="", description="Comma-separated tmdb_ids to skip (re-roll)"
     ),
 ):
-    """One movie for right now, plus a short reason. Skips watched titles."""
+    """One movie for right now, plus a short reason.
+
+    Skips titles the user has watched, rated, hidden, or saved to their watchlist.
+    """
     genre_name = genre.strip() if genre and genre.strip() else None
     pick = services.pick_movie_now(
         user_id, db, genre=genre_name, exclude_ids=_parse_exclude_ids(exclude)

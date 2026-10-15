@@ -7,7 +7,13 @@ from sqlalchemy.orm import Session
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
 from tests.conftest import TEST_USER_ID
-from tests.factories import make_movie, make_profile, make_watched
+from tests.factories import (
+    make_movie,
+    make_profile,
+    make_watched,
+    make_watchlist,
+    make_watchlist_movie,
+)
 
 SCI_FI = [{"id": 878, "name": "Science Fiction"}]
 COMEDY = [{"id": 35, "name": "Comedy"}]
@@ -110,6 +116,28 @@ def test_now_returns_one_unwatched_pick_with_reason(
     assert body["movie"]["tmdb_id"] == dune.tmdb_id
     assert body["movie"]["title"] == "Dune"
     assert body["reason"] == "Because you rated Inception highly"
+
+
+def test_now_skips_watchlist(client: TestClient, db: Session) -> None:
+    _force_exact_match(db)
+    watchlist = make_watchlist(db)
+    profile = make_profile(
+        db, user_id=TEST_USER_ID, username="nowuser", watchlist_id=watchlist.id
+    )
+    profile.taste_embedding = _vec(10)
+    db.commit()
+
+    dune = make_movie(db, tmdb_id=910002, title="Dune", genres=SCI_FI, vote_average=8.0)
+    _with_embedding(db, dune, _vec(10, (11, 0.2)))
+    arrival = make_movie(
+        db, tmdb_id=910003, title="Arrival", genres=SCI_FI, vote_average=7.6
+    )
+    _with_embedding(db, arrival, _vec(10, (12, 1.2)))
+    make_watchlist_movie(db, watchlist.id, dune.tmdb_id, added_by=TEST_USER_ID)
+
+    response = client.get("/recommendations/now")
+    assert response.status_code == 200
+    assert response.json()["movie"]["tmdb_id"] == arrival.tmdb_id
 
 
 def test_now_exclude_rerolls(client: TestClient, db: Session) -> None:
