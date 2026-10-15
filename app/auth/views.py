@@ -8,13 +8,31 @@ from supabase_auth.errors import AuthApiError, AuthRetryableError
 
 from app.analytics import Event, track
 from app.auth import schemas, services
+from app.auth.models import Profile
 from app.core.rate_limit import LIMIT_DEFAULT, limiter
+from app.subscriptions.services import is_premium as profile_is_premium
 from app.database import SessionLocal
 from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _user_response(profile: Profile) -> schemas.UserResponse:
+    """Build the /auth/me payload. is_premium matches the server-side entitlement check."""
+    return schemas.UserResponse(
+        id=str(profile.id),
+        username=profile.username,
+        display_name=profile.display_name,
+        avatar_url=profile.avatar_url,
+        taste_bio=profile.taste_bio,
+        favorite_genres=profile.favorite_genres or [],
+        phone_number=profile.phone_number,
+        subscription_tier=profile.subscription_tier,
+        subscription_expires_at=profile.subscription_expires_at,
+        is_premium=profile_is_premium(profile),
+    )
 
 
 @router.get("/users/search", response_model=schemas.UserSearchResponse)
@@ -238,17 +256,7 @@ def me(
     profile = services.get_profile(user_id, db)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
-    return schemas.UserResponse(
-        id=str(profile.id),
-        username=profile.username,
-        display_name=profile.display_name,
-        avatar_url=profile.avatar_url,
-        taste_bio=profile.taste_bio,
-        favorite_genres=profile.favorite_genres or [],
-        phone_number=profile.phone_number,
-        subscription_tier=profile.subscription_tier,
-        subscription_expires_at=profile.subscription_expires_at,
-    )
+    return _user_response(profile)
 
 
 @router.get("/me/taste", response_model=schemas.GenreTasteResponse)
@@ -295,17 +303,7 @@ def update_profile(
 
         background_tasks.add_task(_rebuild_in_background)
 
-    return schemas.UserResponse(
-        id=str(profile.id),
-        username=profile.username,
-        display_name=profile.display_name,
-        avatar_url=profile.avatar_url,
-        taste_bio=profile.taste_bio,
-        favorite_genres=profile.favorite_genres or [],
-        phone_number=profile.phone_number,
-        subscription_tier=profile.subscription_tier,
-        subscription_expires_at=profile.subscription_expires_at,
-    )
+    return _user_response(profile)
 
 
 @router.delete("/account", status_code=204)
