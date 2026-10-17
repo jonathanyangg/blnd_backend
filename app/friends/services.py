@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
+from app.auth.visibility import is_hidden_profile, visible_user_ids
 from app.friends.models import Follow, Friendship, UserBlock, UserContact
 
 _BIGINT_MAX = 9223372036854775807
@@ -476,6 +477,8 @@ def get_contact_suggestions(user_id: str, db: Session) -> list[dict]:
         .filter(
             Profile.phone_number.in_(contact_phones),
             Profile.id.notin_(list(exclude_ids)),
+            Profile.is_discoverable.is_(True),
+            Profile.is_test.is_(False),
         )
         .limit(50)
         .all()
@@ -532,6 +535,14 @@ def get_mutual_suggestions(user_id: str, db: Session) -> list[dict]:
     if not mutual_counter:
         return []
 
+    # Hidden and test accounts are not suggestable, and must not take a slot.
+    visible = set(visible_user_ids(list(mutual_counter), db))
+    for uid in list(mutual_counter):
+        if uid not in visible:
+            del mutual_counter[uid]
+    if not mutual_counter:
+        return []
+
     # Fetch profiles for top suggestions, ranked by mutual count
     top_ids = [uid for uid, _ in mutual_counter.most_common(30)]
     profiles = db.query(Profile).filter(Profile.id.in_(top_ids)).all()
@@ -579,6 +590,7 @@ def get_mutual_friends(user_id: str, target_id: str, db: Session) -> dict:
             "avatar_url": p.avatar_url,
         }
         for p in profiles
+        if not is_hidden_profile(p)
     ]
     return {"mutuals": mutuals, "count": len(mutuals)}
 

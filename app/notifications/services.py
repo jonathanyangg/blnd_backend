@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.auth.models import Profile
+from app.auth.visibility import notify_allowed, visible_user_ids
 from app.database import SessionLocal
 from app.friends.models import Friendship
 from app.movies.models import Movie
@@ -113,7 +114,15 @@ WITH visible AS (
     FROM notification_inbox n
     LEFT JOIN notification_preferences mine ON mine.user_id = n.user_id
     LEFT JOIN notification_preferences actor ON actor.user_id = n.from_user_id
+    LEFT JOIN profiles actor_profile ON actor_profile.id = n.from_user_id
     WHERE n.user_id = CAST(:uid AS uuid)
+      AND (
+        n.from_user_id IS NULL
+        OR (
+            COALESCE(actor_profile.is_discoverable, true)
+            AND NOT COALESCE(actor_profile.is_test, false)
+        )
+      )
       AND (
         CASE n.type
             WHEN 'friend_activity' THEN COALESCE(mine.friends_ratings_in_app, true)
@@ -318,15 +327,21 @@ def fire_notification(
     apns_client: APNs | None,
     group_key: str | None = None,
     skip_inbox: bool = False,
+    db: Session | None = None,
 ) -> None:
     """Fire-and-forget push + inbox write. One-liner from any view.
 
-    Handles its own DB session and error isolation.
+    Handles its own DB session and error isolation. Hidden and test actors
+    are dropped so they never show up as the person who did the thing.
     """
+    if db is not None and not notify_allowed(from_user, db):
+        return
 
     async def _dispatch() -> None:
         bg_db = SessionLocal()
         try:
+            if not notify_allowed(from_user, bg_db):
+                return
             await _send_push(
                 user_id=to,
                 notification_type=notification_type,
@@ -523,7 +538,10 @@ def fire_notification_to_friends(
     """Write a rating/watch event into recipients' inboxes (no push).
 
     Recipients follow share_ratings_activity. In-app friends_ratings can drop one.
+    Hidden and test actors produce no inbox rows.
     """
+    if not notify_allowed(user_id, db):
+        return
     profile = db.query(Profile).filter(Profile.id == user_id).first()
     if not profile:
         return
@@ -1096,10 +1114,13 @@ def _build_digest_body(user_id: str, since: datetime, db: Session) -> str | None
         )
         .all()
     )
-    friend_ids = [
-        str(f.addressee_id) if str(f.requester_id) == user_id else str(f.requester_id)
-        for f in friendships
-    ]
+    friend_ids = visible_user_ids(
+        [
+            str(f.addressee_id) if str(f.requester_id) == user_id else str(f.requester_id)
+            for f in friendships
+        ],
+        db,
+    )
     if not friend_ids:
         return None
 

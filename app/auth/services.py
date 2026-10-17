@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
+from app.auth.visibility import is_hidden_profile, raise_if_hidden_from
 from app.dependencies import supabase, supabase_admin
 from app.subscriptions.services import is_premium
 from app.friends.models import Friendship
@@ -239,11 +240,24 @@ def search_users(
     )
     excluded = Profile.id.notin_(list(excluded_ids))
     total = (
-        db.query(func.count(Profile.id)).filter(match, excluded).scalar() or 0
+        db.query(func.count(Profile.id))
+        .filter(
+            match,
+            excluded,
+            Profile.is_discoverable.is_(True),
+            Profile.is_test.is_(False),
+        )
+        .scalar()
+        or 0
     )
     profiles = (
         db.query(Profile)
-        .filter(match, excluded)
+        .filter(
+            match,
+            excluded,
+            Profile.is_discoverable.is_(True),
+            Profile.is_test.is_(False),
+        )
         .order_by(Profile.username)
         .offset(offset)
         .limit(limit)
@@ -341,10 +355,23 @@ def update_profile(
             if conflict:
                 raise ValueError("Phone number is already linked to another account")
         profile.phone_number = new_phone
+    if "is_discoverable" in fields and fields["is_discoverable"] is not None:
+        profile.is_discoverable = fields["is_discoverable"]
 
     db.commit()
     db.refresh(profile)
     return profile, genres_changed
+
+
+def admin_set_test_account(user_id: str, is_test: bool, db: Session) -> Profile:
+    """Mark or clear a test account. Admin-only; not settable by the user."""
+    profile = db.query(Profile).filter(Profile.id == user_id).first()
+    if profile is None:
+        raise ValueError(f"Profile {user_id} not found")
+    profile.is_test = is_test
+    db.commit()
+    db.refresh(profile)
+    return profile
 
 
 def assert_are_friends(caller_id: str, target_id: str, db: Session) -> None:
@@ -384,6 +411,7 @@ def get_public_profile(caller_id: str, target_id: str, db: Session) -> dict:
     profile = db.query(Profile).filter(Profile.id == target_id).first()
     if not profile:
         raise HTTPException(status_code=404, detail="User not found")
+    raise_if_hidden_from(caller_id, profile)
 
     is_blocked_by_me, has_blocked_me = get_block_state(caller_id, target_id, db)
     # If the target has blocked the caller, hide them entirely
@@ -451,8 +479,20 @@ def get_public_profile(caller_id: str, target_id: str, db: Session) -> dict:
     }
 
 
+def _reject_hidden_target(caller_id: str, target_id: str, db: Session) -> None:
+    """404 when the target exists and is hidden from this caller.
+
+    A missing profile is left to the caller's existing check so unknown ids
+    keep their current status code.
+    """
+    profile = db.query(Profile).filter(Profile.id == target_id).first()
+    if profile is not None:
+        raise_if_hidden_from(caller_id, profile)
+
+
 def get_public_taste(caller_id: str, target_id: str, db: Session) -> dict:
     """Get genre taste for another user. Requires friendship."""
+    _reject_hidden_target(caller_id, target_id, db)
     assert_are_friends(caller_id, target_id, db)
     return get_genre_taste(target_id, db)
 
@@ -469,6 +509,7 @@ def get_public_watched(
     """Get paginated watched movies for another user. Requires friendship."""
     from app.tracking.services import _watched_order_by
 
+    _reject_hidden_target(caller_id, target_id, db)
     assert_are_friends(caller_id, target_id, db)
 
     base = (
@@ -497,6 +538,7 @@ def get_public_watched(
 
 def get_public_friends(caller_id: str, target_id: str, db: Session) -> dict:
     """Get friends list for another user. Requires friendship."""
+    _reject_hidden_target(caller_id, target_id, db)
     assert_are_friends(caller_id, target_id, db)
 
     friendships = (
@@ -521,7 +563,7 @@ def get_public_friends(caller_id: str, target_id: str, db: Session) -> dict:
     friends = []
     for fid in friend_ids:
         profile = profile_map.get(fid)
-        if profile:
+        if profile and not is_hidden_profile(profile):
             friends.append(
                 {
                     "id": str(profile.id),

@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from app.groups.schemas import UpdateGroupRequest
 
 from app.auth.models import Profile
+from app.auth.visibility import visible_user_ids
 from app.groups.models import Group, GroupMember
 from app.groups.names import blend_display_name, default_blend_name, first_name
 from app.import_data.models import MovieEmbedding
@@ -400,7 +401,8 @@ def get_group_recommendations(
     _verify_membership(group_id, user_id, db)
 
     members = db.query(GroupMember).filter(GroupMember.group_id == group_id).all()
-    member_ids = [str(m.user_id) for m in members]
+    # Hidden and test members do not contribute taste, watches, or genre signals.
+    member_ids = visible_user_ids([str(m.user_id) for m in members], db)
 
     if not member_ids:
         return {"results": []}
@@ -547,7 +549,8 @@ def compute_group_match_scores(
         return {}
 
     members = db.query(GroupMember).filter(GroupMember.group_id == group_id).all()
-    member_ids = [str(m.user_id) for m in members]
+    # Same visibility rule as blend recommendations: hidden taste is not a signal.
+    member_ids = visible_user_ids([str(m.user_id) for m in members], db)
 
     if not member_ids:
         return {}

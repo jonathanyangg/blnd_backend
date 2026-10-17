@@ -2,7 +2,7 @@ import re
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9._]+$")
 PHONE_RE = re.compile(r"^\+[1-9]\d{6,14}$")
@@ -95,6 +95,7 @@ class UserResponse(BaseModel):
     subscription_expires_at: datetime | None = None
     followers_count: int = 0
     following_count: int = 0
+    is_discoverable: bool = True
     is_premium: bool = False
 
 
@@ -109,6 +110,15 @@ class UpdateProfileRequest(BaseModel):
     avatar_url: str | None = None
     favorite_genres: list[str] | None = Field(default=None, max_length=20)
     phone_number: str | None = None
+    is_discoverable: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_is_test(cls, data: object) -> object:
+        """is_test is admin-only. A user cannot set it on their own profile."""
+        if isinstance(data, dict) and "is_test" in data:
+            raise ValueError("is_test cannot be changed")
+        return data
 
     @field_validator("username")
     @classmethod
@@ -272,3 +282,8 @@ class CompleteOnboardingRequest(BaseModel):
 class CompleteOnboardingResponse(BaseModel):
     user_id: str
     username: str
+
+
+class AdminSetTestResponse(BaseModel):
+    user_id: str
+    is_test: bool

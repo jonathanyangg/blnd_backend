@@ -80,6 +80,7 @@ def _notify_mentions(
             },
             thread=THREAD_COMMENT_MENTIONS,
             apns_client=apns_client,
+            db=db,
         )
 
 
@@ -246,6 +247,7 @@ def create_reply(
             },
             thread=THREAD_COMMENT_REPLIES,
             apns_client=apns_client,
+            db=db,
         )
         notified.add(str(parent.user_id))
 
