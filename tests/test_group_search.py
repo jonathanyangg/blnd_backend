@@ -69,7 +69,7 @@ def test_group_list_without_query_stays_unpaginated(
     body = resp.json()
     assert len(body["groups"]) == 2
     assert "total" not in body
-    assert "display_name" not in body["groups"][0]
+    assert {group["display_name"] for group in body["groups"]} == {"One", "Two"}
 
 
 def test_group_search_paginates(client: TestClient, db: Session) -> None:

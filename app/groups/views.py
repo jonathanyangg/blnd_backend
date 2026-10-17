@@ -128,7 +128,7 @@ async def add_member(
     # Gather data for notification (within request scope)
     target_profile = db.query(Profile).filter(Profile.username == body.username).first()
     adder_profile = db.query(Profile).filter(Profile.id == user_id).first()
-    group_name = result.get("name", "a group")
+    group_name = result.get("display_name") or "a blend"
 
     if target_profile and adder_profile:
         target_id = str(target_profile.id)
@@ -289,7 +289,7 @@ async def add_to_group_watchlist(
     # Notify other group members
     adder_profile = db.query(Profile).filter(Profile.id == user_id).first()
     movie = db.query(Movie).filter(Movie.tmdb_id == body.tmdb_id).first()
-    group_name = group.name or "a blend"
+    group_name = services.group_display_name(group, db)
     adder_name = adder_profile.username if adder_profile else "Someone"
     movie_title = movie.title if movie else "a movie"
 

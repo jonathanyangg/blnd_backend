@@ -47,8 +47,28 @@ def _group_cap(group_id: int, db: Session) -> int:
     return FREE_GROUP_CAP
 
 
-def create_group(user_id: str, name: str, db: Session) -> dict:
+def _people_display_name(stored_name: str | None, people: list[Profile]) -> str:
+    return blend_display_name(
+        stored_name, [first_name(p.display_name, p.username) for p in people]
+    )
+
+
+def group_display_name(group: Group, db: Session) -> str:
+    """Name to show. Does not write the generated string into groups.name."""
+    people = (
+        db.query(Profile)
+        .join(GroupMember, GroupMember.user_id == Profile.id)
+        .filter(GroupMember.group_id == group.id)
+        .order_by(GroupMember.joined_at, GroupMember.user_id)
+        .all()
+    )
+    return _people_display_name(group.name, people)
+
+
+def create_group(user_id: str, name: str | None, db: Session) -> dict:
     """Create a group with a linked watchlist and add creator as first member."""
+    if name is not None:
+        name = name.strip() or None
     watchlist = Watchlist()
     db.add(watchlist)
     db.flush()
@@ -83,6 +103,7 @@ def list_groups(user_id: str, db: Session) -> dict:
         db.query(GroupMember, Profile)
         .join(Profile, GroupMember.user_id == Profile.id)
         .filter(GroupMember.group_id.in_(group_ids))
+        .order_by(GroupMember.joined_at, GroupMember.user_id)
         .all()
     )
     members_by_group: dict[int, list[Profile]] = defaultdict(list)
@@ -97,6 +118,7 @@ def list_groups(user_id: str, db: Session) -> dict:
             {
                 "id": g.id,
                 "name": g.name,
+                "display_name": _people_display_name(g.name, group_members),
                 "created_by": str(g.created_by),
                 "member_count": len(group_members),
                 "member_avatars": avatars,
@@ -189,7 +211,7 @@ def update_group(
 
     fields = updates.model_dump(exclude_unset=True)
     if "name" in fields:
-        group.name = fields["name"]
+        group.name = fields["name"].strip() or None
 
     db.commit()
     db.refresh(group)
@@ -612,6 +634,7 @@ def _group_detail(group: Group, db: Session) -> dict:
         db.query(GroupMember, Profile)
         .join(Profile, GroupMember.user_id == Profile.id)
         .filter(GroupMember.group_id == group.id)
+        .order_by(GroupMember.joined_at, GroupMember.user_id)
         .all()
     )
     members = [
@@ -626,6 +649,9 @@ def _group_detail(group: Group, db: Session) -> dict:
     return {
         "id": group.id,
         "name": group.name,
+        "display_name": _people_display_name(
+            group.name, [p for _, p in members_rows]
+        ),
         "created_by": str(group.created_by),
         "members": members,
         "created_at": group.created_at,

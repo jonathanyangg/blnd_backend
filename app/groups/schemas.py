@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class CreateGroupRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=250)
+    name: str | None = Field(default=None, min_length=1, max_length=250)
 
 
 class UpdateGroupRequest(BaseModel):
@@ -25,17 +25,17 @@ class GroupMemberResponse(BaseModel):
 class GroupResponse(BaseModel):
     id: int
     name: str | None
+    display_name: str
     created_by: str
     member_count: int
     member_avatars: list[str | None] = []
     created_at: datetime
-    # Set on search results. Omitted on the plain list.
-    display_name: str | None = None
 
 
 class GroupDetailResponse(BaseModel):
     id: int
     name: str | None
+    display_name: str
     created_by: str
     members: list[GroupMemberResponse]
     created_at: datetime
