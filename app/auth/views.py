@@ -13,6 +13,7 @@ from app.timeline import schemas as timeline_schemas
 from app.timeline import services as timeline_services
 from app.database import SessionLocal
 from app.dependencies import get_current_user, get_db, get_tmdb_client, openai_client
+from app.friends.services import follow_counts_by_user
 from app.subscriptions.services import is_premium
 
 logger = logging.getLogger(__name__)
@@ -243,6 +244,9 @@ def me(
     profile = services.get_profile(user_id, db)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
+    followers_count, following_count = follow_counts_by_user([user_id], db).get(
+        user_id, (0, 0)
+    )
     return schemas.UserResponse(
         id=str(profile.id),
         username=profile.username,
@@ -253,6 +257,8 @@ def me(
         phone_number=profile.phone_number,
         subscription_tier=profile.subscription_tier,
         subscription_expires_at=profile.subscription_expires_at,
+        followers_count=followers_count,
+        following_count=following_count,
         is_premium=is_premium(profile),
     )
 
@@ -301,6 +307,9 @@ def update_profile(
 
         background_tasks.add_task(_rebuild_in_background)
 
+    followers_count, following_count = follow_counts_by_user([user_id], db).get(
+        user_id, (0, 0)
+    )
     return schemas.UserResponse(
         id=str(profile.id),
         username=profile.username,
@@ -311,6 +320,8 @@ def update_profile(
         phone_number=profile.phone_number,
         subscription_tier=profile.subscription_tier,
         subscription_expires_at=profile.subscription_expires_at,
+        followers_count=followers_count,
+        following_count=following_count,
         is_premium=is_premium(profile),
     )
 

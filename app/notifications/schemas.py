@@ -49,6 +49,7 @@ class PreferencesResponse(BaseModel):
     recommendations: bool
     friend_activity: bool
     comment_replies: bool
+    new_followers: bool
     share_ratings: ShareAudience
     in_app: ChannelFlags
     push: ChannelFlags
@@ -60,6 +61,7 @@ class UpdatePreferencesRequest(BaseModel):
     recommendations: bool | None = None
     friend_activity: bool | None = None
     comment_replies: bool | None = None
+    new_followers: bool | None = None
     share_ratings: ShareAudience | None = None
     in_app: ChannelFlagsPatch | None = None
     push: ChannelFlagsPatch | None = None

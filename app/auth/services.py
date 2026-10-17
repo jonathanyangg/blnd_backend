@@ -228,7 +228,7 @@ def search_users(
     query: str, user_id: str, db: Session, limit: int = 10, offset: int = 0
 ) -> tuple[list[dict], int]:
     """Search users by username prefix or display name, excluding the caller and blocked users."""
-    from app.friends.services import get_blocked_user_ids
+    from app.friends.services import follow_counts_by_user, get_blocked_user_ids
 
     escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     blocked_ids = get_blocked_user_ids(user_id, db)
@@ -274,6 +274,7 @@ def search_users(
         )
         friendship_map[other_id] = (fship.status, fship.id)
 
+    counts = follow_counts_by_user([str(p.id) for p in profiles], db)
     return [
         {
             "id": str(p.id),
@@ -286,6 +287,8 @@ def search_users(
             "friendship_id": friendship_map[str(p.id)][1]
             if str(p.id) in friendship_map
             else None,
+            "followers_count": counts.get(str(p.id), (0, 0))[0],
+            "following_count": counts.get(str(p.id), (0, 0))[1],
             "subscription_tier": p.subscription_tier,
             "is_premium": is_premium(p),
         }
@@ -414,6 +417,10 @@ def get_public_profile(caller_id: str, target_id: str, db: Session) -> dict:
         or 0
     )
 
+    from app.friends.services import follow_counts_by_user
+
+    follow_counts = follow_counts_by_user([target_id], db).get(target_id, (0, 0))
+
     friendship = (
         db.query(Friendship)
         .filter(
@@ -434,6 +441,8 @@ def get_public_profile(caller_id: str, target_id: str, db: Session) -> dict:
         "avatar_url": profile.avatar_url,
         "watched_count": watched_count,
         "friends_count": friends_count,
+        "followers_count": follow_counts[0],
+        "following_count": follow_counts[1],
         "blends_count": blends_count,
         "friendship_status": friendship.status if friendship else None,
         "friendship_id": friendship.id if friendship else None,
@@ -574,7 +583,7 @@ def delete_account(user_id: str, db: Session) -> None:
     )
     db.flush()
 
-    # 3. Delete profile — CASCADE handles watched_movies, friendships, group_members, hidden_movies
+    # 3. Delete profile — CASCADE handles watched_movies, friendships, follows, group_members, hidden_movies
     db.delete(profile)
     db.flush()
 

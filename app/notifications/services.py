@@ -34,6 +34,7 @@ THREAD_FRIEND_ACTIVITY = "friend_activity"
 THREAD_GROUP_ACTIVITY = "group_activity"
 THREAD_COMMENT_REPLIES = "comment_replies"
 THREAD_COMMENT_MENTIONS = "comment_mentions"
+THREAD_NEW_FOLLOWERS = "new_followers"
 THREAD_COMMENT_LIKES = "comment_likes"
 
 # Inbox `type` -> incoming preference category. Types missing here (friend and
@@ -204,6 +205,7 @@ def serialize_preferences(pref: NotificationPreference | None) -> dict:
         "recommendations",
         "friend_activity",
         "comment_replies",
+        "new_followers",
     )
     values = {
         key: True if pref is None else bool(getattr(pref, key)) for key in legacy
@@ -404,6 +406,7 @@ def update_preferences(
         "recommendations",
         "friend_activity",
         "comment_replies",
+        "new_followers",
     ):
         if key in updates:
             setattr(pref, key, updates[key])

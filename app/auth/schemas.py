@@ -93,6 +93,8 @@ class UserResponse(BaseModel):
     phone_number: str | None = None
     subscription_tier: str = "free"
     subscription_expires_at: datetime | None = None
+    followers_count: int = 0
+    following_count: int = 0
     is_premium: bool = False
 
 
@@ -182,6 +184,8 @@ class PublicProfileResponse(BaseModel):
     avatar_url: str | None = None
     watched_count: int
     friends_count: int
+    followers_count: int
+    following_count: int
     blends_count: int
     friendship_status: str | None = None
     friendship_id: int | None = None

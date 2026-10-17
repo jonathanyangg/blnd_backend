@@ -20,7 +20,7 @@ from app.config import settings
 from app.core.errors import RequestIdMiddleware, register_exception_handlers
 from app.core.rate_limit import limiter
 from app.database import engine
-from app.friends.views import router as friends_router
+from app.friends.views import router as friends_router, user_follows_router
 from app.groups.views import router as groups_router
 from app.import_data.views import router as import_router
 from app.movies.views import router as movies_router
@@ -120,6 +120,7 @@ app.include_router(
     recommendations_router, prefix="/recommendations", tags=["recommendations"]
 )
 app.include_router(friends_router, prefix="/friends", tags=["friends"])
+app.include_router(user_follows_router, prefix="/auth", tags=["follows"])
 app.include_router(groups_router, prefix="/groups", tags=["groups"])
 app.include_router(watchlist_router, prefix="/watchlist", tags=["watchlist"])
 app.include_router(
