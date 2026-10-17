@@ -409,7 +409,9 @@ def _to_request_response(
 def upload_contacts(user_id: str, phone_numbers: list[str], db: Session) -> None:
     """Replace user's stored contacts with the new list."""
     db.query(UserContact).filter(UserContact.user_id == user_id).delete()
-    for phone in phone_numbers:
+    for phone in dict.fromkeys(
+        phone.strip() for phone in phone_numbers if phone.strip()
+    ):
         db.add(UserContact(user_id=user_id, contact_phone=phone))
     db.commit()
 

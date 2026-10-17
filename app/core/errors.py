@@ -23,6 +23,7 @@ from starlette.datastructures import MutableHeaders
 from starlette.exceptions import HTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from supabase_auth.errors import AuthError, AuthRetryableError
+from sqlalchemy.exc import DataError
 
 from app.config import settings
 
@@ -270,7 +271,9 @@ def _field_error(err: Mapping[str, object]) -> tuple[str, str]:
 
 def _validation_summary(exc: RequestValidationError) -> str:
     """One line per field. Submitted values are not copied into the line."""
-    parts = [f"{field}: {msg}" for field, msg in (_field_error(err) for err in exc.errors())]
+    parts = [
+        f"{field}: {msg}" for field, msg in (_field_error(err) for err in exc.errors())
+    ]
     summary = "; ".join(parts) if parts else "Invalid request"
     if len(summary) > 500:
         summary = summary[:497] + "..."
@@ -290,6 +293,15 @@ async def validation_handler(
     ]
     logger.info("validation error request_id=%s errors=%s", request_id, logged)
     return _json_error(422, "VALIDATION_ERROR", _validation_summary(exc), request_id)
+
+
+async def database_value_error_handler(
+    request: Request, _exc: DataError
+) -> JSONResponse:
+    """Values that reached a database cast are malformed client input, not 5xx."""
+    request_id = request_id_of(request)
+    logger.info("database value error request_id=%s", request_id)
+    return _json_error(422, "VALIDATION_ERROR", "Invalid request", request_id)
 
 
 def _upstream_detail(exc: Exception) -> str:
@@ -395,15 +407,14 @@ async def unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
     """
     request_id = request_id_of(request)
     logger.exception("unhandled error request_id=%s detail=%s", request_id, exc)
-    return _json_error(
-        500, "INTERNAL_ERROR", default_message(500), request_id
-    )
+    return _json_error(500, "INTERNAL_ERROR", default_message(500), request_id)
 
 
 def register_exception_handlers(app: FastAPI) -> None:
     """Install the global handlers. More specific types win over Exception."""
     app.add_exception_handler(HTTPException, http_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(RequestValidationError, validation_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(DataError, database_value_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(AuthError, auth_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(httpx.HTTPStatusError, http_status_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(httpx.RequestError, http_request_error_handler)  # type: ignore[arg-type]

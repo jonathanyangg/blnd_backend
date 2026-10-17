@@ -283,6 +283,8 @@ def hide_movie(
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if db.get(Movie, tmdb_id) is None:
+        raise HTTPException(status_code=404, detail="Movie not found")
     hidden = services.hide_movie(user_id, tmdb_id, db)
     track(user_id, Event.MOVIE_HIDDEN, {"tmdb_id": tmdb_id})
 

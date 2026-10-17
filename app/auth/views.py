@@ -292,6 +292,8 @@ def update_profile(
 ):
     if not body.model_fields_set:
         raise HTTPException(status_code=400, detail="No fields to update")
+    if "username" in body.model_fields_set and body.username is None:
+        raise HTTPException(status_code=400, detail="username is required")
 
     try:
         profile, genres_changed = services.update_profile(user_id, body, db)
@@ -350,7 +352,9 @@ def admin_set_test_account(
         profile = services.admin_set_test_account(user_id, is_test, db)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return schemas.AdminSetTestResponse(user_id=str(profile.id), is_test=profile.is_test)
+    return schemas.AdminSetTestResponse(
+        user_id=str(profile.id), is_test=profile.is_test
+    )
 
 
 @router.delete("/account", status_code=204)

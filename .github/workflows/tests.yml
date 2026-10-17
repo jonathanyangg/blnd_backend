@@ -34,3 +34,9 @@ jobs:
           # OpenAI 3 validates credentials when the client is constructed.
           OPENAI_API_KEY: test-key
         run: uv run --locked pytest -q
+
+      - name: Run contract tests
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+          OPENAI_API_KEY: test-key
+        run: uv run --locked pytest -q -m contract

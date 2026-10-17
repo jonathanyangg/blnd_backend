@@ -5,6 +5,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.streaming.models import StreamingAvailability
+from app.movies.models import Movie
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,8 @@ def _upsert_cache(
         existing.streaming_data = streaming_data
         existing.fetched_at = datetime.now(timezone.utc)
     else:
+        if db.get(Movie, tmdb_id) is None:
+            return
         row = StreamingAvailability(
             tmdb_id=tmdb_id,
             country=country,
