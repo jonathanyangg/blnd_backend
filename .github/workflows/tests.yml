@@ -24,6 +24,8 @@ jobs:
         with:
           version: latest
       - run: supabase start
+      # seed.sql demo users/movies collide with test fixtures; test on an empty DB.
+      - run: supabase db reset --local --no-seed
 
       - name: Run tests
         env:
