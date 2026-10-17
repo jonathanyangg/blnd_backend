@@ -1,3 +1,5 @@
+from sqlalchemy.dialects.postgresql import insert
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.actors.models import LikedActor
@@ -11,6 +13,20 @@ def like_actor(
     db: Session,
 ) -> LikedActor:
     """Like an actor. Returns existing if already liked."""
+    insert_stmt = (
+        insert(LikedActor)
+        .values(
+            user_id=user_id,
+            tmdb_person_id=tmdb_person_id,
+            name=name,
+            profile_path=profile_path,
+        )
+        .on_conflict_do_nothing()
+        .returning(LikedActor.id)
+    )
+    db.execute(insert_stmt)
+    db.commit()
+
     existing = (
         db.query(LikedActor)
         .filter(
@@ -19,19 +35,12 @@ def like_actor(
         )
         .first()
     )
-    if existing:
-        return existing
-
-    liked = LikedActor(
-        user_id=user_id,
-        tmdb_person_id=tmdb_person_id,
-        name=name,
-        profile_path=profile_path,
-    )
-    db.add(liked)
-    db.commit()
-    db.refresh(liked)
-    return liked
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Actor like could not be saved",
+        )
+    return existing
 
 
 def unlike_actor(user_id: str, tmdb_person_id: int, db: Session) -> bool:
