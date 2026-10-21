@@ -395,6 +395,7 @@ def _watchlist_to_response(entry: WatchlistMovie, movie: Movie | None) -> dict:
         "director": movie.director if movie else None,
         "cast": (movie.cast or [])[:5] if movie else [],
         "tagline": movie.tagline if movie else None,
+        "media_type": "movie",
         "added_by": str(entry.added_by) if entry.added_by else None,
         "added_date": entry.added_date,
         "created_at": entry.created_at,
@@ -476,6 +477,8 @@ def _to_response(
         "review": entry.review,
         "watched_date": entry.watched_date,
         "liked": entry.liked,
+        "year": movie.year if movie else None,
+        "media_type": "movie",
         "created_at": entry.created_at,
         "watched_with": companions or [],
     }

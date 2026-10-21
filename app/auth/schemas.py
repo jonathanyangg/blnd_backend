@@ -208,6 +208,8 @@ class PublicWatchedMovieResponse(BaseModel):
     title: str
     poster_path: str | None = None
     rating: float | None = None
+    year: int | None = None
+    media_type: Literal["movie", "tv"] = "movie"
 
 
 class PublicWatchedListResponse(BaseModel):

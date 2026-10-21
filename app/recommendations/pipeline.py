@@ -6,6 +6,8 @@ Step 3: Exploration scoring (novelty + consensus + trending)
 Step 4: Exploration sampling + blending with main results
 """
 
+from __future__ import annotations
+
 import random
 from dataclasses import dataclass, field
 
@@ -30,6 +32,56 @@ ALGO_RATIO = 0.95  # 95% algo, 5% exploration
 EXCLUDED_GENRES = {"music", "documentary"}
 
 
+def _year_ok(year: int | None, year_min: int | None, year_max: int | None) -> bool:
+    if year_min is None and year_max is None:
+        return True
+    if year is None:
+        return False
+    if year_min is not None and year < year_min:
+        return False
+    return year_max is None or year <= year_max
+
+
+def _candidate_query(
+    ctx: RecommendationContext, embedding_str: str, match_count: int
+) -> tuple[object, dict]:
+    """Cosine candidates. A year bound is applied in SQL so the pool is not the unfiltered top N."""
+    exclude_ids = ctx.exclude_ids if ctx.exclude_ids else []
+    if ctx.year_min is None and ctx.year_max is None:
+        statement = text(
+            "SELECT * FROM match_movies("
+            "cast(:query_embedding AS vector(1536)), :match_count, :exclude_ids)"
+        )
+        params = {
+            "query_embedding": embedding_str,
+            "match_count": match_count,
+            "exclude_ids": exclude_ids,
+        }
+        return statement, params
+    statement = text(
+        "SELECT me.tmdb_id, "
+        "1 - (me.embedding <=> cast(:query_embedding AS vector(1536))::halfvec(1536)) "
+        "AS similarity "
+        "FROM movie_embeddings me "
+        "JOIN movies ON movies.tmdb_id = me.tmdb_id "
+        "WHERE (cardinality(cast(:exclude_ids AS int[])) = 0 "
+        "OR me.tmdb_id != ALL(cast(:exclude_ids AS int[]))) "
+        "AND movies.year IS NOT NULL "
+        "AND (cast(:year_min AS int) IS NULL OR movies.year >= :year_min) "
+        "AND (cast(:year_max AS int) IS NULL OR movies.year <= :year_max) "
+        "ORDER BY me.embedding <=> cast(:query_embedding AS vector(1536))::halfvec(1536) "
+        "LIMIT :match_count"
+    )
+    params = {
+        "query_embedding": embedding_str,
+        "match_count": match_count,
+        "exclude_ids": exclude_ids,
+        "year_min": ctx.year_min,
+        "year_max": ctx.year_max,
+    }
+    return statement, params
+
+
 def _has_excluded_genre(movie: Movie) -> bool:
     """Return True if movie has any genre in EXCLUDED_GENRES (case-insensitive)."""
     for g in movie.genres or []:
@@ -49,6 +101,8 @@ class RecommendationContext:
     top_cast: set[str] = field(default_factory=set)
     genre_watch_counts: dict[str, int] = field(default_factory=dict)
     total_watches: int = 0
+    year_min: int | None = None
+    year_max: int | None = None
     # Users whose ratings drive collaborative filtering — one for a personal
     # feed, every member for a group feed.
     cf_user_ids: list[str] = field(default_factory=list)
@@ -108,18 +162,7 @@ def _run_main_algorithm(ctx: RecommendationContext, db: Session) -> list[dict]:
     """Steps 1-2: pgvector candidates → rerank → probabilistic sample."""
     embedding_str = "[" + ",".join(str(v) for v in ctx.positive_embedding) + "]"
 
-    result = db.execute(
-        text(
-            "SELECT * FROM match_movies("
-            "cast(:query_embedding AS vector(1536)), :match_count, :exclude_ids"
-            ")"
-        ),
-        {
-            "query_embedding": embedding_str,
-            "match_count": CANDIDATE_POOL_SIZE,
-            "exclude_ids": ctx.exclude_ids if ctx.exclude_ids else [],
-        },
-    )
+    result = db.execute(*_candidate_query(ctx, embedding_str, CANDIDATE_POOL_SIZE))
     rows = result.fetchall()
     if not rows:
         return []
@@ -148,6 +191,8 @@ def _run_main_algorithm(ctx: RecommendationContext, db: Session) -> list[dict]:
             continue
         # Filter out excluded genres (Music, Documentary)
         if _has_excluded_genre(movie):
+            continue
+        if not _year_ok(movie.year, ctx.year_min, ctx.year_max):
             continue
         candidates.append(
             {
@@ -192,6 +237,10 @@ def _run_exploration(
     )
     if all_exclude:
         query = query.filter(Movie.tmdb_id.notin_(list(all_exclude)))
+    if ctx.year_min is not None:
+        query = query.filter(Movie.year >= ctx.year_min)
+    if ctx.year_max is not None:
+        query = query.filter(Movie.year <= ctx.year_max)
 
     query = query.order_by(Movie.vote_average.desc()).limit(EXPLORE_POOL_SIZE)
     explore_movies = query.all()
