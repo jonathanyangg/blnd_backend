@@ -200,21 +200,26 @@ def test_public_friends_omits_hidden_friend(
 
 @pytest.mark.parametrize("hide", HIDE)
 def test_contact_suggestions_exclude_hidden(
-    client: TestClient, db: Session, hide: dict
+    client: TestClient, db: Session, hide: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "contact_hash_key", "test-contact-key")
+    from app.core.phone import hash_phone
+
     make_profile(db, user_id=TEST_USER_ID, username="seeker")
     make_profile(
         db,
         user_id=HIDDEN_ID,
         username="phonehidden",
-        phone_number="+15551110001",
+        phone_number=hash_phone("+15551110001"),
         **hide,
     )
     make_profile(
         db,
         user_id=VISIBLE_ID,
         username="phonevisible",
-        phone_number="+15551110002",
+        phone_number=hash_phone("+15551110002"),
     )
     uploaded = client.post(
         "/friends/contacts",
