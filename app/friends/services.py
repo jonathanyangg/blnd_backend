@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.auth.models import Profile
 from app.auth.visibility import is_hidden_profile, visible_user_ids
 from app.friends.models import Follow, Friendship, UserBlock, UserContact
+from app.core.phone import hash_phone
 
 _BIGINT_MAX = 9223372036854775807
 
@@ -407,12 +408,11 @@ def _to_request_response(
 
 
 def upload_contacts(user_id: str, phone_numbers: list[str], db: Session) -> None:
-    """Replace user's stored contacts with the new list."""
+    """Replace stored contacts with HMAC hashes of the raw E.164 numbers."""
+    hashes = list(dict.fromkeys(hash_phone(phone) for phone in phone_numbers))
     db.query(UserContact).filter(UserContact.user_id == user_id).delete()
-    for phone in dict.fromkeys(
-        phone.strip() for phone in phone_numbers if phone.strip()
-    ):
-        db.add(UserContact(user_id=user_id, contact_phone=phone))
+    for phone_hash in hashes:
+        db.add(UserContact(user_id=user_id, contact_phone=phone_hash))
     db.commit()
 
 

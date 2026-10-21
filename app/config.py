@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     public_base_url: str = ""
     amazon_affiliate_enabled: bool = False
     amazon_affiliate_tag: str = ""
+    contact_hash_key: str = ""
 
     model_config = {"env_file": ".env"}
 
