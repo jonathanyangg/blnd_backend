@@ -1,5 +1,7 @@
-from pydantic import BaseModel
 from datetime import date
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 
 class SeedStatusResponse(BaseModel):
@@ -27,3 +29,47 @@ class FilmRecord(BaseModel):
     liked: bool = False
     rating_on: date | None = None
     review_on: date | None = None
+
+
+# --- Notes import ---
+
+
+class ImportNotesRequest(BaseModel):
+    """Free-form note text. 50_000 matches the iOS client's own cap."""
+
+    text: str = Field(min_length=1, max_length=50_000)
+
+
+class ParsedTitle(BaseModel):
+    raw_line: str
+    title: str
+    year: int | None = None
+
+
+class NotesMovie(BaseModel):
+    """Movie object the iOS notes screen decodes. No other fields."""
+
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    poster_path: str | None = None
+
+
+class NotesImportItem(BaseModel):
+    query: str
+    confidence: Literal["high", "low", "none"]
+    candidates: list[NotesMovie]
+
+
+class ImportNotesResponse(BaseModel):
+    items: list[NotesImportItem]
+
+
+class NotesCommitRequest(BaseModel):
+    bucket: Literal["watched", "watchlist", "interested"]
+    tmdb_ids: list[int] = Field(min_length=1, max_length=100)
+
+
+class NotesCommitResponse(BaseModel):
+    saved: int
+    recommendations: list[NotesMovie]

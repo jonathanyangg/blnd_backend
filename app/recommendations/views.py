@@ -24,7 +24,7 @@ from app.recommendations.pipeline import (
     RecommendationContext,
     run_recommendation_pipeline,
 )
-from app.tracking.models import WatchedMovie, WatchlistMovie
+from app.tracking.models import InterestedMovie, WatchedMovie, WatchlistMovie
 
 router = APIRouter()
 
@@ -56,7 +56,13 @@ def _build_user_context(
     # Swipes leave the personal deck (the card was acted on). They are not
     # hides: hidden_ids is still only the hard dislike list.
     swiped_ids = services.get_swiped_movie_ids(user_id, db)
-    exclude_ids = list(set(watched_ids + hidden_ids + watchlist_ids + swiped_ids))
+    interested_ids = [
+        row[0]
+        for row in db.query(InterestedMovie.tmdb_id)
+        .filter(InterestedMovie.user_id == user_id)
+        .all()
+    ]
+    exclude_ids = list(set(watched_ids + hidden_ids + watchlist_ids + swiped_ids + interested_ids))
 
     user_genres, top_directors, top_cast = services.get_user_signal_context(
         user_id, db, profile=profile

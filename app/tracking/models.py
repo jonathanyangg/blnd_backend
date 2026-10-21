@@ -70,6 +70,21 @@ class Watchlist(Base):
     )
 
 
+class InterestedMovie(Base):
+    """A movie the user marked interested, which is neither watched nor watchlist."""
+
+    __tablename__ = "interested_movies"
+    __table_args__ = (UniqueConstraint("user_id", "tmdb_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    tmdb_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    source: Mapped[str] = mapped_column(String, server_default="manual")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class WatchlistMovie(Base):
     __tablename__ = "watchlist_movies"
     __table_args__ = (UniqueConstraint("watchlist_id", "tmdb_id"),)
