@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy.orm import Session
 
+from app.streaming.affiliate import apply_amazon_affiliate_tag
 from app.streaming.models import StreamingAvailability
 from app.movies.models import Movie
 
@@ -62,7 +63,7 @@ def _parse_options(raw_options: list[dict]) -> list[dict]:
                     "logo_url": logo_url,
                 },
                 "type": opt.get("type", ""),
-                "link": opt.get("link", ""),
+                "link": apply_amazon_affiliate_tag(opt.get("link", "")),
                 "quality": opt.get("quality"),
                 "price": price,
                 "expires_soon": opt.get("expiresSoon", False),

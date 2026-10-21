@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     apple_tv_affiliate_token: str = ""
     # Absolute origin for click_url, e.g. https://blnd-backend.onrender.com
     public_base_url: str = ""
+    amazon_affiliate_enabled: bool = False
+    amazon_affiliate_tag: str = ""
 
     model_config = {"env_file": ".env"}
 
