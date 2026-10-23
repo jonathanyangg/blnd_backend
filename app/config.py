@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     posthog_host: str = ""
     cf_enabled: bool = True
     cf_blend_weight: float = 1.0
+    # Blend feeds: weight on the least-happy member's score; the rest goes to the mean.
+    group_least_misery_weight: float = 0.7
     tv_support_enabled: bool = False
     # None means unset: the redirect uses the public tag. "" means no tag.
     amazon_associates_tag: str | None = None

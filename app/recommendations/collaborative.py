@@ -43,9 +43,10 @@ def compute_cf_scores(
 ) -> dict[int, float]:
     """Predict 0-1 CF scores for candidates against the given users' ratings.
 
-    Multiple user_ids (a group) are collapsed into one profile by averaging
-    each movie's ratings across the members. Only candidates with enough
-    co-rating support get a score.
+    Multiple user_ids are collapsed into one profile by averaging each movie's
+    ratings across the members. Blend feeds score members one by one with
+    compute_member_cf_scores instead, so disagreement is not averaged away.
+    Only candidates with enough co-rating support get a score.
     """
     if not user_ids or not candidate_tmdb_ids:
         return {}
@@ -103,6 +104,22 @@ def compute_cf_scores(
         tmdb_id: round(float(np.clip(predictions[i] / MAX_RATING, 0.0, 1.0)), 4)
         for i, tmdb_id in enumerate(scored_ids)
         if weight_sums[i] > 0 and support[i] >= MIN_CO_RATERS
+    }
+
+
+def compute_member_cf_scores(
+    user_ids: list[str],
+    candidate_tmdb_ids: list[int],
+    db: Session,
+) -> dict[str, dict[int, float]]:
+    """CF scores per member, each from that member's own ratings.
+
+    A member without enough ratings or co-rater support gets {} (or misses some
+    candidates), so the caller falls back to that member's embedding taste.
+    """
+    return {
+        user_id: compute_cf_scores([user_id], candidate_tmdb_ids, db)
+        for user_id in user_ids
     }
 
 

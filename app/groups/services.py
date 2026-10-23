@@ -18,11 +18,12 @@ from app.groups.models import Group, GroupMember
 from app.groups.names import blend_display_name, default_blend_name, first_name
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
-from app.recommendations.models import HiddenMovie
+from app.recommendations.models import HiddenMovie, MovieInteraction
 from app.recommendations.pipeline import (
     RecommendationContext,
     run_recommendation_pipeline,
 )
+from app.recommendations.group_scoring import MemberTaste
 from app.subscriptions.services import is_premium
 from app.tracking.models import (
     InterestedMovie,
@@ -416,17 +417,18 @@ def get_group_recommendations(
     profiles = db.query(Profile).filter(Profile.id.in_(member_ids)).all()
     profile_map = {str(p.id): p for p in profiles}
 
-    # Build averaged positive + negative embeddings from cached profiles
-    pos_embeddings = []
-    neg_embeddings = []
+    # Each member's own taste: cached profile embedding, else their rated movies.
+    member_pos: dict[str, np.ndarray] = {}
+    member_neg: dict[str, np.ndarray] = {}
     for mid in member_ids:
         profile = profile_map.get(mid)
         if profile and profile.taste_embedding is not None:
-            pos_embeddings.append(np.array(list(profile.taste_embedding)))
-            if profile.negative_embedding is not None:
-                neg_embeddings.append(np.array(list(profile.negative_embedding)))
+            member_pos[mid] = np.array(list(profile.taste_embedding))
+        if profile and profile.negative_embedding is not None:
+            member_neg[mid] = np.array(list(profile.negative_embedding))
 
-    if not pos_embeddings:
+    missing = [mid for mid in member_ids if mid not in member_pos]
+    if missing:
         # Fallback: build from rated movies directly (single batch query)
         per_member_limit = max(5, 50 // len(member_ids))
         all_rows = (
@@ -435,7 +437,7 @@ def get_group_recommendations(
             )
             .join(MovieEmbedding, WatchedMovie.tmdb_id == MovieEmbedding.tmdb_id)
             .filter(
-                WatchedMovie.user_id.in_(member_ids),
+                WatchedMovie.user_id.in_(missing),
                 WatchedMovie.rating.isnot(None),
             )
             .order_by(WatchedMovie.user_id, WatchedMovie.rating.desc())
@@ -446,7 +448,7 @@ def get_group_recommendations(
             uid_str = str(uid)
             if len(rows_by_member[uid_str]) < per_member_limit:
                 rows_by_member[uid_str].append((float(rating), embedding))
-        for mid in member_ids:
+        for mid in missing:
             rows = rows_by_member.get(mid, [])
             if not rows:
                 continue
@@ -454,15 +456,14 @@ def get_group_recommendations(
             embeddings = np.array([e for _, e in rows])
             if ratings.sum() == 0:
                 continue
-            weighted_avg = np.average(embeddings, axis=0, weights=ratings)
-            pos_embeddings.append(weighted_avg)
+            member_pos[mid] = np.average(embeddings, axis=0, weights=ratings)
 
-    if not pos_embeddings:
+    if not member_pos:
         return {"results": []}
 
-    group_positive = np.mean(pos_embeddings, axis=0).tolist()
+    group_positive = np.mean(list(member_pos.values()), axis=0).tolist()
     group_negative = (
-        np.mean(neg_embeddings, axis=0).tolist() if neg_embeddings else None
+        np.mean(list(member_neg.values()), axis=0).tolist() if member_neg else None
     )
 
     # Union of all members' watched + hidden + group watchlist IDs (single query)
@@ -470,6 +471,11 @@ def get_group_recommendations(
         select(WatchedMovie.tmdb_id).where(WatchedMovie.user_id.in_(member_ids)),
         select(HiddenMovie.tmdb_id).where(HiddenMovie.user_id.in_(member_ids)),
         select(InterestedMovie.tmdb_id).where(InterestedMovie.user_id.in_(member_ids)),
+        # "Not for me" from any member keeps the movie out of the blend.
+        select(MovieInteraction.tmdb_id).where(
+            MovieInteraction.user_id.in_(member_ids),
+            MovieInteraction.interaction_type == "not_for_me",
+        ),
     ]
     if group.watchlist_id:
         exclude_stmts.append(
@@ -482,34 +488,55 @@ def get_group_recommendations(
         {row[0] for row in db.execute(combined).all()} | set(extra_exclude or [])
     )
 
-    # Merge signal context from cached profiles + batch top movies query
+    # Per-member signal context: favourite genres from the profile, directors and
+    # cast from that member's own top 10 rated movies (one query for everyone).
+    top_rows = (
+        db.query(WatchedMovie.user_id, Movie)
+        .join(Movie, WatchedMovie.tmdb_id == Movie.tmdb_id)
+        .filter(
+            WatchedMovie.user_id.in_(member_ids),
+            WatchedMovie.rating.isnot(None),
+        )
+        .order_by(WatchedMovie.user_id, WatchedMovie.rating.desc())
+        .all()
+    )
+    top_by_member: dict[str, list[Movie]] = defaultdict(list)
+    for uid, movie in top_rows:
+        if len(top_by_member[str(uid)]) < 10:
+            top_by_member[str(uid)].append(movie)
+
+    member_tastes: list[MemberTaste] = []
     all_genres: list[str] = []
     all_directors: set[str] = set()
     all_cast: set[str] = set()
     for mid in member_ids:
         profile = profile_map.get(mid)
-        if profile and profile.favorite_genres:
-            all_genres.extend(profile.favorite_genres)
-
-    # Single query: top 10 rated movies per member (union)
-    top_movies = (
-        db.query(Movie)
-        .join(WatchedMovie, WatchedMovie.tmdb_id == Movie.tmdb_id)
-        .filter(
-            WatchedMovie.user_id.in_(member_ids),
-            WatchedMovie.rating.isnot(None),
-        )
-        .order_by(WatchedMovie.rating.desc())
-        .limit(10 * len(member_ids))
-        .all()
-    )
-    for m in top_movies:
-        if m.director:
-            all_directors.add(m.director.lower())
-        for c in (m.cast or [])[:5]:
-            name = c.get("name", "")
-            if name:
-                all_cast.add(name.lower())
+        genres = list(profile.favorite_genres) if profile and profile.favorite_genres else []
+        directors: set[str] = set()
+        cast: set[str] = set()
+        for m in top_by_member.get(mid, []):
+            if m.director:
+                directors.add(m.director.lower())
+            for c in (m.cast or [])[:5]:
+                name = c.get("name", "")
+                if name:
+                    cast.add(name.lower())
+        all_genres.extend(genres)
+        all_directors |= directors
+        all_cast |= cast
+        if mid in member_pos:
+            member_tastes.append(
+                MemberTaste(
+                    user_id=mid,
+                    embedding=member_pos[mid].tolist(),
+                    negative_embedding=(
+                        member_neg[mid].tolist() if mid in member_neg else None
+                    ),
+                    genres=genres,
+                    directors=directors,
+                    cast=cast,
+                )
+            )
     unique_genres = list(set(all_genres))
 
     # Combined genre watch counts — single query across all members
@@ -537,6 +564,7 @@ def get_group_recommendations(
         genre_watch_counts=combined_counts,
         total_watches=combined_total,
         cf_user_ids=[str(mid) for mid in member_ids],
+        members=member_tastes,
     )
 
     results = run_recommendation_pipeline(ctx, db, limit, offset)
