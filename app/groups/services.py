@@ -13,16 +13,24 @@ if TYPE_CHECKING:
     from app.groups.schemas import UpdateGroupRequest
 
 from app.auth.models import Profile
+from app.auth.visibility import visible_user_ids
 from app.groups.models import Group, GroupMember
+from app.groups.names import blend_display_name, default_blend_name, first_name
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
-from app.recommendations.models import HiddenMovie
+from app.recommendations.models import HiddenMovie, MovieInteraction
 from app.recommendations.pipeline import (
     RecommendationContext,
     run_recommendation_pipeline,
 )
+from app.recommendations.group_scoring import MemberTaste
 from app.subscriptions.services import is_premium
-from app.tracking.models import Watchlist, WatchedMovie, WatchlistMovie
+from app.tracking.models import (
+    InterestedMovie,
+    Watchlist,
+    WatchedMovie,
+    WatchlistMovie,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +54,28 @@ def _group_cap(group_id: int, db: Session) -> int:
     return FREE_GROUP_CAP
 
 
-def create_group(user_id: str, name: str, db: Session) -> dict:
+def _people_display_name(stored_name: str | None, people: list[Profile]) -> str:
+    return blend_display_name(
+        stored_name, [first_name(p.display_name, p.username) for p in people]
+    )
+
+
+def group_display_name(group: Group, db: Session) -> str:
+    """Name to show. Does not write the generated string into groups.name."""
+    people = (
+        db.query(Profile)
+        .join(GroupMember, GroupMember.user_id == Profile.id)
+        .filter(GroupMember.group_id == group.id)
+        .order_by(GroupMember.joined_at, GroupMember.user_id)
+        .all()
+    )
+    return _people_display_name(group.name, people)
+
+
+def create_group(user_id: str, name: str | None, db: Session) -> dict:
     """Create a group with a linked watchlist and add creator as first member."""
+    if name is not None:
+        name = name.strip() or None
     watchlist = Watchlist()
     db.add(watchlist)
     db.flush()
@@ -82,6 +110,7 @@ def list_groups(user_id: str, db: Session) -> dict:
         db.query(GroupMember, Profile)
         .join(Profile, GroupMember.user_id == Profile.id)
         .filter(GroupMember.group_id.in_(group_ids))
+        .order_by(GroupMember.joined_at, GroupMember.user_id)
         .all()
     )
     members_by_group: dict[int, list[Profile]] = defaultdict(list)
@@ -96,6 +125,7 @@ def list_groups(user_id: str, db: Session) -> dict:
             {
                 "id": g.id,
                 "name": g.name,
+                "display_name": _people_display_name(g.name, group_members),
                 "created_by": str(g.created_by),
                 "member_count": len(group_members),
                 "member_avatars": avatars,
@@ -104,6 +134,62 @@ def list_groups(user_id: str, db: Session) -> dict:
         )
 
     return {"groups": results}
+
+
+def search_groups(
+    user_id: str, query: str, db: Session, limit: int, offset: int
+) -> dict:
+    """Blends whose stored name or default member name matches.
+
+    Groups have no public flag, so this is only blends the caller belongs to.
+    shortcut: filtered in memory. Fine while a person is in a handful of
+    blends (free cap 4, premium 12). Filter in SQL if public blends exist.
+    """
+    group_ids = [
+        row[0]
+        for row in db.query(GroupMember.group_id)
+        .filter(GroupMember.user_id == user_id)
+        .all()
+    ]
+    if not group_ids:
+        return {"groups": [], "total": 0}
+
+    groups = (
+        db.query(Group).filter(Group.id.in_(group_ids)).order_by(Group.id).all()
+    )
+    member_rows = (
+        db.query(GroupMember, Profile)
+        .join(Profile, GroupMember.user_id == Profile.id)
+        .filter(GroupMember.group_id.in_(group_ids))
+        .order_by(GroupMember.joined_at, GroupMember.user_id)
+        .all()
+    )
+    members_by_group: dict[int, list[Profile]] = defaultdict(list)
+    for gm, profile in member_rows:
+        members_by_group[gm.group_id].append(profile)
+
+    needle = query.strip().lower()
+    matched = []
+    for group in groups:
+        people = members_by_group.get(group.id, [])
+        first_names = [first_name(p.display_name, p.username) for p in people]
+        stored = group.name or ""
+        default_name = default_blend_name(first_names)
+        if needle not in stored.lower() and needle not in default_name.lower():
+            continue
+        matched.append(
+            {
+                "id": group.id,
+                "name": group.name,
+                "display_name": blend_display_name(group.name, first_names),
+                "created_by": str(group.created_by),
+                "member_count": len(people),
+                "member_avatars": [p.avatar_url for p in people[:4]],
+                "created_at": group.created_at,
+            }
+        )
+
+    return {"groups": matched[offset : offset + limit], "total": len(matched)}
 
 
 def get_group(group_id: int, user_id: str, db: Session) -> dict:
@@ -132,7 +218,7 @@ def update_group(
 
     fields = updates.model_dump(exclude_unset=True)
     if "name" in fields:
-        group.name = fields["name"]
+        group.name = fields["name"].strip() or None
 
     db.commit()
     db.refresh(group)
@@ -141,7 +227,8 @@ def update_group(
 
 def add_member(group_id: int, user_id: str, username: str, db: Session) -> dict:
     """Add a member by username. Caller must be a member."""
-    group = db.query(Group).filter(Group.id == group_id).first()
+    # Lock the group before the cap check so simultaneous adds serialize.
+    group = db.query(Group).filter(Group.id == group_id).with_for_update().first()
     if not group:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Group not found"
@@ -320,7 +407,8 @@ def get_group_recommendations(
     _verify_membership(group_id, user_id, db)
 
     members = db.query(GroupMember).filter(GroupMember.group_id == group_id).all()
-    member_ids = [str(m.user_id) for m in members]
+    # Hidden and test members do not contribute taste, watches, or genre signals.
+    member_ids = visible_user_ids([str(m.user_id) for m in members], db)
 
     if not member_ids:
         return {"results": []}
@@ -329,17 +417,18 @@ def get_group_recommendations(
     profiles = db.query(Profile).filter(Profile.id.in_(member_ids)).all()
     profile_map = {str(p.id): p for p in profiles}
 
-    # Build averaged positive + negative embeddings from cached profiles
-    pos_embeddings = []
-    neg_embeddings = []
+    # Each member's own taste: cached profile embedding, else their rated movies.
+    member_pos: dict[str, np.ndarray] = {}
+    member_neg: dict[str, np.ndarray] = {}
     for mid in member_ids:
         profile = profile_map.get(mid)
         if profile and profile.taste_embedding is not None:
-            pos_embeddings.append(np.array(list(profile.taste_embedding)))
-            if profile.negative_embedding is not None:
-                neg_embeddings.append(np.array(list(profile.negative_embedding)))
+            member_pos[mid] = np.array(list(profile.taste_embedding))
+        if profile and profile.negative_embedding is not None:
+            member_neg[mid] = np.array(list(profile.negative_embedding))
 
-    if not pos_embeddings:
+    missing = [mid for mid in member_ids if mid not in member_pos]
+    if missing:
         # Fallback: build from rated movies directly (single batch query)
         per_member_limit = max(5, 50 // len(member_ids))
         all_rows = (
@@ -348,7 +437,7 @@ def get_group_recommendations(
             )
             .join(MovieEmbedding, WatchedMovie.tmdb_id == MovieEmbedding.tmdb_id)
             .filter(
-                WatchedMovie.user_id.in_(member_ids),
+                WatchedMovie.user_id.in_(missing),
                 WatchedMovie.rating.isnot(None),
             )
             .order_by(WatchedMovie.user_id, WatchedMovie.rating.desc())
@@ -359,7 +448,7 @@ def get_group_recommendations(
             uid_str = str(uid)
             if len(rows_by_member[uid_str]) < per_member_limit:
                 rows_by_member[uid_str].append((float(rating), embedding))
-        for mid in member_ids:
+        for mid in missing:
             rows = rows_by_member.get(mid, [])
             if not rows:
                 continue
@@ -367,21 +456,26 @@ def get_group_recommendations(
             embeddings = np.array([e for _, e in rows])
             if ratings.sum() == 0:
                 continue
-            weighted_avg = np.average(embeddings, axis=0, weights=ratings)
-            pos_embeddings.append(weighted_avg)
+            member_pos[mid] = np.average(embeddings, axis=0, weights=ratings)
 
-    if not pos_embeddings:
+    if not member_pos:
         return {"results": []}
 
-    group_positive = np.mean(pos_embeddings, axis=0).tolist()
+    group_positive = np.mean(list(member_pos.values()), axis=0).tolist()
     group_negative = (
-        np.mean(neg_embeddings, axis=0).tolist() if neg_embeddings else None
+        np.mean(list(member_neg.values()), axis=0).tolist() if member_neg else None
     )
 
     # Union of all members' watched + hidden + group watchlist IDs (single query)
     exclude_stmts = [
         select(WatchedMovie.tmdb_id).where(WatchedMovie.user_id.in_(member_ids)),
         select(HiddenMovie.tmdb_id).where(HiddenMovie.user_id.in_(member_ids)),
+        select(InterestedMovie.tmdb_id).where(InterestedMovie.user_id.in_(member_ids)),
+        # "Not for me" from any member keeps the movie out of the blend.
+        select(MovieInteraction.tmdb_id).where(
+            MovieInteraction.user_id.in_(member_ids),
+            MovieInteraction.interaction_type == "not_for_me",
+        ),
     ]
     if group.watchlist_id:
         exclude_stmts.append(
@@ -394,34 +488,55 @@ def get_group_recommendations(
         {row[0] for row in db.execute(combined).all()} | set(extra_exclude or [])
     )
 
-    # Merge signal context from cached profiles + batch top movies query
+    # Per-member signal context: favourite genres from the profile, directors and
+    # cast from that member's own top 10 rated movies (one query for everyone).
+    top_rows = (
+        db.query(WatchedMovie.user_id, Movie)
+        .join(Movie, WatchedMovie.tmdb_id == Movie.tmdb_id)
+        .filter(
+            WatchedMovie.user_id.in_(member_ids),
+            WatchedMovie.rating.isnot(None),
+        )
+        .order_by(WatchedMovie.user_id, WatchedMovie.rating.desc())
+        .all()
+    )
+    top_by_member: dict[str, list[Movie]] = defaultdict(list)
+    for uid, movie in top_rows:
+        if len(top_by_member[str(uid)]) < 10:
+            top_by_member[str(uid)].append(movie)
+
+    member_tastes: list[MemberTaste] = []
     all_genres: list[str] = []
     all_directors: set[str] = set()
     all_cast: set[str] = set()
     for mid in member_ids:
         profile = profile_map.get(mid)
-        if profile and profile.favorite_genres:
-            all_genres.extend(profile.favorite_genres)
-
-    # Single query: top 10 rated movies per member (union)
-    top_movies = (
-        db.query(Movie)
-        .join(WatchedMovie, WatchedMovie.tmdb_id == Movie.tmdb_id)
-        .filter(
-            WatchedMovie.user_id.in_(member_ids),
-            WatchedMovie.rating.isnot(None),
-        )
-        .order_by(WatchedMovie.rating.desc())
-        .limit(10 * len(member_ids))
-        .all()
-    )
-    for m in top_movies:
-        if m.director:
-            all_directors.add(m.director.lower())
-        for c in (m.cast or [])[:5]:
-            name = c.get("name", "")
-            if name:
-                all_cast.add(name.lower())
+        genres = list(profile.favorite_genres) if profile and profile.favorite_genres else []
+        directors: set[str] = set()
+        cast: set[str] = set()
+        for m in top_by_member.get(mid, []):
+            if m.director:
+                directors.add(m.director.lower())
+            for c in (m.cast or [])[:5]:
+                name = c.get("name", "")
+                if name:
+                    cast.add(name.lower())
+        all_genres.extend(genres)
+        all_directors |= directors
+        all_cast |= cast
+        if mid in member_pos:
+            member_tastes.append(
+                MemberTaste(
+                    user_id=mid,
+                    embedding=member_pos[mid].tolist(),
+                    negative_embedding=(
+                        member_neg[mid].tolist() if mid in member_neg else None
+                    ),
+                    genres=genres,
+                    directors=directors,
+                    cast=cast,
+                )
+            )
     unique_genres = list(set(all_genres))
 
     # Combined genre watch counts — single query across all members
@@ -448,6 +563,8 @@ def get_group_recommendations(
         top_cast=all_cast,
         genre_watch_counts=combined_counts,
         total_watches=combined_total,
+        cf_user_ids=[str(mid) for mid in member_ids],
+        members=member_tastes,
     )
 
     results = run_recommendation_pipeline(ctx, db, limit, offset)
@@ -466,7 +583,8 @@ def compute_group_match_scores(
         return {}
 
     members = db.query(GroupMember).filter(GroupMember.group_id == group_id).all()
-    member_ids = [str(m.user_id) for m in members]
+    # Same visibility rule as blend recommendations: hidden taste is not a signal.
+    member_ids = visible_user_ids([str(m.user_id) for m in members], db)
 
     if not member_ids:
         return {}
@@ -554,6 +672,7 @@ def _group_detail(group: Group, db: Session) -> dict:
         db.query(GroupMember, Profile)
         .join(Profile, GroupMember.user_id == Profile.id)
         .filter(GroupMember.group_id == group.id)
+        .order_by(GroupMember.joined_at, GroupMember.user_id)
         .all()
     )
     members = [
@@ -568,6 +687,9 @@ def _group_detail(group: Group, db: Session) -> dict:
     return {
         "id": group.id,
         "name": group.name,
+        "display_name": _people_display_name(
+            group.name, [p for _, p in members_rows]
+        ),
         "created_by": str(group.created_by),
         "members": members,
         "created_at": group.created_at,

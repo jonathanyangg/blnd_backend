@@ -26,6 +26,7 @@ class MovieResponse(BaseModel):
     imdb_id: str | None = None
     match_score: float | None = None
     comment_count: int = 0
+    media_type: str = "movie"
 
 
 class MovieSearchResult(BaseModel):

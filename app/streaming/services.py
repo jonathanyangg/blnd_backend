@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy.orm import Session
 
+from app.streaming.affiliate import apply_amazon_affiliate_tag
 from app.streaming.models import StreamingAvailability
+from app.movies.models import Movie
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +63,7 @@ def _parse_options(raw_options: list[dict]) -> list[dict]:
                     "logo_url": logo_url,
                 },
                 "type": opt.get("type", ""),
-                "link": opt.get("link", ""),
+                "link": apply_amazon_affiliate_tag(opt.get("link", "")),
                 "quality": opt.get("quality"),
                 "price": price,
                 "expires_soon": opt.get("expiresSoon", False),
@@ -101,6 +103,8 @@ def _upsert_cache(
         existing.streaming_data = streaming_data
         existing.fetched_at = datetime.now(timezone.utc)
     else:
+        if db.get(Movie, tmdb_id) is None:
+            return
         row = StreamingAvailability(
             tmdb_id=tmdb_id,
             country=country,

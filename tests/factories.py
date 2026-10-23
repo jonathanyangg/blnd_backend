@@ -7,7 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.auth.models import Profile
-from app.friends.models import Friendship
+from app.friends.models import Follow, Friendship
 from app.groups.models import Group, GroupMember
 from app.movies.models import Movie
 from app.tracking.models import Watchlist, WatchedMovie, WatchlistMovie
@@ -34,6 +34,9 @@ def make_profile(
     display_name: str | None = None,
     watchlist_id: int | None = None,
     favorite_genres: list[str] | None = None,
+    phone_number: str | None = None,
+    is_discoverable: bool = True,
+    is_test: bool = False,
     subscription_tier: str = "free",
     subscription_expires_at: datetime | None = None,
     subscription_source: str | None = None,
@@ -46,6 +49,9 @@ def make_profile(
         display_name=display_name,
         watchlist_id=watchlist_id,
         favorite_genres=favorite_genres,
+        phone_number=phone_number,
+        is_discoverable=is_discoverable,
+        is_test=is_test,
         subscription_tier=subscription_tier,
         subscription_expires_at=subscription_expires_at,
         subscription_source=subscription_source,
@@ -156,6 +162,14 @@ def make_friendship(
     db.commit()
     db.refresh(f)
     return f
+
+
+def make_follow(db: Session, follower_id: str, followee_id: str) -> Follow:
+    row = Follow(follower_id=follower_id, followee_id=followee_id)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 def make_group(

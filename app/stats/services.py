@@ -216,8 +216,9 @@ def director_breakdown(user_id: str, db: Session, limit: int) -> dict:
 def match_with(user_id: str, other_id: str, db: Session) -> dict:
     """Match percent plus the overlap that explains it.
 
-    Friends only. Someone who blocked the caller is hidden (404), same as
-    the public profile. The payload only includes titles both people rated.
+    Friends only. A hidden or test account, or someone who blocked the
+    caller, is a 404, same as the public profile. The payload only includes
+    titles both people rated.
     """
     if user_id == other_id:
         raise HTTPException(
@@ -225,11 +226,13 @@ def match_with(user_id: str, other_id: str, db: Session) -> dict:
             detail="Cannot compare a user with themselves",
         )
 
+    from app.auth.visibility import raise_if_hidden_from
     from app.friends.services import get_block_state
 
     other = db.query(Profile).filter(Profile.id == other_id).first()
     if other is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    raise_if_hidden_from(user_id, other)
     _, has_blocked_me = get_block_state(user_id, other_id, db)
     if has_blocked_me:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")

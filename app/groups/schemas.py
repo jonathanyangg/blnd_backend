@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class CreateGroupRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=250)
+    name: str | None = Field(default=None, min_length=1, max_length=250)
 
 
 class UpdateGroupRequest(BaseModel):
@@ -24,7 +24,8 @@ class GroupMemberResponse(BaseModel):
 
 class GroupResponse(BaseModel):
     id: int
-    name: str
+    name: str | None
+    display_name: str
     created_by: str
     member_count: int
     member_avatars: list[str | None] = []
@@ -33,7 +34,8 @@ class GroupResponse(BaseModel):
 
 class GroupDetailResponse(BaseModel):
     id: int
-    name: str
+    name: str | None
+    display_name: str
     created_by: str
     members: list[GroupMemberResponse]
     created_at: datetime
@@ -41,6 +43,7 @@ class GroupDetailResponse(BaseModel):
 
 class GroupListResponse(BaseModel):
     groups: list[GroupResponse]
+    total: int | None = None
 
 
 class GroupFeedRequest(BaseModel):
@@ -64,6 +67,8 @@ class GroupRecMovieResponse(BaseModel):
     backdrop_path: str | None = None
     match_score: float
     comment_count: int = 0
+    # Why this fits the whole blend. Null for exploration picks.
+    reason: str | None = None
 
 
 class GroupRecommendationsResponse(BaseModel):

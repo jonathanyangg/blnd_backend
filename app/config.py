@@ -24,7 +24,27 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     posthog_api_key: str = ""
     posthog_host: str = ""
+    cf_enabled: bool = True
+    cf_blend_weight: float = 1.0
+    # Blend feeds: weight on the least-happy member's score; the rest goes to the mean.
+    group_least_misery_weight: float = 0.7
     tv_support_enabled: bool = False
+    # None means unset: the redirect uses the public tag. "" means no tag.
+    amazon_associates_tag: str | None = None
+    amazon_associates_enabled: bool = True
+    impact_enabled: bool = False
+    impact_partner_id: str = ""
+    rakuten_enabled: bool = False
+    rakuten_partner_id: str = ""
+    cj_enabled: bool = False
+    cj_partner_id: str = ""
+    apple_tv_affiliate_enabled: bool = False
+    apple_tv_affiliate_token: str = ""
+    # Absolute origin for click_url, e.g. https://blnd-backend.onrender.com
+    public_base_url: str = ""
+    amazon_affiliate_enabled: bool = False
+    amazon_affiliate_tag: str = ""
+    contact_hash_key: str = ""
 
     model_config = {"env_file": ".env"}
 

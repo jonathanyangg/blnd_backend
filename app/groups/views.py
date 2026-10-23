@@ -17,6 +17,8 @@ from app.dependencies import (
 from app.groups import picks
 from app.groups import schemas, services
 from app.groups.models import Group, GroupMember
+from app.timeline import schemas as timeline_schemas
+from app.timeline import services as timeline_services
 from app.movies.models import Movie
 from app.notifications.services import (
     THREAD_GROUP_ACTIVITY,
@@ -42,14 +44,24 @@ async def create_group(
     return result
 
 
-@router.get("/", response_model=schemas.GroupListResponse)
+@router.get(
+    "/",
+    response_model=schemas.GroupListResponse,
+    response_model_exclude_none=True,
+)
 @limiter.limit(LIMIT_DEFAULT)
 async def list_groups(
     request: Request,
     user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
+    q: str | None = Query(default=None, min_length=1, max_length=100),
+    limit: int = Query(default=20, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
 ):
-    return services.list_groups(user_id, db)
+    """List the caller's blends. `q` searches stored names and default member names."""
+    if q is None:
+        return services.list_groups(user_id, db)
+    return services.search_groups(user_id, q, db, limit, offset)
 
 
 @router.get("/{group_id}", response_model=schemas.GroupDetailResponse)
@@ -61,6 +73,19 @@ async def get_group(
     db: Session = Depends(get_db),
 ):
     return services.get_group(group_id, user_id, db)
+
+
+@router.get("/{group_id}/timeline", response_model=timeline_schemas.TimelineResponse)
+@limiter.limit(LIMIT_DEFAULT)
+def get_group_timeline(
+    request: Request,
+    group_id: int,
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=50),
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return timeline_services.get_blend_timeline(user_id, group_id, cursor, limit, db)
 
 
 @router.patch("/{group_id}", response_model=schemas.GroupDetailResponse)
@@ -103,7 +128,7 @@ async def add_member(
     # Gather data for notification (within request scope)
     target_profile = db.query(Profile).filter(Profile.username == body.username).first()
     adder_profile = db.query(Profile).filter(Profile.id == user_id).first()
-    group_name = result.get("name", "a group")
+    group_name = result.get("display_name") or "a blend"
 
     if target_profile and adder_profile:
         target_id = str(target_profile.id)
@@ -117,6 +142,7 @@ async def add_member(
             data={"type": "group_invite", "group_id": str(group_id)},
             thread=THREAD_GROUP_INVITES,
             apns_client=apns_client,
+            db=db,
         )
 
     return result
@@ -185,6 +211,7 @@ async def get_group_feed(
 @router.get(
     "/{group_id}/pick-tonight",
     response_model=schemas.PickTonightResponse,
+    deprecated=True,
 )
 @limiter.limit(LIMIT_DEFAULT)
 async def pick_tonight(
@@ -193,12 +220,14 @@ async def pick_tonight(
     user_id: str = Depends(require_premium),
     db: Session = Depends(get_db),
 ):
+    """Deprecated: kept for iOS 1.1. Use /recommendations, which scores per member."""
     return picks.get_or_create_pick(group_id, user_id, db)
 
 
 @router.post(
     "/{group_id}/pick-tonight/veto",
     response_model=schemas.PickTonightResponse,
+    deprecated=True,
 )
 @limiter.limit(LIMIT_DEFAULT)
 async def veto_tonight(
@@ -208,6 +237,7 @@ async def veto_tonight(
     user_id: str = Depends(require_premium),
     db: Session = Depends(get_db),
 ):
+    """Deprecated: kept for iOS 1.1. Use /recommendations, which scores per member."""
     return picks.veto_tonight(group_id, user_id, body.tmdb_id, body.reason, db)
 
 
@@ -264,7 +294,7 @@ async def add_to_group_watchlist(
     # Notify other group members
     adder_profile = db.query(Profile).filter(Profile.id == user_id).first()
     movie = db.query(Movie).filter(Movie.tmdb_id == body.tmdb_id).first()
-    group_name = group.name or "a blend"
+    group_name = services.group_display_name(group, db)
     adder_name = adder_profile.username if adder_profile else "Someone"
     movie_title = movie.title if movie else "a movie"
 
@@ -288,6 +318,7 @@ async def add_to_group_watchlist(
             },
             thread=THREAD_GROUP_ACTIVITY,
             apns_client=apns_client,
+            db=db,
         )
 
     return result
