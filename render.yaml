@@ -16,6 +16,10 @@ services:
         value: https://blnd-backend-staging.onrender.com
       - key: CF_ENABLED
         value: "true"
+      - key: CORS_ORIGIN_REGEX
+        value: ^https://blnd[a-z0-9-]*\.vercel\.app$  # Vercel previews
+      - key: TV_SUPPORT_ENABLED
+        value: "true"
       - key: AMAZON_AFFILIATE_ENABLED
         value: "false"
       - key: CONTACT_HASH_KEY
@@ -29,8 +33,10 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
-      # Same TMDB / OpenAI keys as prod (copy from the prod service's Environment tab).
+      # Real read-only TMDB / OpenAI / where-to-watch keys. No APNS, Twilio or email keys: push/SMS/email stay off.
       - key: TMDB_API_KEY
         sync: false
       - key: OPENAI_API_KEY
+        sync: false
+      - key: RAPIDAPI_KEY
         sync: false
