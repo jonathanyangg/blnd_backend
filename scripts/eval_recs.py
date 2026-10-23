@@ -247,6 +247,7 @@ def _new_user(
     bucket: str,
     train: list[tuple[int, float, date]],
     test: list[tuple[int, float, date]],
+    pref: np.ndarray,
 ) -> dict[str, Any]:
     genre_name = GENRES[cluster][0]
     return {
@@ -257,6 +258,7 @@ def _new_user(
         "favorite_genres": [genre_name],
         "train": train,
         "test": test,
+        "pref": pref,
     }
 
 
@@ -291,6 +293,7 @@ def _build_users(
                     "5+",
                     stamped[:-8],
                     stamped[-8:],
+                    pref,
                 )
             )
         for slot, train_n in enumerate((1, 2, 3, 4)):
@@ -304,13 +307,16 @@ def _build_users(
                     "1-4",
                     stamped[:-2],
                     stamped[-2:],
+                    pref,
                 )
             )
         for slot in range(3):
             order = _weighted_sample(rng, plain, pref, 6)
             stamped = _stamp(order, pref, cluster, rng)
             users.append(
-                _new_user(rng, cluster, f"eval_cold_{cluster}_{slot}", "0", [], stamped)
+                _new_user(
+                    rng, cluster, f"eval_cold_{cluster}_{slot}", "0", [], stamped, pref
+                )
             )
     return users
 
@@ -434,22 +440,14 @@ def _seed(db, movies: list[dict[str, Any]], users: list[dict[str, Any]]) -> None
     db.commit()
 
 
-def _recommend(db, user: dict[str, Any], arm: str) -> tuple[list[int], float]:
+def _candidate_pool(db, taste: list[float], seen: list[int]) -> list[dict[str, Any]]:
+    """The pgvector pool the pipeline would draw, minus movies already watched."""
     from sqlalchemy import text
 
-    from app.config import settings
-    from app.import_data.models import MovieEmbedding
     from app.movies.models import Movie
-    from app.recommendations.collaborative import compute_cf_scores
     from app.recommendations.pipeline import CANDIDATE_POOL_SIZE
-    from app.recommendations.ranking import rerank_candidates
-    from app.recommendations.services import get_user_signal_context
 
-    settings.cf_enabled = arm == "cf"
-    settings.cf_blend_weight = 1.0
-    started = time.perf_counter()
-    genres, directors, cast = get_user_signal_context(user["id"], db)
-    embedding = "[" + ",".join(str(value) for value in user["taste"]) + "]"
+    embedding = "[" + ",".join(str(value) for value in taste) + "]"
     rows = db.execute(
         text(
             "SELECT me.tmdb_id, "
@@ -464,7 +462,7 @@ def _recommend(db, user: dict[str, Any], arm: str) -> tuple[list[int], float]:
         {
             "query_embedding": embedding,
             "match_count": CANDIDATE_POOL_SIZE,
-            "exclude_ids": [tmdb_id for tmdb_id, _, _ in user["train"]] or [0],
+            "exclude_ids": seen or [0],
             "lo": TMDB_BASE,
             "hi": TMDB_BASE + N_MOVIES - 1,
         },
@@ -485,6 +483,24 @@ def _recommend(db, user: dict[str, Any], arm: str) -> tuple[list[int], float]:
         candidates.append(
             {"tmdb_id": tmdb_id, "similarity": similarity[tmdb_id], "movie": movie}
         )
+    return candidates
+
+
+def _recommend(db, user: dict[str, Any], arm: str) -> tuple[list[int], float]:
+    from app.config import settings
+    from app.import_data.models import MovieEmbedding
+    from app.recommendations.collaborative import compute_cf_scores
+    from app.recommendations.ranking import rerank_candidates
+    from app.recommendations.services import get_user_signal_context
+
+    settings.cf_enabled = arm == "cf"
+    settings.cf_blend_weight = 1.0
+    started = time.perf_counter()
+    genres, directors, cast = get_user_signal_context(user["id"], db)
+    candidates = _candidate_pool(
+        db, user["taste"], [tmdb_id for tmdb_id, _, _ in user["train"]]
+    )
+    tmdb_ids = [c["tmdb_id"] for c in candidates]
     candidate_embeddings = None
     if user["negative"] is not None and tmdb_ids:
         emb_rows = (
@@ -505,6 +521,187 @@ def _recommend(db, user: dict[str, Any], arm: str) -> tuple[list[int], float]:
     ranked.sort(key=lambda candidate: (-candidate["score"], candidate["tmdb_id"]))
     elapsed_ms = (time.perf_counter() - started) * 1000
     return [candidate["tmdb_id"] for candidate in ranked], elapsed_ms
+
+
+def _true_rating(user: dict[str, Any], movie: dict[str, Any]) -> float:
+    """What the user would rate the movie, with no noise."""
+    if movie["club"] is not None:
+        return 5.0 if movie["club"] == user["cluster"] else 2.0
+    return min(
+        5.0, max(0.5, 3.0 + 2.4 * float(np.dot(user["pref"], movie["true_latent"])))
+    )
+
+
+def _recommend_group(db, members: list[dict[str, Any]], arm: str) -> list[int]:
+    """Top movies for a blend. arm "averaged" is the old path, "per-member" the new one."""
+    from app.config import settings
+    from app.import_data.models import MovieEmbedding
+    from app.recommendations.collaborative import (
+        compute_cf_scores,
+        compute_member_cf_scores,
+    )
+    from app.recommendations.group_scoring import MemberTaste, rerank_group_candidates
+    from app.recommendations.ranking import rerank_candidates
+    from app.recommendations.services import get_user_signal_context
+
+    settings.cf_enabled = True
+    settings.cf_blend_weight = 1.0
+    signals = {m["id"]: get_user_signal_context(m["id"], db) for m in members}
+    negatives = [m["negative"] for m in members if m["negative"] is not None]
+    group_taste = np.mean([m["taste"] for m in members], axis=0).tolist()
+    group_negative = np.mean(negatives, axis=0).tolist() if negatives else None
+    seen = [tmdb_id for m in members for tmdb_id, _, _ in m["train"]]
+    candidates = _candidate_pool(db, group_taste, seen)
+    tmdb_ids = [c["tmdb_id"] for c in candidates]
+    emb_rows = (
+        db.query(MovieEmbedding).filter(MovieEmbedding.tmdb_id.in_(tmdb_ids)).all()
+    )
+    embeddings = {row.tmdb_id: list(row.embedding) for row in emb_rows}
+
+    if arm == "averaged":
+        ranked = rerank_candidates(
+            candidates,
+            sorted({g for gs, _, _ in signals.values() for g in gs}),
+            {d for _, ds, _ in signals.values() for d in ds},
+            {c for _, _, cs in signals.values() for c in cs},
+            negative_embedding=group_negative,
+            candidate_embeddings=embeddings,
+            cf_scores=compute_cf_scores([m["id"] for m in members], tmdb_ids, db),
+        )
+    else:
+        ranked = rerank_group_candidates(
+            candidates,
+            [
+                MemberTaste(
+                    user_id=m["id"],
+                    embedding=m["taste"],
+                    negative_embedding=m["negative"],
+                    genres=list(signals[m["id"]][0]),
+                    directors=set(signals[m["id"]][1]),
+                    cast=set(signals[m["id"]][2]),
+                )
+                for m in members
+            ],
+            embeddings,
+            compute_member_cf_scores([m["id"] for m in members], tmdb_ids, db),
+        )
+    ranked.sort(key=lambda candidate: (-candidate["score"], candidate["tmdb_id"]))
+    return [candidate["tmdb_id"] for candidate in ranked]
+
+
+def _example_pairs(
+    users: list[dict[str, Any]],
+) -> dict[str, list[tuple[dict[str, Any], dict[str, Any]]]]:
+    """Blends of every kind the old averaging handled badly, picked by name."""
+    by_name = {u["username"]: u for u in users}
+    clusters = range(N_CLUSTERS)
+    pairs: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {
+        "same taste, both 5+": [],
+        "disagree, both 5+": [],
+        "new pair, both 1-4": [],
+        "heavy + light": [],
+        "cold pair, both 0": [],
+    }
+    for a in clusters:
+        for slot in (0, 2):
+            pairs["same taste, both 5+"].append(
+                (by_name[f"eval_warm_{a}_{slot}"], by_name[f"eval_warm_{a}_{slot + 1}"])
+            )
+        for b in clusters:
+            if a == b:
+                continue
+            for slot in (0, 1):
+                pairs["heavy + light"].append(
+                    (
+                        by_name[f"eval_warm_{a}_{slot}"],
+                        by_name[f"eval_light_{b}_{slot + 1}"],
+                    )
+                )
+            if a < b:
+                for slot in (0, 1):
+                    pairs["disagree, both 5+"].append(
+                        (
+                            by_name[f"eval_warm_{a}_{slot}"],
+                            by_name[f"eval_warm_{b}_{slot}"],
+                        )
+                    )
+                    pairs["new pair, both 1-4"].append(
+                        (
+                            by_name[f"eval_light_{a}_{slot}"],
+                            by_name[f"eval_light_{b}_{slot + 2}"],
+                        )
+                    )
+                pairs["cold pair, both 0"].append(
+                    (by_name[f"eval_cold_{a}_0"], by_name[f"eval_cold_{b}_0"])
+                )
+    return pairs
+
+
+GROUP_ARMS = ("averaged", "per-member")
+GROUP_K = 10
+
+
+def _evaluate_groups(
+    db, users: list[dict[str, Any]], movies: list[dict[str, Any]]
+) -> dict[str, dict[str, dict[str, float]]]:
+    """Old averaged blend vs per-member least misery, scored on true ratings.
+
+    For each pair the top 10 is judged by what each member would really rate
+    the movies (no noise, nothing from their history). "both like" means both
+    members would give 4 or more. "worst" is the lower of the two ratings,
+    averaged over the list. "regret" is the share of the list that at least
+    one member would rate under 3.
+    """
+    by_id = {m["tmdb_id"]: m for m in movies}
+    result: dict[str, dict[str, dict[str, float]]] = {}
+    for kind, pairs in _example_pairs(users).items():
+        samples: dict[str, list[dict[str, float]]] = {arm: [] for arm in GROUP_ARMS}
+        for a, b in pairs:
+            for arm in GROUP_ARMS:
+                top = _recommend_group(db, [a, b], arm)[:GROUP_K]
+                mins = [
+                    min(_true_rating(a, by_id[t]), _true_rating(b, by_id[t]))
+                    for t in top
+                ]
+                samples[arm].append(
+                    {
+                        "both_like": float(np.mean([m >= RELEVANT_AT for m in mins])),
+                        "worst": float(np.mean(mins)),
+                        "regret": float(np.mean([m < 3.0 for m in mins])),
+                    }
+                )
+        result[kind] = {
+            arm: {
+                "n": float(len(rows)),
+                **{
+                    key: float(np.mean([row[key] for row in rows]))
+                    for key in ("both_like", "worst", "regret")
+                },
+            }
+            for arm, rows in samples.items()
+        }
+    return result
+
+
+def _print_group_report(groups: dict[str, dict[str, dict[str, float]]]) -> None:
+    from app.config import settings
+
+    print()
+    print(
+        f"Blend feeds: old averaged profile vs per-member scoring "
+        f"(least-misery weight {settings.group_least_misery_weight}). "
+        f"Top {GROUP_K}, judged on each member's true rating."
+    )
+    print()
+    print("| pair type | arm | pairs | both like >=4 | worst rating | regret <3 |")
+    print("| --- | --- | ---: | ---: | ---: | ---: |")
+    for kind, arms in groups.items():
+        for arm in GROUP_ARMS:
+            row = arms[arm]
+            print(
+                f"| {kind} | {arm} | {row['n']:.0f} | {row['both_like']:.3f} "
+                f"| {row['worst']:.2f} | {row['regret']:.3f} |"
+            )
 
 
 def _grades(user: dict[str, Any]) -> tuple[set[int], dict[int, float]]:
@@ -688,12 +885,14 @@ def main() -> None:
     try:
         _seed(db, movies, users)
         summary = _evaluate(db, users, movies)
+        groups = _evaluate_groups(db, users, movies)
     finally:
         settings.cf_enabled = True
         settings.cf_blend_weight = 1.0
         db.close()
         engine.dispose()
     _print_report(users, summary)
+    _print_group_report(groups)
     cold = summary[("cold-lists", "match")]
     if cold["matched"] != cold["n"]:
         raise SystemExit(

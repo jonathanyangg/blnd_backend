@@ -77,6 +77,34 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
     return float(np.dot(va, vb) / denom)
 
 
+def score_for_taste(
+    movie: Movie,
+    embedding_similarity: float,
+    cf_score: float | None,
+    user_genres: list[str],
+    top_directors: set[str],
+    top_cast: set[str],
+    negative_similarity: float | None = None,
+) -> float:
+    """Unclamped score of one movie for one taste (a user, or one blend member)."""
+    sim = (
+        embedding_similarity
+        if cf_score is None
+        else blend_cf_similarity(cf_score, embedding_similarity)
+    )
+    score = (
+        W_SIMILARITY * sim
+        + W_GENRE * _genre_overlap(movie.genres or [], user_genres)
+        + W_CONSENSUS * _consensus_score(movie.vote_average)
+        + W_DIRECTOR * _director_boost(movie.director, top_directors)
+        + W_CAST * _cast_boost(movie.cast or [], top_cast)
+    )
+    # Negative penalty: subtract similarity to negative embedding
+    if negative_similarity is not None:
+        score -= W_NEGATIVE * max(negative_similarity, 0.0)
+    return score
+
+
 def rerank_candidates(
     candidates: list[dict],
     user_genres: list[str],
@@ -92,34 +120,20 @@ def rerank_candidates(
     Returns candidates sorted by final score descending, with "score" added to each.
     """
     for c in candidates:
-        movie: Movie = c["movie"]
-        cf_sim = cf_scores.get(c["tmdb_id"]) if cf_scores else None
-        sim = (
-            c["similarity"]
-            if cf_sim is None
-            else blend_cf_similarity(cf_sim, c["similarity"])
-        )
-
-        genre = _genre_overlap(movie.genres or [], user_genres)
-        consensus = _consensus_score(movie.vote_average)
-        director = _director_boost(movie.director, top_directors)
-        cast = _cast_boost(movie.cast or [], top_cast)
-
-        score = (
-            W_SIMILARITY * sim
-            + W_GENRE * genre
-            + W_CONSENSUS * consensus
-            + W_DIRECTOR * director
-            + W_CAST * cast
-        )
-
-        # Negative penalty: subtract similarity to negative embedding
+        negative_similarity = None
         if negative_embedding and candidate_embeddings:
             emb = candidate_embeddings.get(c["tmdb_id"])
             if emb:
-                neg_sim = _cosine_sim(emb, negative_embedding)
-                score -= W_NEGATIVE * max(neg_sim, 0.0)
-
+                negative_similarity = _cosine_sim(emb, negative_embedding)
+        score = score_for_taste(
+            c["movie"],
+            c["similarity"],
+            cf_scores.get(c["tmdb_id"]) if cf_scores else None,
+            user_genres,
+            top_directors,
+            top_cast,
+            negative_similarity,
+        )
         c["score"] = round(max(score, 0.0), 4)
 
     candidates.sort(key=lambda c: c["score"], reverse=True)

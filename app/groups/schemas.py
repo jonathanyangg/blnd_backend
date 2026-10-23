@@ -67,6 +67,8 @@ class GroupRecMovieResponse(BaseModel):
     backdrop_path: str | None = None
     match_score: float
     comment_count: int = 0
+    # Why this fits the whole blend. Null for exploration picks.
+    reason: str | None = None
 
 
 class GroupRecommendationsResponse(BaseModel):

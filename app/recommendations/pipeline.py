@@ -17,7 +17,12 @@ from sqlalchemy.orm import Session
 
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
-from app.recommendations.collaborative import compute_cf_scores
+from app.recommendations.collaborative import (
+    compute_cf_scores,
+    compute_member_cf_scores,
+)
+from app.recommendations.group_reasons import attach_group_reasons
+from app.recommendations.group_scoring import MemberTaste, rerank_group_candidates
 from app.recommendations.ranking import (
     EXPLORE_TEMPERATURE,
     probabilistic_sample,
@@ -106,6 +111,9 @@ class RecommendationContext:
     # Users whose ratings drive collaborative filtering — one for a personal
     # feed, every member for a group feed.
     cf_user_ids: list[str] = field(default_factory=list)
+    # Blend feeds with two or more members: each candidate is scored per member
+    # (see group_scoring) instead of against the one averaged taste above.
+    members: list[MemberTaste] = field(default_factory=list)
 
 
 def run_recommendation_pipeline(
@@ -143,6 +151,9 @@ def run_recommendation_pipeline(
     # Rescale exploration scores to blend naturally with main scores
     if main_page and explore_page:
         explore_page = _rescale_exploration_scores(main_page, explore_page)
+
+    if len(ctx.members) > 1:
+        attach_group_reasons(main_page, ctx.members, db)
 
     # Merge and shuffle
     combined = main_page + explore_page
@@ -201,6 +212,25 @@ def _run_main_algorithm(ctx: RecommendationContext, db: Session) -> list[dict]:
                 "movie": movie,
             }
         )
+
+    if len(ctx.members) > 1:
+        candidate_ids = [c["tmdb_id"] for c in candidates]
+        if candidate_embeddings is None:
+            emb_rows = (
+                db.query(MovieEmbedding)
+                .filter(MovieEmbedding.tmdb_id.in_(candidate_ids))
+                .all()
+            )
+            candidate_embeddings = {e.tmdb_id: list(e.embedding) for e in emb_rows}
+        ranked = rerank_group_candidates(
+            candidates,
+            ctx.members,
+            candidate_embeddings,
+            compute_member_cf_scores(
+                [m.user_id for m in ctx.members], candidate_ids, db
+            ),
+        )
+        return probabilistic_sample(ranked)
 
     # Rerank with negative penalty
     ranked = rerank_candidates(
@@ -310,7 +340,7 @@ def _format_candidate(c: dict) -> dict:
     """Format a candidate dict for response serialization."""
     movie = c["movie"]
     vote = movie.vote_average
-    return {
+    formatted = {
         "tmdb_id": movie.tmdb_id,
         "title": movie.title,
         "year": movie.year,
@@ -326,3 +356,7 @@ def _format_candidate(c: dict) -> dict:
         "backdrop_path": movie.backdrop_path,
         "match_score": to_match_percentage(c["score"]),
     }
+    # Only Blend picks from the main algorithm carry a reason.
+    if c.get("reason"):
+        formatted["reason"] = c["reason"]
+    return formatted

@@ -211,6 +211,7 @@ async def get_group_feed(
 @router.get(
     "/{group_id}/pick-tonight",
     response_model=schemas.PickTonightResponse,
+    deprecated=True,
 )
 @limiter.limit(LIMIT_DEFAULT)
 async def pick_tonight(
@@ -219,12 +220,14 @@ async def pick_tonight(
     user_id: str = Depends(require_premium),
     db: Session = Depends(get_db),
 ):
+    """Deprecated: kept for iOS 1.1. Use /recommendations, which scores per member."""
     return picks.get_or_create_pick(group_id, user_id, db)
 
 
 @router.post(
     "/{group_id}/pick-tonight/veto",
     response_model=schemas.PickTonightResponse,
+    deprecated=True,
 )
 @limiter.limit(LIMIT_DEFAULT)
 async def veto_tonight(
@@ -234,6 +237,7 @@ async def veto_tonight(
     user_id: str = Depends(require_premium),
     db: Session = Depends(get_db),
 ):
+    """Deprecated: kept for iOS 1.1. Use /recommendations, which scores per member."""
     return picks.veto_tonight(group_id, user_id, body.tmdb_id, body.reason, db)
 
 
