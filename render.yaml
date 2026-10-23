@@ -1,0 +1,36 @@
+# Dev environment blueprint. Prod (blnd_backend) is NOT managed by this file.
+# Render dashboard -> New -> Blueprint -> pick this repo + branch `dev`.
+services:
+  - type: web
+    name: blnd-backend-dev
+    runtime: python
+    region: ohio
+    plan: starter
+    branch: dev
+    autoDeployTrigger: commit
+    buildCommand: pip install uv && uv sync --locked --no-dev
+    startCommand: uv run --locked --no-dev uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PUBLIC_BASE_URL
+        value: https://blnd-backend-dev.onrender.com
+      - key: CF_ENABLED
+        value: "true"
+      - key: AMAZON_AFFILIATE_ENABLED
+        value: "false"
+      - key: CONTACT_HASH_KEY
+        generateValue: true
+      # Dev Supabase (project ikdbhiozrtetognqcxbp). Paste values in the Blueprint form.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      # Same TMDB / OpenAI keys as prod (copy from the prod service's Environment tab).
+      - key: TMDB_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
