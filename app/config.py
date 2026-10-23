@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     amazon_affiliate_enabled: bool = False
     amazon_affiliate_tag: str = ""
     contact_hash_key: str = ""
+    # Extra allowed web origin (regex). Staging sets it for Vercel previews; prod leaves it empty.
+    cors_origin_regex: str = ""
 
     model_config = {"env_file": ".env"}
 
