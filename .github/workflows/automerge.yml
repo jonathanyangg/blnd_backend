@@ -1,0 +1,28 @@
+name: automerge
+# Merge a PR into dev once the `tests` workflow is green and the PR carries the `automerge` label.
+# No branch protection needed. Runs on Ubuntu (cheap).
+on:
+  workflow_run:
+    workflows: [tests]
+    types: [completed]
+  pull_request:
+    types: [labeled]
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge labeled PRs whose tests passed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          for pr in $(gh pr list --repo "$REPO" --base dev --label automerge --state open --json number -q '.[].number'); do
+            sha=$(gh pr view "$pr" --repo "$REPO" --json headRefOid -q .headRefOid)
+            state=$(gh api "repos/$REPO/commits/$sha/check-runs" -q '[.check_runs[] | select(.name=="pytest")] | map(.conclusion) | if length==0 then "none" elif all(.=="success") then "ok" else "bad" end')
+            echo "PR #$pr pytest: $state"
+            if [ "$state" = ok ]; then gh pr merge "$pr" --repo "$REPO" --squash --delete-branch || true; fi
+          done

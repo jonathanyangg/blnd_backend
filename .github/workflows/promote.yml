@@ -1,0 +1,23 @@
+name: promote
+# Keep one open "dev -> main" release PR whenever dev is ahead of main. Merging it stays a human decision.
+on:
+  push:
+    branches: [dev]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  open-release-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          open=$(gh pr list --repo "$REPO" --base main --head dev --state open --json number -q length)
+          if [ "$open" = 0 ]; then
+            gh pr create --repo "$REPO" --base main --head dev \
+              --title "Release: dev into main" \
+              --body "Auto-opened because dev is ahead of main. Review the mini papers of the included PRs, then merge." \
+              || echo "PR creation failed. Enable Settings > Actions > General > 'Allow GitHub Actions to create and approve pull requests'."
+          fi

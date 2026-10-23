@@ -1,18 +1,32 @@
-# Testing at blnd (proposal)
+# Testing at blnd
 
-Status: proposal. Items 1-2 exist (pytest + Schemathesis, Maestro in blnd_ios). Items 3-4 are not implemented yet.
+Status: layers 1-2 and the QA scripts below are implemented. Sections 3-4 are still proposals.
+The iOS half (warm sims, Maestro flows, mini papers, PR gate) lives in `blnd_ios/TESTING.md`.
 
-## Layers today
-| Layer | Tool | Where | Runs |
-|---|---|---|---|
-| Backend unit/integration | pytest on local Supabase Postgres (unseeded) | `tests/` | locally, GitHub Actions on every PR |
-| API contract | Schemathesis against FastAPI's `/openapi.json` | `tests/contract/` | same job, `-m contract` |
-| iOS unit | XCTest | `blnd_iosTests` | locally on the iPhone 17 Pro sim |
-| iOS end-to-end | Maestro flows | `blnd_ios/.maestro/` | locally against `localhost:8000` |
+## Layers (measured on dev 8defb27, PR #45 included)
+| Layer | Tool | Count | Result | Certainty |
+|---|---|---|---|---|
+| Backend unit/integration | pytest, in-process ASGI TestClient, isolated local Postgres `blnd_test`, rollback fixtures | 483 | 483 pass, 0 fail, 0 skip, same on every run | CERTAIN (no network, no skips) |
+| API contract | Schemathesis vs `/openapi.json` | 117 | 117 pass, stable across 3 runs | CERTAIN for shape; cases are generated, so a new run can find a new edge case |
 
-Local backend tests: `supabase start && supabase db reset --local --no-seed && uv run pytest -q`.
-`seed.sql` demo data collides with fixtures, so tests always run unseeded.
-Run `supabase db reset --local` afterwards if you want the demo seed back.
+Run both exactly like CI does, without touching the demo data the warm sims use:
+
+    scripts/qa/test.sh          # unit + contract  (also: test.sh unit | test.sh contract)
+
+`scripts/qa/test.sh` rebuilds `blnd_test` from the `postgres` schema every run (any `supabase db reset` drops it),
+sets `TEST_DATABASE_URL` and refuses to run if a `.env` exists in the repo. JUnit goes to `~/cursor-work/qa/reports/`.
+Plain CI command stays `supabase start && supabase db reset --local --no-seed && uv run pytest -q`.
+
+## Local backend for simulators
+`scripts/qa/serve-local.sh` serves the local-Supabase backend on :8100 (rate limits off). `blnd_ios/tools/qa/warm.sh up` starts it.
+Seeded demo users (supabase/seed.sql, local only): maya@blnd.local and leo@blnd.local (blnd+, friends), sam@blnd.local (free). Password `Premium123!`.
+The feed still calls live TMDB, so UI tests that open the feed need internet.
+
+## Merge automation
+- `.github/workflows/automerge.yml`: a PR into `dev` labelled `automerge` is squash-merged once the `pytest` check is green.
+- `.github/workflows/promote.yml`: every push to `dev` opens (or reuses) a "Release: dev into main" PR. Needs the repo setting
+  Settings > Actions > General > "Allow GitHub Actions to create and approve pull requests".
+- Nothing merges to `main` automatically: Jonathan merges the release PR.
 
 ## 3. Generate the Swift API client from OpenAPI (proposal)
 Problem: iOS hand-writes request/response models, so contract drift ships (Blend cap 4 vs 8, the error envelope, is_premium).
