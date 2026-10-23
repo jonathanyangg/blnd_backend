@@ -1,11 +1,11 @@
-# Dev environment blueprint. Prod (blnd_backend) is NOT managed by this file.
+# Staging environment blueprint. Prod (blnd_backend) is NOT managed by this file.
 # Render dashboard -> New -> Blueprint -> pick this repo + branch `dev`.
 services:
   - type: web
-    name: blnd-backend-dev
+    name: blnd-backend-staging
     runtime: python
     region: ohio
-    plan: starter
+    plan: starter  # use `free` if you prefer; free spins down after 15 min idle
     branch: dev
     autoDeployTrigger: commit
     buildCommand: pip install uv && uv sync --locked --no-dev
@@ -13,14 +13,14 @@ services:
     healthCheckPath: /health
     envVars:
       - key: PUBLIC_BASE_URL
-        value: https://blnd-backend-dev.onrender.com
+        value: https://blnd-backend-staging.onrender.com
       - key: CF_ENABLED
         value: "true"
       - key: AMAZON_AFFILIATE_ENABLED
         value: "false"
       - key: CONTACT_HASH_KEY
         generateValue: true
-      # Dev Supabase (project ikdbhiozrtetognqcxbp). Paste values in the Blueprint form.
+      # Staging Supabase (project dscyhvcajteutrzoatvf). Paste values in the Blueprint form.
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_KEY

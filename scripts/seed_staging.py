@@ -1,11 +1,11 @@
-"""Seed the DEV environment: ~400 TMDB movies + embeddings, demo users, friendships, ratings.
+"""Seed the STAGING environment: ~400 TMDB movies + embeddings, demo users, friendships, ratings.
 
-Runs wherever the dev service's env vars are set (e.g. a Render one-off job or
+Runs wherever the staging service's env vars are set (e.g. a Render one-off job or
 `render ssh`), so no keys are handled by hand:
 
-    uv run python scripts/seed_dev.py
+    uv run python scripts/seed_staging.py
 
-Safe to re-run. Refuses to run against anything but the dev Supabase project.
+Safe to re-run. Refuses to run against anything but the staging Supabase project.
 """
 
 import asyncio
@@ -26,7 +26,7 @@ from app.import_data.services import embed_movies, fetch_and_cache_movies
 from app.recommendations.services import rebuild_taste_profile
 from app.tracking.models import WatchedMovie, Watchlist
 
-DEV_PROJECT_REF = "ikdbhiozrtetognqcxbp"
+STAGING_PROJECT_REF = "dscyhvcajteutrzoatvf"
 PROD_PROJECT_REF = "wtnbecnjsougjjcplhqf"
 DEMO_PASSWORD = "Demo1234!"
 
@@ -82,8 +82,8 @@ DEMOS = {
 
 def guard() -> None:
     url = settings.supabase_url
-    if PROD_PROJECT_REF in url or DEV_PROJECT_REF not in url:
-        sys.exit(f"Refusing to seed: SUPABASE_URL is not the dev project ({url!r})")
+    if PROD_PROJECT_REF in url or STAGING_PROJECT_REF not in url:
+        sys.exit(f"Refusing to seed: SUPABASE_URL is not the staging project ({url!r})")
     if not (settings.tmdb_api_key and settings.openai_api_key):
         sys.exit("TMDB_API_KEY and OPENAI_API_KEY must be set")
     if supabase_admin is None:
