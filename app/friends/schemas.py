@@ -1,6 +1,8 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.core.phone import normalize_e164
 
 
 class SendFriendRequestRequest(BaseModel):
@@ -37,6 +39,11 @@ class PendingRequestsResponse(BaseModel):
 
 class UploadContactsRequest(BaseModel):
     phone_numbers: list[str] = Field(max_length=5000)
+
+    @field_validator("phone_numbers")
+    @classmethod
+    def check_phones(cls, values: list[str]) -> list[str]:
+        return [normalize_e164(value) for value in values]
 
 
 class SuggestedFriendResponse(BaseModel):
@@ -78,3 +85,21 @@ class BlockedUserResponse(BaseModel):
 
 class BlockedUsersResponse(BaseModel):
     blocked: list[BlockedUserResponse]
+
+
+class FollowStateResponse(BaseModel):
+    following: bool
+
+
+class FollowUserResponse(BaseModel):
+    id: str
+    username: str
+    display_name: str | None = None
+    avatar_url: str | None = None
+    is_following_me: bool
+    am_following: bool
+
+
+class FollowListResponse(BaseModel):
+    results: list[FollowUserResponse]
+    next_cursor: str | None = None

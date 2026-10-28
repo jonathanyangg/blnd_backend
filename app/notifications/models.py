@@ -38,6 +38,8 @@ class NotificationInboxItem(Base):
     body: Mapped[str] = mapped_column(Text, nullable=False)
     data: Mapped[dict | None] = mapped_column(JSONB, default=dict)
     read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Rows that share a group_key collapse in the inbox ("Alex and 3 others").
+    group_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -53,6 +55,7 @@ class NotificationPreference(Base):
     friend_activity: Mapped[bool] = mapped_column(Boolean, default=True)
     comment_replies: Mapped[bool] = mapped_column(Boolean, default=True)
     comment_mentions: Mapped[bool] = mapped_column(Boolean, default=True)
+    new_followers: Mapped[bool] = mapped_column(Boolean, default=True)
     last_digest_sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -61,6 +64,40 @@ class NotificationPreference(Base):
     )
     last_friend_activity_push_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    # iOS share_ratings. Values: everyone, friends, off. A missing row means friends.
+    share_ratings_activity: Mapped[str] = mapped_column(
+        String, nullable=False, default="friends", server_default="friends"
+    )
+    friends_ratings_in_app: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    friends_ratings_push: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    blend_activity_in_app: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    blend_activity_push: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    comments_likes_in_app: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    comments_likes_push: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    watched_with_tags_in_app: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    watched_with_tags_push: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    recommendations_in_app: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    recommendations_push: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

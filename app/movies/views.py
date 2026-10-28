@@ -11,7 +11,9 @@ from app.dependencies import (
     get_tmdb_client,
 )
 from app.comments.services import get_comment_count
+from app.content_filters import ContentFilters, get_content_filters, year_in_range
 from app.movies import schemas, services
+from app.tv import services as tv_services
 
 router = APIRouter()
 
@@ -184,11 +186,40 @@ async def search_movies(
     page: int = Query(default=1, ge=1, le=500),
     _user_id: str = Depends(get_current_user),
     tmdb_client: httpx.AsyncClient = Depends(get_tmdb_client),
+    filters: ContentFilters = Depends(get_content_filters),
 ):
     try:
-        return await services.search_movies(query, page, tmdb_client)
+        if filters.media_type == "tv":
+            data = await tv_services.search_tv_shows(query, page, tmdb_client)
+        else:
+            data = await services.search_movies(query, page, tmdb_client)
+            for row in data["results"]:
+                row["media_type"] = "movie"
+            if filters.wants_tv:
+                tv_data = await tv_services.search_tv_shows(query, page, tmdb_client)
+                _keep_tv_vote(tv_data["results"])
+                data["results"].extend(tv_data["results"])
+                data["total_results"] += tv_data["total_results"]
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail="TMDB API error")
+    if filters.media_type == "tv":
+        _keep_tv_vote(data["results"])
+    data["results"] = [
+        row
+        for row in data["results"]
+        if year_in_range(row.get("year"), filters.year_min, filters.year_max)
+    ]
+    if filters.year_min is not None or filters.year_max is not None:
+        data["total_results"] = len(data["results"])
+    return data
+
+
+def _keep_tv_vote(rows: list[dict]) -> None:
+    """Movie responses halve vote_average. Double TV votes first so they survive."""
+    for row in rows:
+        vote = row.get("vote_average")
+        if isinstance(vote, (int, float)):
+            row["vote_average"] = vote * 2
 
 
 @router.get("/{tmdb_id}", response_model=schemas.MovieResponse)

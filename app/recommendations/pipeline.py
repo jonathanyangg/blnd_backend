@@ -6,6 +6,8 @@ Step 3: Exploration scoring (novelty + consensus + trending)
 Step 4: Exploration sampling + blending with main results
 """
 
+from __future__ import annotations
+
 import random
 from dataclasses import dataclass, field
 
@@ -15,6 +17,12 @@ from sqlalchemy.orm import Session
 
 from app.import_data.models import MovieEmbedding
 from app.movies.models import Movie
+from app.recommendations.collaborative import (
+    compute_cf_scores,
+    compute_member_cf_scores,
+)
+from app.recommendations.group_reasons import attach_group_reasons
+from app.recommendations.group_scoring import MemberTaste, rerank_group_candidates
 from app.recommendations.ranking import (
     EXPLORE_TEMPERATURE,
     probabilistic_sample,
@@ -27,6 +35,56 @@ CANDIDATE_POOL_SIZE = 500
 EXPLORE_POOL_SIZE = 500
 ALGO_RATIO = 0.95  # 95% algo, 5% exploration
 EXCLUDED_GENRES = {"music", "documentary"}
+
+
+def _year_ok(year: int | None, year_min: int | None, year_max: int | None) -> bool:
+    if year_min is None and year_max is None:
+        return True
+    if year is None:
+        return False
+    if year_min is not None and year < year_min:
+        return False
+    return year_max is None or year <= year_max
+
+
+def _candidate_query(
+    ctx: RecommendationContext, embedding_str: str, match_count: int
+) -> tuple[object, dict]:
+    """Cosine candidates. A year bound is applied in SQL so the pool is not the unfiltered top N."""
+    exclude_ids = ctx.exclude_ids if ctx.exclude_ids else []
+    if ctx.year_min is None and ctx.year_max is None:
+        statement = text(
+            "SELECT * FROM match_movies("
+            "cast(:query_embedding AS vector(1536)), :match_count, :exclude_ids)"
+        )
+        params = {
+            "query_embedding": embedding_str,
+            "match_count": match_count,
+            "exclude_ids": exclude_ids,
+        }
+        return statement, params
+    statement = text(
+        "SELECT me.tmdb_id, "
+        "1 - (me.embedding <=> cast(:query_embedding AS vector(1536))::halfvec(1536)) "
+        "AS similarity "
+        "FROM movie_embeddings me "
+        "JOIN movies ON movies.tmdb_id = me.tmdb_id "
+        "WHERE (cardinality(cast(:exclude_ids AS int[])) = 0 "
+        "OR me.tmdb_id != ALL(cast(:exclude_ids AS int[]))) "
+        "AND movies.year IS NOT NULL "
+        "AND (cast(:year_min AS int) IS NULL OR movies.year >= :year_min) "
+        "AND (cast(:year_max AS int) IS NULL OR movies.year <= :year_max) "
+        "ORDER BY me.embedding <=> cast(:query_embedding AS vector(1536))::halfvec(1536) "
+        "LIMIT :match_count"
+    )
+    params = {
+        "query_embedding": embedding_str,
+        "match_count": match_count,
+        "exclude_ids": exclude_ids,
+        "year_min": ctx.year_min,
+        "year_max": ctx.year_max,
+    }
+    return statement, params
 
 
 def _has_excluded_genre(movie: Movie) -> bool:
@@ -48,6 +106,14 @@ class RecommendationContext:
     top_cast: set[str] = field(default_factory=set)
     genre_watch_counts: dict[str, int] = field(default_factory=dict)
     total_watches: int = 0
+    year_min: int | None = None
+    year_max: int | None = None
+    # Users whose ratings drive collaborative filtering — one for a personal
+    # feed, every member for a group feed.
+    cf_user_ids: list[str] = field(default_factory=list)
+    # Blend feeds with two or more members: each candidate is scored per member
+    # (see group_scoring) instead of against the one averaged taste above.
+    members: list[MemberTaste] = field(default_factory=list)
 
 
 def run_recommendation_pipeline(
@@ -86,6 +152,9 @@ def run_recommendation_pipeline(
     if main_page and explore_page:
         explore_page = _rescale_exploration_scores(main_page, explore_page)
 
+    if len(ctx.members) > 1:
+        attach_group_reasons(main_page, ctx.members, db)
+
     # Merge and shuffle
     combined = main_page + explore_page
     random.shuffle(combined)
@@ -104,18 +173,7 @@ def _run_main_algorithm(ctx: RecommendationContext, db: Session) -> list[dict]:
     """Steps 1-2: pgvector candidates → rerank → probabilistic sample."""
     embedding_str = "[" + ",".join(str(v) for v in ctx.positive_embedding) + "]"
 
-    result = db.execute(
-        text(
-            "SELECT * FROM match_movies("
-            "cast(:query_embedding AS vector(1536)), :match_count, :exclude_ids"
-            ")"
-        ),
-        {
-            "query_embedding": embedding_str,
-            "match_count": CANDIDATE_POOL_SIZE,
-            "exclude_ids": ctx.exclude_ids if ctx.exclude_ids else [],
-        },
-    )
+    result = db.execute(*_candidate_query(ctx, embedding_str, CANDIDATE_POOL_SIZE))
     rows = result.fetchall()
     if not rows:
         return []
@@ -145,6 +203,8 @@ def _run_main_algorithm(ctx: RecommendationContext, db: Session) -> list[dict]:
         # Filter out excluded genres (Music, Documentary)
         if _has_excluded_genre(movie):
             continue
+        if not _year_ok(movie.year, ctx.year_min, ctx.year_max):
+            continue
         candidates.append(
             {
                 "tmdb_id": tmdb_id,
@@ -152,6 +212,25 @@ def _run_main_algorithm(ctx: RecommendationContext, db: Session) -> list[dict]:
                 "movie": movie,
             }
         )
+
+    if len(ctx.members) > 1:
+        candidate_ids = [c["tmdb_id"] for c in candidates]
+        if candidate_embeddings is None:
+            emb_rows = (
+                db.query(MovieEmbedding)
+                .filter(MovieEmbedding.tmdb_id.in_(candidate_ids))
+                .all()
+            )
+            candidate_embeddings = {e.tmdb_id: list(e.embedding) for e in emb_rows}
+        ranked = rerank_group_candidates(
+            candidates,
+            ctx.members,
+            candidate_embeddings,
+            compute_member_cf_scores(
+                [m.user_id for m in ctx.members], candidate_ids, db
+            ),
+        )
+        return probabilistic_sample(ranked)
 
     # Rerank with negative penalty
     ranked = rerank_candidates(
@@ -161,6 +240,9 @@ def _run_main_algorithm(ctx: RecommendationContext, db: Session) -> list[dict]:
         ctx.top_cast,
         negative_embedding=ctx.negative_embedding,
         candidate_embeddings=candidate_embeddings,
+        cf_scores=compute_cf_scores(
+            ctx.cf_user_ids, [c["tmdb_id"] for c in candidates], db
+        ),
     )
 
     # Probabilistic sample 500 → 200
@@ -185,6 +267,10 @@ def _run_exploration(
     )
     if all_exclude:
         query = query.filter(Movie.tmdb_id.notin_(list(all_exclude)))
+    if ctx.year_min is not None:
+        query = query.filter(Movie.year >= ctx.year_min)
+    if ctx.year_max is not None:
+        query = query.filter(Movie.year <= ctx.year_max)
 
     query = query.order_by(Movie.vote_average.desc()).limit(EXPLORE_POOL_SIZE)
     explore_movies = query.all()
@@ -254,7 +340,7 @@ def _format_candidate(c: dict) -> dict:
     """Format a candidate dict for response serialization."""
     movie = c["movie"]
     vote = movie.vote_average
-    return {
+    formatted = {
         "tmdb_id": movie.tmdb_id,
         "title": movie.title,
         "year": movie.year,
@@ -270,3 +356,7 @@ def _format_candidate(c: dict) -> dict:
         "backdrop_path": movie.backdrop_path,
         "match_score": to_match_percentage(c["score"]),
     }
+    # Only Blend picks from the main algorithm carry a reason.
+    if c.get("reason"):
+        formatted["reason"] = c["reason"]
+    return formatted

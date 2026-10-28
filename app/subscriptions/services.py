@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timedelta, timezone
+import uuid
 
 from sqlalchemy.orm import Session
 
@@ -43,7 +44,15 @@ def apply_webhook_event(event: RevenueCatEvent, db: Session) -> None:
     persists until expiration. BILLING_ISSUE is soft; RC retries, and a
     following EXPIRATION event ends the entitlement.
     """
-    profile = db.query(Profile).filter(Profile.id == event.app_user_id).first()
+    try:
+        app_user_id = uuid.UUID(event.app_user_id)
+    except ValueError:
+        logger.warning(
+            "RevenueCat event %s for unknown user %s", event.type, event.app_user_id
+        )
+        return
+
+    profile = db.query(Profile).filter(Profile.id == app_user_id).first()
     if profile is None:
         logger.warning(
             "RevenueCat event %s for unknown user %s", event.type, event.app_user_id

@@ -1,0 +1,42 @@
+# Staging environment blueprint. Prod (blnd_backend) is NOT managed by this file.
+# Render dashboard -> New -> Blueprint -> pick this repo + branch `dev`.
+services:
+  - type: web
+    name: blnd-backend-staging
+    runtime: python
+    region: ohio
+    plan: starter  # use `free` if you prefer; free spins down after 15 min idle
+    branch: dev
+    autoDeployTrigger: commit
+    buildCommand: pip install uv && uv sync --locked --no-dev
+    startCommand: uv run --locked --no-dev uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PUBLIC_BASE_URL
+        value: https://blnd-backend-staging.onrender.com
+      - key: CF_ENABLED
+        value: "true"
+      - key: CORS_ORIGIN_REGEX
+        value: ^https://blnd[a-z0-9-]*\.vercel\.app$  # Vercel previews
+      - key: TV_SUPPORT_ENABLED
+        value: "true"
+      - key: AMAZON_AFFILIATE_ENABLED
+        value: "false"
+      - key: CONTACT_HASH_KEY
+        generateValue: true
+      # Staging Supabase (project dscyhvcajteutrzoatvf). Paste values in the Blueprint form.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      # Real read-only TMDB / OpenAI / where-to-watch keys. No APNS, Twilio or email keys: push/SMS/email stay off.
+      - key: TMDB_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: RAPIDAPI_KEY
+        sync: false
